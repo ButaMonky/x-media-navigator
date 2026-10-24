@@ -1,0 +1,20 @@
+{
+   "content_scripts": [ {
+      "css": [ "style.css" ],
+      "js": [ "content_script.js" ],
+      "matches": [ "*://x.com/*", "*://twitter.com/*" ]
+   } ],
+   "description": "X(Twitter)のメディアページに「前のメディアへ」or「次のメディアへ」ボタンを追加するアドオンです。",
+   "host_permissions": [ "*://x.com/*", "*://twitter.com/*" ],
+   "icons": {
+      "128": "icon128.png",
+      "16": "icon16.png",
+      "48": "icon48.png"
+   },
+   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnOgtRD+KzkiACDElL3sF9kex6iuLt3Od0dfBhxBFgDEQOvoiiWacx1ZgwK1uAV/zs76vK2yr2LFPlo4mHUgsza8A2FP8wnUi8voW+OLIUQg+H3VKryiZ9b0uVsLk9veYwJ6AALJbQvvfFwoJdeIzn1tmEl7P9qypm9tZR9RBLSI26xk7zUqTl+Hx9IY7hf2Zkg6zmcx3igS0UHm0QBLzRc9Go04VEbQ8VDy4fZzn00KUWrS01cCSmCrRPf9x9aPSumJMFpQUWq3WqTw1hkIbh6B402GeCtLFs1Xc81HtgiFPKRne8p2mkr2E3dmElYlz+l+kdW0GY77pZ51BjPnYRwIDAQAB",
+   "manifest_version": 3,
+   "name": "X(Twitter)のメディアページに「前のメディアへ」or「次のメディアへ」ボタンを追加",
+   "permissions": [  ],
+   "update_url": "https://clients2.google.com/service/update2/crx",
+   "version": "1.3"
+}

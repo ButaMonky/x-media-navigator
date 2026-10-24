@@ -1,0 +1,32 @@
+{
+    "content_scripts":  [
+                            {
+                                "css":  [
+                                            "style.css"
+                                        ],
+                                "js":  [
+                                           "content_script.js"
+                                       ],
+                                "matches":  [
+                                                "*://x.com/*",
+                                                "*://twitter.com/*"
+                                            ]
+                            }
+                        ],
+    "description":  "X(Twitter)のメディアページに「前のメディアへ」or「次のメディアへ」ボタンを追加するアドオンです。",
+    "host_permissions":  [
+                             "*://x.com/*",
+                             "*://twitter.com/*"
+                         ],
+    "icons":  {
+                  "128":  "icon128.png",
+                  "16":  "icon16.png",
+                  "48":  "icon48.png"
+              },
+    "manifest_version":  3,
+    "name":  "X Media Navigator (Development)",
+    "permissions":  [
+
+                    ],
+    "version":  "1.3"
+}

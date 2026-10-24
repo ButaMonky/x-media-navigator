@@ -1,0 +1,14 @@
+{
+  "name": "x-media-navigator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Private baseline analysis and future regression tests for an X media navigation extension",
+  "scripts": {
+    "check": "node --check extension/content_script.js && node --check extension/background.js",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

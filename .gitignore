@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+*.log
+coverage/
+dist/
+test-output/
+captures/
+screenshots-private/
+tmp/
+*.crx
+*.zip
+.DS_Store
+Thumbs.db
