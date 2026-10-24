@@ -11,3 +11,4 @@ test.todo('account changes reset numeric tile indexes');
 test.todo('lazy loading waits for new content rather than only a scroll event');
 test.todo('boundary navigation cannot accidentally reopen the same tile');
 test.todo('the extension remains stable after closing and reopening the viewer');
+test.todo('tile discovery is scoped to the intended profile media grid');
