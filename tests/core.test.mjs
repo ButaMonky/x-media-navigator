@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('./.build/core.js', import.meta.url), 'utf8');
-const context = vm.createContext({ URL, Set });
+const context = vm.createContext({ URL, URLSearchParams, Set });
 vm.runInContext(source, context, { filename: 'core.js' });
 const { XMN } = context;
 
@@ -121,4 +121,65 @@ test('image preloader only uses X image CDN, never arbitrary third-party or vide
     'https://pbs.twimg.com/media/ABC?format=jpg',
     'https://video.twimg.com/video/ABC',
     'data:image/png;base64,AAAA']) assert.equal(XMN.preloadImageUrl(url),null,url);
+});
+
+
+test('media timeline context distinguishes Photos/Videos but ignores tracking parameters', () => {
+  assert.equal(XMN.mediaTimelineKey('/Alice/media', '?filter=photo'), 'alice|photo');
+  assert.equal(XMN.mediaTimelineKey('/alice/media/', '?filter=PHOTO&utm_source=foo'), 'alice|photo');
+  assert.equal(XMN.mediaTimelineKey('/alice/media', '?filter=video'), 'alice|video');
+  assert.equal(XMN.mediaTimelineKey('/alice/media', '?filter=unknown'), 'alice|unknown');
+  assert.equal(XMN.mediaTimelineKey('/alice/media', '?utm_source=bar'), 'alice|default');
+  assert.notEqual(XMN.mediaTimelineKey('/alice/media','?filter=photo'), XMN.mediaTimelineKey('/alice/media','?filter=video'));
+  assert.equal(XMN.mediaTimelineKey('/alice/status/1/photo/2', '?filter=photo'), null);
+});
+
+test('an incomplete set of thumbnails never proves the last photo', () => {
+  for (const group of [[],[1],[1,2],[1,2,3],[1,3,4],[0,1,2,3]]) {
+    assert.equal(XMN.completeFourPhotoSet(new Set(group)), false, JSON.stringify(group));
+  }
+  assert.equal(XMN.completeFourPhotoSet(new Set([4,2,3,1])), true);
+});
+
+test('recognizes only explicit bounded gallery counters', () => {
+  for (const label of ['Image 2 of 4', 'Photo 1 of 2', '画像 4/4', '1 / 1']) {
+    assert.ok(XMN.parseGalleryCounter(label), label);
+  }
+  for (const label of ['20 of 40', '2 of 5', 'Image 2 of 1', '2 likes', '1/2 comments']) {
+    assert.equal(XMN.parseGalleryCounter(label), null, label);
+  }
+});
+test('Japanese photo counters preserve total/current ordering and full-width digits', () => {
+  const valid = [
+    ['3枚中2枚目', 2, 3],
+    ['全3枚中3枚目', 3, 3],
+    ['全４枚中４枚目', 4, 4],
+    ['画像 ２／３', 2, 3],
+    ['写真 1/1', 1, 1],
+  ];
+  for (const [label, current, total] of valid) {
+    const count = XMN.parseGalleryCounter(label);
+    assert.equal(count?.current, current, label);
+    assert.equal(count?.total, total, label);
+  }
+  for (const label of ['2枚中3枚目', '5枚中1枚目', '全3枚中4枚目', '3/5', '画像 2/3 件']) {
+    assert.equal(XMN.parseGalleryCounter(label), null, label);
+  }
+});
+test('repeated noncontiguous status IDs never skip intervening posts', () => {
+  const refs = [
+    '/alice/status/11/photo/1',
+    '/alice/status/22/photo/1',
+    '/alice/status/11/photo/2',
+    '/alice/status/33/photo/1',
+    '/alice/status/33/photo/2',
+  ].map((p) => XMN.mediaRefFromHref(p, 'alice'));
+  assert.equal(XMN.adjacentPostIndex(refs, '11', 1, 0), 1, 'first 11 advances to 22, not 33');
+  assert.equal(XMN.adjacentPostIndex(refs, '11', 1, 2), 3, 'later 11 advances to 33');
+  assert.equal(XMN.adjacentPostIndex(refs, '11', -1, 2), 1, 'later 11 returns to 22');
+  assert.equal(XMN.adjacentPostIndex(refs, '33', -1, 4), 2, 'backwards skips contiguous 33 photos only');
+  assert.equal(XMN.adjacentPostIndex(refs, '22', -1, 1), 0);
+  assert.equal(XMN.adjacentPostIndex(refs, '22', 1, 1), 2);
+  assert.equal(XMN.adjacentPostIndex(refs, 'other', 1, 2), null);
+  assert.equal(XMN.adjacentPostIndex(refs, '11', 1, 99), 1, 'invalid anchor uses conservative fallback');
 });

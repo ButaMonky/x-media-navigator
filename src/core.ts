@@ -26,6 +26,37 @@ namespace XMN {
     return match[1].toLowerCase();
   }
 
+  /**
+   * Media tab URL may keep the same pathname when the Photos/Videos dropdown changes.
+   * An absent filter is NOT assumed to mean video: record it independently.
+   * Unrelated query params are deliberately ignored.
+   */
+  export function mediaTimelineKey(pathname: string, search: string): string | null {
+    const profile = mediaProfileFromPath(pathname);
+    if (!profile) return null;
+    const filters = new URLSearchParams(search).getAll('filter').map((value) => value.trim().toLowerCase());
+    const mode = filters.length === 0 ? 'default'
+      : filters.length === 1 ? (filters[0] || 'empty') : `multi:${filters.join(',')}`;
+    return `${profile}|${encodeURIComponent(mode)}`;
+  }
+
+  /** Only a complete 4-photo set proves album completion without a gallery counter. */
+  export function completeFourPhotoSet(indexes: ReadonlySet<number>): boolean {
+    return indexes.size === 4 && [1, 2, 3, 4].every((index) => indexes.has(index));
+  }
+
+  /** Parse only explicit media counters; Japanese "N枚中M枚目" lists total first. */
+  export function parseGalleryCounter(label: string): { current: number; total: number } | null {
+    const text = label.trim().normalize('NFKC');
+    const japanese = /^(?:全\s*)?(\d+)\s*枚中\s*(\d+)\s*枚目$/.exec(text);
+    const standard = /^(?:(?:image|photo|picture|画像|写真)\s*)?(\d+)\s*(?:\/|of)\s*(\d+)\s*(?:枚目|枚)?$/i.exec(text);
+    if (!japanese && !standard) return null;
+    const current = Number(japanese ? japanese[2] : standard![1]);
+    const total = Number(japanese ? japanese[1] : standard![2]);
+    return Number.isInteger(current) && Number.isInteger(total) && current >= 1 &&
+      total >= current && total <= 4 ? { current, total } : null;
+  }
+
   export function profileStatusFromPath(pathname: string, profile: string): boolean {
     const match = POST_ROUTE_RE.exec(pathname);
     return !!match && match[1].toLowerCase() === profile.toLowerCase();
@@ -99,17 +130,28 @@ namespace XMN {
     return photoCount !== null && photoCount >= 1 && current.mediaIndex === photoCount ? 1 : null;
   }
 
-  /** Move across STATUS groups, not between media items belonging to the same post. */
-  export function adjacentPostIndex(items: readonly MediaRef[], currentStatusId: string, direction: Direction): number | null {
-    const positions = items.map((item, index) => ({ item, index }))
-      .filter(({ item }) => item.statusId === currentStatusId);
-    if (positions.length === 0) return null;
-    const start = direction === 1 ? positions[positions.length - 1].index : positions[0].index;
-    for (let i = start + direction; i >= 0 && i < items.length; i += direction) {
-      if (items[i].statusId !== currentStatusId) {
-        // For backtracking enter the previous post from its last recorded photo.
-        return i;
+  /**
+   * Move across the CONTIGUOUS status group at the active position, not the last
+   * occurrence of that ID anywhere in the timeline. A repeated status can appear
+   * again after another post; skipping every occurrence would skip entire posts.
+   */
+  export function adjacentPostIndex(
+    items: readonly MediaRef[], currentStatusId: string, direction: Direction, activePosition?: number,
+  ): number | null {
+    const anchored = activePosition !== undefined && Number.isSafeInteger(activePosition) &&
+      activePosition >= 0 && activePosition < items.length &&
+      items[activePosition].statusId === currentStatusId;
+    let start = anchored ? activePosition! : -1;
+    if (!anchored) {
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].statusId !== currentStatusId) continue;
+        start = i;
+        if (direction === 1) break;
       }
+    }
+    if (start < 0) return null;
+    for (let i = start + direction; i >= 0 && i < items.length; i += direction) {
+      if (items[i].statusId !== currentStatusId) return i;
     }
     return null;
   }

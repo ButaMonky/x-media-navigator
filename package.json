@@ -1,6 +1,6 @@
 {
   "name": "x-media-navigator",
-  "version": "2.1.0-dev.1",
+  "version": "2.2.3-dev.1",
   "private": true,
   "description": "TypeScript rebuild of X media profile navigation; private development",
   "scripts": {

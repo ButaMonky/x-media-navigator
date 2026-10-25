@@ -35,9 +35,13 @@ test('manifest content scripts, CSS and referenced icons exist', () => {
   for (const filename of Object.values(m.icons)) assert.ok(existsSync(resolve(dev, filename)), filename);
 });
 
-test('Git-managed LF-normalized v1.3 baseline matches its recorded hash', (t) => {
-  if (!existsSync(resolve(upstream, 'content_script.js'))) { t.skip('Snapshot is retained in private GitHub repo, not scratch build'); return; }
-  const hash = createHash('sha256').update(get(upstream, 'content_script.js')).digest('hex').toUpperCase();
+test('reference snapshot matches its recorded LF-normalized SHA-256 on Windows and Linux', (t) => {
+  if (!existsSync(resolve(upstream, 'content_script.js'))) {
+    t.skip('Snapshot is retained in private GitHub repo, not scratch build'); return;
+  }
+  // Git can check out the same text as CRLF on Windows and LF on Linux.
+  const canonical = get(upstream, 'content_script.js').toString('utf8').replace(/\r\n/g, '\n');
+  const hash = createHash('sha256').update(canonical, 'utf8').digest('hex').toUpperCase();
   assert.equal(hash, 'BC67D0F31B7482B3FB06EB686E7CE944B4014746375696D8CDD9D915117190BE');
 });
 

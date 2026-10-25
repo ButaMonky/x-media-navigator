@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../extension/content_script.js', import.meta.url), 'utf8');
-const state = { pathname: '/alice/media', root: null };
+const state = { pathname: '/alice/media', search: '', root: null };
 class FakeElement {
   constructor(tag='div', attrs={}) {
     this.tag=tag;this.attrs=attrs;this.children=[];this.classList={ add(){} };this.isConnected=true;
@@ -30,7 +30,7 @@ const document = {
   querySelector(selector) { return selector==='main [data-testid="primaryColumn"]' ? state.root : null; },
   createElement(tag) { return new FakeElement(tag); },
 };
-const context = vm.createContext({ URL, Set, Map, Element:FakeElement, document, window: { location:state }, console });
+const context = vm.createContext({ URL, URLSearchParams, Set, Map, Element:FakeElement, document, window: { location:state }, console });
 vm.runInContext(source, context);
 const proto = context.XMN.Controller.prototype;
 const ref = (href) => context.XMN.mediaRefFromHref(href, 'alice');
@@ -57,7 +57,7 @@ test('compiled controller crosses posts on first/last gallery image, but not in 
   const instance={ viewer:{isConnected:true}, originProfile:'alice', navigationBusy:false,
     refs:['/alice/status/7/photo/1','/alice/status/11/photo/1','/alice/status/11/photo/2','/alice/status/22/photo/1'].map(ref),
     activeIndex(){return 0;}, photoCount(){return 2;},
-    nativeGalleryArrowAvailable(){return false;}, navigate(dir){calls.push(dir);} };
+    nativeGalleryArrowAvailable(){return false;},handleUnknownRightBoundary(){},navigate(dir){calls.push(dir);} };
   const run=(path,key,extra={})=>{state.pathname=path;const ev=keyEvent(key,extra);proto.onKeyDown.call(instance,ev);return ev;};
   assert.equal(run('/alice/status/11/photo/1','ArrowRight').prevented,false,'X should open image 2');
   assert.equal(run('/alice/status/11/photo/2','ArrowLeft').prevented,false,'X should open image 1');
@@ -71,7 +71,7 @@ test('compiled controller crosses posts on first/last gallery image, but not in 
 test('unknown right boundary, native gallery buttons, focus and blocked viewer preserve X operation', () => {
   const calls=[];
   const instance={viewer:{isConnected:true},originProfile:'alice',navigationBusy:false,
-    activeIndex(){return 0;},photoCount(){return null;},nativeGalleryArrowAvailable(){return false;},navigate(dir){calls.push(dir);} };
+    activeIndex(){return 0;},photoCount(){return null;},nativeGalleryArrowAvailable(){return false;},handleUnknownRightBoundary(){},navigate(dir){calls.push(dir);} };
   state.pathname='/alice/status/11/photo/4';
   assert.equal((()=>{const e=keyEvent('ArrowRight');proto.onKeyDown.call(instance,e);return e.prevented})(),false);
   instance.photoCount=()=>4;
@@ -144,7 +144,8 @@ test('missing close button aborts rather than navigating elsewhere', async () =>
   let errors=0;
   const instance={navigationBusy:false, navGeneration:1,originProfile:'alice',viewer:{isConnected:true},
     refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
-    activeIndex(){return 0;},findCloseButton(){return null;},toast(){errors++;},updateViewerState(){} };
+    activeIndex(){return 0;},findLiveLink(){return {isConnected:true};},
+    findCloseButton(){return null;},toast(){errors++;},updateViewerState(){} };
   await proto.navigate.call(instance,1);
   assert.equal(errors,1);
   assert.equal(instance.navigationBusy,false);
@@ -195,4 +196,406 @@ test('lazy-loader keeps waiting when only more images from the SAME post arrive'
   const result=await proto.loadNextPost.call(instance,'11',5);
   assert.equal(result.statusId,'22');
   assert.equal(scans,4);
+});
+
+
+test('changing the media filter holds old tiles until X replaces the visible grid', () => {
+  state.pathname='/alice/media';state.search='?filter=photo';
+  const oldTile=makeTile('/alice/status/10/photo/1');
+  state.root=new FakeElement('div'); state.root.tiles=[oldTile.tile];
+  const controller=Object.create(proto);
+  controller.originProfile='alice';controller.originTimeline='alice|photo';
+  controller.refs=[ref('/alice/status/10/photo/1')];controller.indexes=new Map();
+  controller.pendingGrid=null;controller.lastPath='/alice/media';
+  let scans=0, resets=0;
+  controller.resetSession=function(){resets++;this.refs=[];this.pendingGrid=null;};
+  let firstObserver=true;
+  controller.ensureListObserver=function() { const added=firstObserver;firstObserver=false;return added; };
+  controller.stopListObserver=function(){};
+  controller.scanTiles=function(){scans++;this.refs=[ref(state.root.tiles[0].links[0].getAttribute('href'))];};
+  controller.removeViewerUI=function(){};
+  controller.syncViewer=function(){};
+  proto.tick.call(controller);
+  assert.equal(scans,1);
+  state.search='?filter=video';
+  proto.tick.call(controller);
+  assert.equal(resets,1);
+  assert.equal(scans,1,'old photo grid must not be indexed as video');
+  assert.ok(controller.pendingGrid);
+  // Moving only an unrelated query parameter should not reset any session.
+  state.search='?filter=video&utm_source=test';
+  proto.tick.call(controller);
+  assert.equal(resets,1);
+  assert.equal(scans,1);
+  state.root.tiles=[makeTile('/alice/status/20/video/1').tile];
+  proto.tick.call(controller);
+  assert.equal(scans,2,'new list finally accepted');
+  assert.equal(controller.refs[0].statusId,'20');
+  assert.equal(controller.pendingGrid,null);
+  // X may also update anchor URLs IN PLACE without replacing tile nodes.
+  state.search='?filter=photo';
+  proto.tick.call(controller);
+  assert.ok(controller.pendingGrid);
+  assert.equal(scans,2);
+  state.root.tiles[0].links[0].attrs.href='/alice/status/30/photo/1';
+  proto.tick.call(controller);
+  assert.equal(controller.pendingGrid,null);
+  assert.equal(scans,3);
+  assert.equal(controller.refs[0].statusId,'30');
+  state.search='';state.pathname='/alice/media';
+});
+
+test('photo count requires an explicit matching counter or all four photos', () => {
+  state.pathname='/alice/status/100/photo/1';
+  const controller=Object.create(proto);
+  controller.originProfile='alice';controller.refs=[];
+  const article=new FakeElement('article');
+  article.querySelectorAll=(selector)=>selector==='a[href*="/photo/"]'
+    ? ['/alice/status/100/photo/1','/alice/status/100/photo/2'].map(h=>new FakeElement('a',{href:h})) : [];
+  const root=new FakeElement('div');
+  root.querySelectorAll=(selector)=>selector==='article[data-testid="tweet"]'?[article]:[];
+  const viewer=new FakeElement('div');viewer.parentElement=root;
+  viewer.querySelectorAll=()=>[];
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'2 known links might be only 2 of 4');
+  const counter=new FakeElement('span',{'aria-label':'Image 1 of 2'});
+  viewer.querySelectorAll=()=>[counter];
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),2);
+  counter.setAttribute('aria-label','Image 2 of 3');
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'counter for a different displayed index is ignored');
+  viewer.querySelectorAll=()=>[];
+  article.querySelectorAll=()=>['/alice/status/100/photo/1','/alice/status/100/photo/2',
+    '/alice/status/100/photo/3','/alice/status/100/photo/4'].map(h=>new FakeElement('a',{href:h}));
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),4);
+  state.pathname='/alice/media';
+});
+
+
+test('thumbnail URL cache stays bounded over a long media timeline', () => {
+  state.pathname='/alice/media';state.search='';
+  const tiles=Array.from({length:145},(_,i)=>{
+    const {tile}=makeTile('/alice/status/'+(300+i)+'/photo/1');
+    const old=tile.querySelector.bind(tile);
+    const oldAll=tile.querySelectorAll.bind(tile);
+    const thumbnail={ currentSrc:'https://pbs.twimg.com/media/T'+i+'?format=jpg&name=small' };
+    tile.querySelector=(selector)=>selector==='img[src]' ? thumbnail : old(selector);
+    tile.querySelectorAll=(selector)=>selector==='img[src]' ? [thumbnail] : oldAll(selector);
+    return tile;
+  });
+  state.root=new FakeElement('div');state.root.tiles=tiles;
+  const instance={originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()};
+  proto.scanTiles.call(instance);
+  assert.equal(instance.refs.length,145);
+  assert.equal(instance.imageSources.size,128);
+  assert.ok(!instance.imageSources.has(ref('/alice/status/300/photo/1').key));
+  assert.ok(instance.imageSources.has(ref('/alice/status/444/photo/1').key));
+});
+
+
+test('unchanged media DOM is not rescanned on every route poll', () => {
+  state.pathname='/alice/media';state.search='?filter=photo';
+  state.root=new FakeElement('div');state.root.tiles=[makeTile('/alice/status/11/photo/1').tile];
+  const ctrl=Object.create(proto);ctrl.originProfile='alice';ctrl.originTimeline='alice|photo';
+  ctrl.pendingGrid=null;ctrl.lastPath='/alice/media';
+  let scans=0, observerAdded=true;
+  ctrl.ensureListObserver=()=>{const result=observerAdded;observerAdded=false;return result;};
+  ctrl.scanTiles=()=>{scans++;};
+  ctrl.removeViewerUI=()=>{};
+  proto.tick.call(ctrl); proto.tick.call(ctrl); proto.tick.call(ctrl);
+  assert.equal(scans,1,'initial observer attachment scans once, then waits for DOM changes');
+  state.pathname='/alice/media';state.search='';
+});
+
+
+test('virtualized missing destination keeps the gallery open instead of losing its position', async () => {
+  state.pathname='/alice/status/11/photo/1'; state.search='?filter=photo';
+  const viewer={isConnected:true}; let closeAttempts=0; const messages=[];
+  const instance={
+    navigationBusy:false,navGeneration:1,originProfile:'alice',originTimeline:'alice|photo',viewer,
+    refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
+    activeIndex(){return 0;},
+    findLiveLink(){return null;},
+    findCloseButton(){closeAttempts++;return {click(){viewer.isConnected=false;}};},
+    toast(message){messages.push(message);},updateViewerState(){},
+  };
+  await proto.navigate.call(instance,1);
+  assert.equal(closeAttempts,0);
+  assert.equal(viewer.isConnected,true);
+  assert.equal(instance.navigationBusy,false);
+  assert.match(messages[0],/ビューアは閉じません/);
+  state.pathname='/alice/media'; state.search='';
+});
+
+test('SPA filter mismatch after modal close never opens a stale timeline ref', async () => {
+  state.pathname='/alice/status/11/photo/1'; state.search='';
+  const viewer={isConnected:true}; let closeAttempts=0,clicked=0;const messages=[];
+  const instance={
+    navigationBusy:false,navGeneration:3,originProfile:'alice',originTimeline:'alice|photo',viewer,
+    refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
+    activeIndex(){return 0;},
+    findLiveLink(){return {click(){clicked++;}};},
+    findCloseButton(){return {click(){
+      closeAttempts++;viewer.isConnected=false;state.pathname='/alice/media';state.search='?filter=video';
+    }};},
+    async waitForViewerToClose(){return true;},
+    toast(message){messages.push(message);},updateViewerState(){},
+  };
+  await proto.navigate.call(instance,1);
+  assert.equal(closeAttempts,1);
+  assert.equal(clicked,0);
+  assert.equal(instance.navigationBusy,false);
+  assert.match(messages[0],/切り替わった/);
+  state.pathname='/alice/media'; state.search='';
+});
+
+
+test('complete original-post photo tile grid proves 2/3 photos without counter, but partial/quoted tiles do not', () => {
+  const controller=Object.create(proto);
+  controller.originProfile='alice';controller.refs=[];
+  const root=new FakeElement('div');
+  const viewer=new FakeElement('div');viewer.parentElement=root;viewer.querySelectorAll=()=>[];
+  const article=new FakeElement('article');
+  const entries=(count,owner='alice',status='100')=>Array.from({length:count},(_,i)=>{
+    const tile=new FakeElement('div');const link=new FakeElement('a',{href:`/${owner}/status/${status}/photo/${i+1}`});
+    tile.querySelectorAll=(selector)=>selector==='a[href*="/photo/"]'?[link]:[];
+    return tile;
+  });
+  let tiles=entries(2);
+  article.querySelectorAll=(selector)=>selector==='[data-testid="tweetPhoto"]'?tiles:[];
+  root.querySelectorAll=(selector)=>selector==='article[data-testid="tweet"]'?[article]:[];
+  state.pathname='/alice/status/100/photo/2';
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),2,'two fully represented photo tiles');
+  tiles=entries(3);
+  state.pathname='/alice/status/100/photo/3';
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),3,'three fully represented photo tiles');
+  tiles=entries(3);tiles[2].querySelectorAll=()=>[];
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'incomplete grid cannot prove count');
+  tiles=entries(2,'bob');
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'foreign owner is ignored');
+  tiles=entries(2);article.closest=()=>article;
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'quoted article is ignored');
+  state.pathname='/alice/media';
+});
+
+test('unknown gallery boundary never skips first photo; repeated unchanged right confirms next post', () => {
+  const controller=Object.create(proto);
+  let delayed=null;let directions=[];let notices=[];
+  context.window.setTimeout=(fn)=>{delayed=fn;return 91;};
+  context.window.clearTimeout=()=>{};
+  controller.viewer={isConnected:true};controller.originProfile='alice';controller.navGeneration=2;
+  controller.navigationBusy=false;controller.rightProbeTimer=null;
+  controller.refs=[ref('/alice/status/100/photo/1'),ref('/alice/status/101/photo/1')];
+  controller.activeIndex=()=>0;controller.photoCount=()=>null;
+  controller.nativeGalleryArrowAvailable=()=>false;
+  controller.currentPhotoSignature=()=> 'stable-image';
+  controller.toast=(message)=>notices.push(message);
+  controller.navigate=(dir)=>directions.push(dir);
+  state.pathname='/alice/status/100/photo/1';
+  const first=keyEvent('ArrowRight');proto.onKeyDown.call(controller,first);
+  assert.equal(first.prevented,false,'first press goes to native X gallery');
+  assert.equal(directions.length,0);
+  delayed();
+  assert.match(notices[0],/もう一度/);
+  assert.equal(directions.length,0,'no navigation on unverified first photo');
+  const second=keyEvent('ArrowRight');proto.onKeyDown.call(controller,second);
+  assert.equal(second.prevented,true);
+  assert.deepEqual(directions,[1],'second press can navigate, no silent no-op');
+  state.pathname='/alice/media';
+});
+
+test('observed native photo transition permits delayed single-press next-post fallback', () => {
+  const controller=Object.create(proto);
+  let delayed=null;const navigations=[];
+  context.window.setTimeout=(fn)=>{delayed=fn;return 92;};
+  context.window.clearTimeout=()=>{};
+  controller.viewer={isConnected:true};controller.originProfile='alice';controller.navGeneration=5;
+  controller.navigationBusy=false;controller.rightProbeTimer=null;
+  controller.nativeAdvancedPost='100';
+  controller.refs=[ref('/alice/status/100/photo/1'),ref('/alice/status/100/photo/2'),ref('/alice/status/101/photo/1')];
+  controller.activeIndex=()=>1;controller.photoCount=()=>null;
+  controller.nativeGalleryArrowAvailable=()=>false;
+  controller.currentPhotoSignature=()=> 'same-photo-2';
+  controller.toast=()=>{throw new Error('Native progress should avoid confirmation toast');};
+  controller.navigate=(dir)=>navigations.push(dir);
+  state.pathname='/alice/status/100/photo/2';
+  const event=keyEvent('ArrowRight');proto.onKeyDown.call(controller,event);
+  assert.equal(event.prevented,false);
+  delayed();
+  assert.deepEqual(navigations,[1]);
+  state.pathname='/alice/media';
+});
+
+test('unknown boundary native X photo advancement prevents cross-post navigation', () => {
+  const controller=Object.create(proto);
+  let delayed=null;const navigations=[];const notes=[];
+  context.window.setTimeout=(fn)=>{delayed=fn;return 93;};
+  context.window.clearTimeout=()=>{};
+  controller.viewer={isConnected:true};controller.originProfile='alice';controller.navGeneration=8;
+  controller.navigationBusy=false;controller.rightProbeTimer=null;
+  controller.refs=[ref('/alice/status/100/photo/1'),ref('/alice/status/100/photo/2'),ref('/alice/status/101/photo/1')];
+  controller.activeIndex=()=>0;controller.photoCount=()=>null;
+  controller.nativeGalleryArrowAvailable=()=>false;
+  controller.currentPhotoSignature=()=> 'new-image';
+  controller.navigate=(dir)=>navigations.push(dir);
+  controller.toast=(note)=>notes.push(note);
+  state.pathname='/alice/status/100/photo/1';
+  const first=keyEvent('ArrowRight');proto.onKeyDown.call(controller,first);
+  state.pathname='/alice/status/100/photo/2';
+  delayed();
+  assert.deepEqual(navigations,[],'the native photo change is never treated as end of post');
+  assert.deepEqual(notes,[]);
+  assert.equal(controller.nativeAdvancedPost,'100');
+  state.pathname='/alice/media';
+});
+
+test('when X strips only the filter on close, an unchanged live target permits post navigation', async () => {
+  state.pathname='/alice/status/100/photo/1';state.search='?filter=photo';
+  const viewer={isConnected:true};const clicked=[];
+  const link={isConnected:true,click(){clicked.push('target');}};
+  const controller=Object.create(proto);
+  controller.navigationBusy=false;controller.navGeneration=1;controller.originProfile='alice';
+  controller.originTimeline='alice|photo';controller.viewer=viewer;
+  controller.refs=[ref('/alice/status/100/photo/1'),ref('/alice/status/101/photo/1')];
+  controller.activeIndex=()=>0;controller.updateViewerState=()=>{};
+  controller.findLiveLink=()=>link;
+  controller.findCloseButton=()=>({click(){viewer.isConnected=false;state.pathname='/alice/media';state.search='';}});
+  controller.waitForViewerToClose=async()=>true;
+  controller.toast=(m)=>{throw new Error(m);};
+  await proto.navigate.call(controller,1);
+  assert.deepEqual(clicked,['target']);
+  assert.equal(controller.navigationBusy,false);
+  state.pathname='/alice/media';state.search='';
+});
+
+test('SPA route poll retains current photo timeline during navigator-controlled close', () => {
+  state.pathname='/alice/media'; state.search='';
+  const controller=Object.create(proto);
+  controller.originProfile='alice'; controller.originTimeline='alice|photo';
+  controller.navigationBusy=true; controller.lastPath='/alice/status/100/photo/2';
+  let resets=0,scans=0;
+  controller.resetSession=()=>{resets++;};
+  controller.ensureListObserver=()=>true;
+  controller.scanTiles=()=>{scans++;};
+  proto.tick.call(controller);
+  assert.equal(resets,0,'closing the modal must not lose the session');
+  assert.equal(scans,0,'filter-stripped intermediate route must not mix old/new tiles');
+  assert.equal(controller.originTimeline,'alice|photo');
+  state.search='';state.pathname='/alice/media';
+});
+
+test('filter normalization preserves lazy-loaded next post only when media grid remains intact', async () => {
+  state.pathname='/alice/status/100/photo/1';state.search='?filter=photo';
+  const viewer={isConnected:true}; const clicked=[];
+  const source={isConnected:true,click(){clicked.push('next');}};
+  const originalGrid={column:{},firstTiles:[{}],firstKeys:['100:photo:1']};
+  const controller=Object.create(proto);
+  controller.navigationBusy=false;controller.navGeneration=3;controller.originProfile='alice';
+  controller.originTimeline='alice|photo';controller.viewer=viewer;
+  controller.refs=[ref('/alice/status/100/photo/1')];
+  controller.activeIndex=()=>0;controller.updateViewerState=()=>{};
+  controller.captureGrid=()=>originalGrid;
+  controller.hasGridTurnedOver=()=>false;
+  controller.findLiveLink=(item)=>item.statusId==='101'?source:null;
+  controller.findCloseButton=()=>({click(){viewer.isConnected=false;state.pathname='/alice/media';state.search='';}});
+  controller.waitForViewerToClose=async()=>true;
+  controller.loadNextPost=async()=>ref('/alice/status/101/photo/1');
+  controller.toast=(message)=>{throw new Error(message);};
+  await proto.navigate.call(controller,1);
+  assert.deepEqual(clicked,['next']);
+  assert.equal(controller.navigationBusy,false);
+  state.pathname='/alice/media';state.search='';
+});
+test('native gallery controls with Japanese directional labels stay owned by X', () => {
+  context.HTMLButtonElement = FakeElement;
+  const next = new FakeElement('button', { 'aria-label': '次の画像へ' });
+  const prev = new FakeElement('button', { 'aria-label': '前の写真へ' });
+  next.disabled = false;
+  prev.disabled = false;
+  const viewer = new FakeElement('div');
+  viewer.querySelectorAll = (selector) => selector === '[aria-label], [title]' ? [next, prev] : [];
+  assert.equal(proto.nativeGalleryArrowAvailable.call({}, viewer, 1), true);
+  assert.equal(proto.nativeGalleryArrowAvailable.call({}, viewer, -1), true);
+  next.disabled = true;
+  assert.equal(proto.nativeGalleryArrowAvailable.call({}, viewer, 1), false);
+  prev.attrs['aria-disabled'] = 'true';
+  assert.equal(proto.nativeGalleryArrowAvailable.call({}, viewer, -1), false);
+});
+
+test('lazy loading scrolls the visible final tile, including nested media lists', async () => {
+  state.pathname = '/alice/media';
+  const tile = makeTile('/alice/status/101/photo/1').tile;
+  const calls = [];
+  tile.scrollIntoView = (options) => calls.push(options.block);
+  state.root = new FakeElement('div');
+  state.root.tiles = [tile];
+  context.window.scrollTo = () => calls.push('window');
+  context.window.setTimeout = (fn) => setTimeout(fn, 1);
+  document.documentElement = { scrollHeight: 9000 };
+  const instance = { navGeneration: 2, refs: [ref('/alice/status/101/photo/1')], scanTiles() {
+    if (calls.length >= 4 && this.refs.length === 1) this.refs.push(ref('/alice/status/102/photo/1'));
+  }};
+  const next = await proto.loadNextPost.call(instance, '101', 2);
+  assert.equal(next.statusId, '102');
+  assert.deepEqual(calls, ['end', 'window', 'end', 'window']);
+  state.pathname = '/alice/media';
+});
+test('quoted and ambiguous media links are not indexed as the parent media tile', () => {
+  state.pathname='/alice/media';
+  state.search='';
+  const main=makeTile('/alice/status/100/photo/1');
+  const quote=new FakeElement('a', {href:'/alice/status/999/photo/1'});
+  quote.closest=(selector)=>selector==='[data-testid="quoteTweet"]' ? new FakeElement('div') : null;
+  main.tile.links=[quote,main.link];
+  const ambiguous=makeTile('/alice/status/200/photo/1');
+  ambiguous.tile.links.push(new FakeElement('a', {href:'/alice/status/300/photo/1'}));
+  state.root=new FakeElement('div');
+  state.root.tiles=[main.tile,ambiguous.tile];
+  const instance={originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()};
+  proto.scanTiles.call(instance);
+  assert.deepEqual(instance.refs.map((item)=>item.statusId),['100']);
+  assert.equal(main.tile.children[0].textContent,'1');
+  assert.equal(ambiguous.tile.children.length,0,'ambiguous owners must not gain a navigation badge');
+  assert.equal(proto.findLiveLink.call(instance,ref('/alice/status/100/photo/1')),main.link);
+  assert.equal(proto.findLiveLink.call(instance,ref('/alice/status/999/photo/1')),null);
+
+  const ownership=new FakeElement('a', {href:'/alice/status/400/photo/1'});
+  ownership.image=new FakeElement('img');
+  const other=new FakeElement('a', {href:'/alice/status/500/photo/1'});
+  const resolved=makeTile('/alice/status/400/photo/1');
+  resolved.tile.links=[other,ownership];
+  state.root.tiles=[resolved.tile];
+  proto.scanTiles.call(instance);
+  assert.equal(instance.refs.at(-1).statusId,'400','link containing actual media wins over another same-profile permalink');
+  state.root=null;
+});
+
+test('arrow shortcuts never run while a plaintext editor or combobox has focus', () => {
+  state.pathname='/alice/status/11/photo/1';
+  const instance={
+    viewer:{isConnected:true},originProfile:'alice',navigationBusy:false,
+    activeIndex(){return 0;}, photoCount(){return 1;},
+    nativeGalleryArrowAvailable(){return false;},
+    navigate(){throw new Error('the editor must own the arrow');},
+  };
+  for(const name of ['[contenteditable]:not([contenteditable="false"])','[role="combobox"]','[role="spinbutton"]']){
+    const target=new FakeElement('div');
+    target.closest=(selector)=>selector.includes(name) ? target : null;
+    const event=keyEvent('ArrowRight',{target});
+    proto.onKeyDown.call(instance,event);
+    assert.equal(event.prevented,false,name);
+  }
+  state.pathname='/alice/media';
+});
+test('one explicit media link remains indexable before its thumbnail loads', () => {
+  state.pathname='/alice/media';state.search='';
+  const tile=new FakeElement('li');
+  const link=new FakeElement('a',{href:'/alice/status/630/photo/1'});
+  tile.links=[link]; // X has not loaded an <img> yet.
+  const generic=new FakeElement('li');
+  generic.links=[new FakeElement('a',{href:'/alice/status/631'})];
+  state.root=new FakeElement('div');state.root.tiles=[tile,generic];
+  const instance={originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()};
+  proto.scanTiles.call(instance);
+  assert.deepEqual(instance.refs.map((x)=>x.statusId),['630']);
+  assert.equal(generic.children.length,0,'status-only text without media is not a media tile');
+  state.root=null;
 });
