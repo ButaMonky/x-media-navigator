@@ -585,3 +585,17 @@ test('arrow shortcuts never run while a plaintext editor or combobox has focus',
   }
   state.pathname='/alice/media';
 });
+test('one explicit media link remains indexable before its thumbnail loads', () => {
+  state.pathname='/alice/media';state.search='';
+  const tile=new FakeElement('li');
+  const link=new FakeElement('a',{href:'/alice/status/630/photo/1'});
+  tile.links=[link]; // X has not loaded an <img> yet.
+  const generic=new FakeElement('li');
+  generic.links=[new FakeElement('a',{href:'/alice/status/631'})];
+  state.root=new FakeElement('div');state.root.tiles=[tile,generic];
+  const instance={originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()};
+  proto.scanTiles.call(instance);
+  assert.deepEqual(instance.refs.map((x)=>x.statusId),['630']);
+  assert.equal(generic.children.length,0,'status-only text without media is not a media tile');
+  state.root=null;
+});

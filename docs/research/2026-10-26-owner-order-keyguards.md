@@ -58,3 +58,18 @@
 - **現在ユーザーがテスト中のC:\Users\Saito\Downloads\X-Media-Navigator-Currentには未反映。** ベータv2.2.3は変更していない。
 - 公式X APIや内部GraphQLへの追加通信は導入しない。Cookie、認証、閲覧履歴も収集しない。
 - X LIVEの現行DOM、引用投稿の表示方法、画像連続性、キャッシュ転送量は引き続き未確認。
+
+## AUD-024: 画像未ロード時に消えるタイル（SOURCE VERIFIED）
+
+一部のDOM実装ではサムネイルの <img> が遅延読み込み中にまだ存在しない可能性がある。所有者選別の安全化で「img/videoが無ければ一律除外」とすると、明確な /photo/N または /video/N リンクまで失う危険がある。
+
+修正：引用でない正規プロフィールの **単独かつ明示的なメディア位置付きリンク** なら、まだ画像がDOMに無くても一覧の位置だけを登録可能にする。投稿一般リンクしか無い場合や複数の候補がある場合は受理しない。サムネイルが無いので画像の先読みは行わない。
+
+証拠：tests/controller.test.mjs の one explicit media link remains indexable before its thumbnail loads。
+
+## 更新した検査結果
+
+- Windows Node/VM: 47 PASS, 0 FAIL, 1 SKIP, 6 TODO。
+- Chromium模擬Xの新しい「引用／曖昧リンク」シナリオ：GitHub Actionsで検証。
+- TypeScript strict typecheck：PASS。
+- 実サイトXにおける低速画像読み込み、投稿順、引用画像のDOM所有権は未検証。

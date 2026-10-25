@@ -211,8 +211,7 @@ var XMN;
             .filter((link) => !link.closest('[data-testid="quoteTweet"]'))
             .map((link) => ({ link, ref: XMN.mediaRefFromHref(link.getAttribute('href') ?? '', profile) }))
             .filter((candidate) => candidate.ref !== null);
-        if (!tile.querySelector('img, video'))
-            return null;
+        const hasThumbnail = !!tile.querySelector('img, video');
         // Prefer the link actually wrapping the thumbnail, not an unrelated
         // reply/permalink. Ambiguous owners are safer to leave unnumbered.
         const owned = possibilities.filter(({ link }) => !!link.querySelector('img, video'));
@@ -222,9 +221,13 @@ var XMN;
             return null;
         if (new Set(possibilities.map(({ ref }) => ref.statusId)).size > 1)
             return null;
-        // Some X grid versions place the image outside its link. In that case
-        // a single proven owner is enough; an explicit media position is preferred.
-        return possibilities.find(({ ref }) => ref.kind !== null) ?? possibilities[0] ?? null;
+        const explicit = possibilities.find(({ ref }) => ref.kind !== null);
+        // X can leave a not-yet-loaded image placeholder in the grid. Preserve
+        // one explicit /photo/N or /video/N link even before the img appears.
+        if (!hasThumbnail)
+            return possibilities.length === 1 ? explicit ?? null : null;
+        // In older grids, the image sits outside its link. A single owner is still safe.
+        return explicit ?? possibilities[0] ?? null;
     }
     /** Maintain a stable ordered list of media refs, never cached DOM nodes. */
     class Controller {
