@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "outFile": "tests/.build/core.js" },
+  "files": ["src/core.ts"]
+}

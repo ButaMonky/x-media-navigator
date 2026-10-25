@@ -1,0 +1,19 @@
+name: TypeScript check
+on:
+  push:
+  pull_request:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npm run typecheck
+      - name: Verify committed compiled JS is up to date
+        run: git diff --exit-code -- extension/content_script.js

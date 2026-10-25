@@ -1,502 +1,451 @@
-(function () {
-    console.log("「X(Twitter)のメディアページに「前のメディアへ」or「次のメディアへ」ボタンを追加」を実行します。");
-
-    const closeButtonSelector = "button[aria-label='閉じる']";
-    let lastMediaStatusId = null;
-    let mediaObserver = null;
-
-    const interval = 500;
-    let globalTileCounter = 1; // 絶対的な番号カウンター
-    const tileIndexMap = new Map(); // ステータスIDと番号の対応を保存
-    const tileNumberMap = new Map(); // 番号とタイル要素の対応を保存
-
-    let currentTileNumber = 1; // 現在のタイル番号
-    let lastAccountName = null; // 最後に確認したアカウント名
-    let intervalObserver = null; // タイル処理のsetIntervalを管理
-    let isCurrentlyMediaPage = false; // 現在メディアページにいるかどうか
-
-    let previousPath = window.location.pathname; // 初期値を現在のURLパスに設定
-    let currentPath = window.location.pathname; // 現在のパスを記録
-    /**
-     * ページがメディア関連かどうかを判定します。
-     * `/media` または `/status/` を含む場合をメディア関連とします。
-     */
-    function isMediaPage() {
-        return window.location.pathname.includes("/media") || window.location.pathname.includes("/status/");
-    }
-
-    /**
-     * メディアページに入ったときの処理を開始します。
-     */
-    function onMediaPageLoad() {
-        console.log("メディアページに移動しました。スクリプトを開始します。");
-    
-        resetAllState();
-    
-        if (!intervalObserver) {
-            intervalObserver = setInterval(() => {
-                addAbsoluteNumbersToTiles();
-                checkAccountChange();
-            }, interval);
-        }
-    
-        // メディアページに入った際に現在のアカウント名を設定
-        lastAccountName = getCurrentAccountName();
-        console.log(`初期アカウント名を設定: ${lastAccountName}`);
-    
-        isCurrentlyMediaPage = true;
-    }
-    
-    
-    /**
-     * メディアページから離れた場合の処理を行います。
-     */
-    function onExitMediaPage() {
-        console.log("メディアページから離れました。処理を停止します。");
-        resetAllState();
-        isCurrentlyMediaPage = false;
-    }
-
-    /**
-     * スクリプトの全ての状態をリセットします。
-     */
-    function resetAllState() {
-        lastMediaStatusId = null;
-        globalTileCounter = 1;
-        tileIndexMap.clear();
-        tileNumberMap.clear();
-        currentTileNumber = 1;
-
-        // 既存のオーバーレイを削除
-        document.querySelectorAll('.tile-index-overlay').forEach(el => el.remove());
-
-        // キーボードイベントリスナーを削除
-        document.removeEventListener('keydown', handleKeyDown, true);
-
-        // MutationObserverを停止
-        if (mediaObserver) {
-            mediaObserver.disconnect();
-            mediaObserver = null;
-        }
-
-        // タイル処理のタイマーを停止
-        if (intervalObserver) {
-            clearInterval(intervalObserver);
-            intervalObserver = null;
-        }
-    }
-
-    /**
-     * 現在のアカウント名を取得します。
-     */
-    function getCurrentAccountName() {
-        const urlMatch = window.location.href.match(/https?:\/\/(x\.com|twitter\.com)\/([^\/]+)/);
-        return urlMatch ? urlMatch[2] : null;
-    }
-
-    /**
-     * アカウントの変更をチェックし、変更があった場合はタイル番号をリセットします。
-     */
-    function checkAccountChange() {
-        const currentAccount = getCurrentAccountName();
-        if (currentAccount !== lastAccountName) {
-            console.log(`アカウントが変更されました: ${lastAccountName} → ${currentAccount}`);
-            resetTileNumbers();
-            lastAccountName = currentAccount;
-        }
-    }
-
-    /**
-     * タイル番号をリセットします。
-     */
-    function resetTileNumbers() {
-        // 既存のオーバーレイを削除
-        document.querySelectorAll('.tile-index-overlay').forEach(overlay => overlay.remove());
-        tileNumberMap.clear();
-        tileIndexMap.clear();
-
-        // タイル番号付与を再実行
-        addAbsoluteNumbersToTiles();
-    }
-
-    /**
-     * タイルに絶対番号を追加します。
-     */
-    function addAbsoluteNumbersToTiles() {
-        const tiles = Array.from(document.querySelectorAll("li[role='listitem']"));
-        tiles.forEach(tile => {
-            // タイルにすでにオーバーレイが付いている場合はスキップ
-            if (tile.querySelector('.tile-index-overlay')) return;
-
-            const link = tile.querySelector("a[role='link']");
-            const urlMatch = link?.getAttribute('href')?.match(/status\/(\d+)/);
-
-            if (urlMatch) {
-                const statusId = urlMatch[1];
-                
-                // 既にステータスIDに番号が付いている場合は、その番号を再利用
-                let tileNumber;
-                if (tileIndexMap.has(statusId)) {
-                    tileNumber = tileIndexMap.get(statusId);
-                } else {
-                    // 新しいステータスIDの場合のみ、カウンターを増やして番号を付与
-                    tileNumber = globalTileCounter;
-                    tileIndexMap.set(statusId, globalTileCounter);
-                    tileNumberMap.set(globalTileCounter, tile);
-                    globalTileCounter++;
-                }
-
-                // オーバーレイ要素を作成してタイルに追加
-                const overlay = document.createElement('div');
-                overlay.classList.add('tile-index-overlay');
-                overlay.textContent = tileNumber;
-                tile.appendChild(overlay);
-
-                console.log(`【番号付与】タイル ${tileNumber} に番号を付けました。 (ステータスID: ${statusId})`);
-            }
-        });
-    }
-
+"use strict";
 /**
- * メディアビューアにナビゲーションボタンを追加します。
- * - mediaContainerが存在するまで待ってボタンを追加
+ * X Media Navigator: deterministic helpers. This namespace has no browser-side effects.
+ * It is compiled together with content.ts into a single MV3 content script.
  */
-function checkAndAddButtons() {
-    const maxRetries = 10; // 最大リトライ回数
-    let attempts = 0;
-
-    function tryAddingButtons() {
-        const mediaContainer = document.querySelector("div[data-testid='swipe-to-dismiss']");
-        if (mediaContainer) {
-            const urlMatch = window.location.href.match(/status\/(\d+)/);
-            if (!urlMatch) return;
-
-            const displayedStatusId = urlMatch[1];
-
-            if (displayedStatusId !== lastMediaStatusId || !mediaObserver) {
-                lastMediaStatusId = displayedStatusId;
-
-                const existingButtons = mediaContainer.querySelectorAll(".custom-navigation");
-                existingButtons.forEach(button => button.remove());
-
-                console.log("メディアビューアが見つかりました。ボタンを追加します。");
-                addNavigationButtons(mediaContainer);
-                setCurrentTileNumber(displayedStatusId);
-                displayCurrentTileNumber();
-
-                observeMediaViewer(mediaContainer);
+var XMN;
+(function (XMN) {
+    const HANDLE_RE = /^[a-zA-Z0-9_]{1,15}$/;
+    const MEDIA_ROUTE_RE = /^\/([^/?#]+)\/media\/?$/;
+    const POST_ROUTE_RE = /^\/([^/?#]+)\/status\/(\d+)(?:\/(photo|video)\/(\d+))?\/?$/;
+    const HOSTS = new Set(['x.com', 'www.x.com', 'twitter.com', 'www.twitter.com']);
+    function mediaProfileFromPath(pathname) {
+        const match = MEDIA_ROUTE_RE.exec(pathname);
+        if (!match || !HANDLE_RE.test(match[1]))
+            return null;
+        return match[1].toLowerCase();
+    }
+    XMN.mediaProfileFromPath = mediaProfileFromPath;
+    function profileStatusFromPath(pathname, profile) {
+        const match = POST_ROUTE_RE.exec(pathname);
+        return !!match && match[1].toLowerCase() === profile.toLowerCase();
+    }
+    XMN.profileStatusFromPath = profileStatusFromPath;
+    /**
+     * Resolve only links belonging to the active profile. Strip query/fragment to make
+     * the key stable across tracking parameters; include photo/video position.
+     */
+    function mediaRefFromHref(href, profile) {
+        if (!HANDLE_RE.test(profile))
+            return null;
+        let url;
+        try {
+            url = new URL(href, 'https://x.com');
+        }
+        catch {
+            return null;
+        }
+        if (!HOSTS.has(url.hostname.toLowerCase()) || !['https:', 'http:'].includes(url.protocol))
+            return null;
+        const match = POST_ROUTE_RE.exec(url.pathname);
+        if (!match || match[1].toLowerCase() !== profile.toLowerCase())
+            return null;
+        const kind = match[3] ?? null;
+        const mediaIndex = match[4] === undefined ? null : Number(match[4]);
+        if (mediaIndex !== null && (!Number.isSafeInteger(mediaIndex) || mediaIndex < 1 || mediaIndex > 100))
+            return null;
+        const key = `${match[2]}:${kind ?? 'post'}:${mediaIndex ?? 0}`;
+        return { key, statusId: match[2], profile: profile.toLowerCase(), kind, mediaIndex, href: url.pathname };
+    }
+    XMN.mediaRefFromHref = mediaRefFromHref;
+    function adjacentIndex(index, size, direction) {
+        if (!Number.isSafeInteger(index) || index < 0 || index >= size)
+            return null;
+        const next = index + direction;
+        return next < 0 || next >= size ? null : next;
+    }
+    XMN.adjacentIndex = adjacentIndex;
+    function findCurrentIndex(items, pathname, profile) {
+        const current = mediaRefFromHref(pathname, profile);
+        if (!current)
+            return null;
+        const exact = items.findIndex((item) => item.key === current.key);
+        if (exact >= 0)
+            return exact;
+        // URLs without /photo/N can only be resolved safely when the status has one item.
+        const sameStatus = items.map((item, i) => ({ item, i })).filter(({ item }) => item.statusId === current.statusId);
+        if (sameStatus.length === 1)
+            return sameStatus[0].i;
+        return null;
+    }
+    XMN.findCurrentIndex = findCurrentIndex;
+    /** Bare ArrowLeft / ArrowRight always belong to X's native image/video UI. */
+    function postShortcutDirection(event) {
+        if (!event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || event.repeat || event.isComposing)
+            return null;
+        if (event.key === 'ArrowRight')
+            return 1;
+        if (event.key === 'ArrowLeft')
+            return -1;
+        return null;
+    }
+    XMN.postShortcutDirection = postShortcutDirection;
+})(XMN || (XMN = {}));
+/// <reference path="./core.ts" />
+/**
+ * MV3 content-script controller. No page-world monkeypatches or network requests.
+ * Bare arrow keys intentionally remain under X's control.
+ */
+var XMN;
+(function (XMN) {
+    const VIEWER_SELECTOR = '[data-testid="swipe-to-dismiss"]';
+    const TILE_SELECTOR = 'li[role="listitem"]';
+    const CLOSE_SELECTOR = [
+        'button[data-testid="app-bar-close"]',
+        '[role="button"][data-testid="app-bar-close"]',
+        'button[aria-label="閉じる"]',
+        '[role="button"][aria-label="閉じる"]',
+        'button[aria-label="Close"]',
+        '[role="button"][aria-label="Close"]',
+    ].join(',');
+    function pause(ms) {
+        return new Promise((resolve) => window.setTimeout(resolve, ms));
+    }
+    function mediaColumn() {
+        return document.querySelector('main [data-testid="primaryColumn"]') ?? document.querySelector('main');
+    }
+    function isEditingTarget(target) {
+        if (!(target instanceof Element))
+            return false;
+        return !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="slider"], video');
+    }
+    function usableTileLink(tile, profile) {
+        const links = Array.from(tile.querySelectorAll('a[href]'));
+        // An explicit photo/video position is less ambiguous than a generic status link.
+        const possibilities = links.map((link) => ({ link, ref: XMN.mediaRefFromHref(link.getAttribute('href') ?? '', profile) }))
+            .filter((candidate) => candidate.ref !== null);
+        const specific = possibilities.find(({ ref }) => ref.kind !== null);
+        if (specific)
+            return specific;
+        // X sometimes uses a plain status URL in an image/video tile.
+        const generic = possibilities[0];
+        if (generic && tile.querySelector('img, video'))
+            return generic;
+        return null;
+    }
+    /** Maintain a stable ordered list of media refs, never cached DOM nodes. */
+    class Controller {
+        constructor() {
+            this.originProfile = null;
+            this.refs = [];
+            this.indexes = new Map();
+            this.viewer = null;
+            this.viewObserver = null;
+            this.listObserver = null;
+            this.observedColumn = null;
+            this.lastPath = '';
+            this.scanTimer = null;
+            this.navigationBusy = false;
+            this.navGeneration = 0;
+            // Observe actual user keyboard input only when the viewer belongs to a media-tab session.
+            document.addEventListener('keydown', (event) => this.onKeyDown(event), true);
+            this.refreshId = window.setInterval(() => this.tick(), 450);
+            this.tick();
+        }
+        resetSession() {
+            this.navGeneration++;
+            this.navigationBusy = false;
+            this.refs = [];
+            this.indexes.clear();
+            this.removeViewerUI();
+            this.stopListObserver();
+            document.querySelectorAll('.xmn-tile-badge').forEach((element) => element.remove());
+            document.querySelectorAll('.xmn-numbered-tile').forEach((element) => element.classList.remove('xmn-numbered-tile'));
+        }
+        stopListObserver() {
+            this.listObserver?.disconnect();
+            this.listObserver = null;
+            this.observedColumn = null;
+            if (this.scanTimer !== null)
+                window.clearTimeout(this.scanTimer);
+            this.scanTimer = null;
+        }
+        tick() {
+            const path = window.location.pathname;
+            const atMedia = XMN.mediaProfileFromPath(path);
+            if (atMedia) {
+                if (this.originProfile !== atMedia) {
+                    this.resetSession();
+                    this.originProfile = atMedia;
+                }
+                this.ensureListObserver();
+                this.scanTiles();
             }
-        } else if (attempts < maxRetries) {
-            attempts++;
-            setTimeout(tryAddingButtons, 100); // 100msごとに再試行
-        } else {
-            console.warn("メディアビューアが見つかりませんでした。ボタンの追加を中止します。");
+            else if (!this.originProfile || !XMN.profileStatusFromPath(path, this.originProfile)) {
+                if (this.originProfile !== null) {
+                    this.resetSession();
+                    this.originProfile = null;
+                }
+            }
+            else {
+                // The timeline is a retained DOM tree beneath the modal. Do NOT index the
+                // status-page recommendations as though they were the originating media tab.
+                this.stopListObserver();
+            }
+            if (path !== this.lastPath)
+                this.lastPath = path;
+            const viewer = this.originProfile && XMN.profileStatusFromPath(path, this.originProfile)
+                ? document.querySelector(VIEWER_SELECTOR) : null;
+            if (viewer && this.originProfile) {
+                this.syncViewer(viewer);
+            }
+            else {
+                this.removeViewerUI();
+            }
+        }
+        ensureListObserver() {
+            const column = mediaColumn();
+            if (!column || column === this.observedColumn)
+                return;
+            this.stopListObserver();
+            this.observedColumn = column;
+            this.listObserver = new MutationObserver(() => {
+                if (this.scanTimer !== null)
+                    return;
+                this.scanTimer = window.setTimeout(() => {
+                    this.scanTimer = null;
+                    if (XMN.mediaProfileFromPath(window.location.pathname) === this.originProfile)
+                        this.scanTiles();
+                }, 100);
+            });
+            this.listObserver.observe(column, { childList: true, subtree: true });
+        }
+        scanTiles() {
+            if (!this.originProfile || XMN.mediaProfileFromPath(window.location.pathname) !== this.originProfile)
+                return;
+            const root = mediaColumn();
+            if (!root)
+                return;
+            for (const tile of Array.from(root.querySelectorAll(TILE_SELECTOR))) {
+                const found = usableTileLink(tile, this.originProfile);
+                if (!found)
+                    continue;
+                const { ref } = found;
+                let index = this.indexes.get(ref.key);
+                if (index === undefined) {
+                    index = this.refs.length;
+                    this.indexes.set(ref.key, index);
+                    this.refs.push(ref);
+                }
+                else {
+                    // Refresh references by value. Old DOM nodes are never persisted.
+                    this.refs[index] = ref;
+                }
+                let badge = tile.querySelector(':scope > .xmn-tile-badge');
+                if (!badge) {
+                    badge = document.createElement('span');
+                    badge.className = 'xmn-tile-badge';
+                    badge.setAttribute('aria-hidden', 'true');
+                    tile.classList.add('xmn-numbered-tile');
+                    tile.appendChild(badge);
+                }
+                const label = String(index + 1);
+                if (badge.textContent !== label)
+                    badge.textContent = label;
+            }
+        }
+        removeViewerUI() {
+            this.viewObserver?.disconnect();
+            this.viewObserver = null;
+            if (this.viewer) {
+                this.viewer.querySelectorAll('.xmn-nav-button, .xmn-status').forEach((element) => element.remove());
+                this.viewer = null;
+            }
+        }
+        syncViewer(viewer) {
+            if (viewer !== this.viewer) {
+                this.removeViewerUI();
+                this.viewer = viewer;
+                this.viewObserver = new MutationObserver(() => {
+                    // X may replace viewer children during /photo/N transitions.
+                    if (this.viewer?.isConnected)
+                        this.ensureViewerButtons();
+                });
+                this.viewObserver.observe(viewer, { childList: true, subtree: true });
+            }
+            this.ensureViewerButtons();
+        }
+        ensureViewerButtons() {
+            const viewer = this.viewer;
+            if (!viewer || !viewer.isConnected)
+                return;
+            for (const [direction, className, text, label] of [
+                [-1, 'xmn-prev', '◀', '前のメディア一覧項目へ (Shift+←)'],
+                [1, 'xmn-next', '▶', '次のメディア一覧項目へ (Shift+→)'],
+            ]) {
+                let button = viewer.querySelector(`.${className}`);
+                if (!button) {
+                    button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = `xmn-nav-button ${className}`;
+                    button.textContent = text;
+                    button.title = label;
+                    button.setAttribute('aria-label', label);
+                    button.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void this.navigate(direction);
+                    });
+                    viewer.appendChild(button);
+                }
+            }
+            let status = viewer.querySelector('.xmn-status');
+            if (!status) {
+                status = document.createElement('div');
+                status.className = 'xmn-status';
+                status.setAttribute('aria-live', 'polite');
+                viewer.appendChild(status);
+            }
+            this.updateViewerState();
+        }
+        activeIndex() {
+            return this.originProfile ? XMN.findCurrentIndex(this.refs, window.location.pathname, this.originProfile) : null;
+        }
+        updateViewerState() {
+            const viewer = this.viewer;
+            if (!viewer)
+                return;
+            const current = this.activeIndex();
+            const prev = viewer.querySelector('.xmn-prev');
+            const next = viewer.querySelector('.xmn-next');
+            if (prev)
+                prev.disabled = this.navigationBusy || current === null || current === 0;
+            // At the last known tile a click may attempt to load additional items.
+            if (next)
+                next.disabled = this.navigationBusy || current === null;
+            const indicator = viewer.querySelector('.xmn-status');
+            if (indicator) {
+                const label = current === null ? '一覧位置を確認中' : `${current + 1} / ${this.refs.length}`;
+                if (indicator.textContent !== label)
+                    indicator.textContent = label;
+            }
+        }
+        onKeyDown(event) {
+            const direction = XMN.postShortcutDirection(event);
+            if (direction === null || !this.viewer?.isConnected || !this.originProfile ||
+                isEditingTarget(event.target) || this.navigationBusy)
+                return;
+            if (this.activeIndex() === null)
+                return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            void this.navigate(direction);
+        }
+        findCloseButton(viewer) {
+            const dialog = viewer.closest('[role="dialog"]');
+            const local = dialog?.querySelector(CLOSE_SELECTOR);
+            if (local)
+                return local;
+            // Do not click an unrelated button if the global query is ambiguous.
+            const matches = document.querySelectorAll(CLOSE_SELECTOR);
+            return matches.length === 1 ? matches[0] : null;
+        }
+        findLiveLink(ref) {
+            if (!this.originProfile)
+                return null;
+            const column = mediaColumn();
+            if (!column)
+                return null;
+            for (const tile of column.querySelectorAll(TILE_SELECTOR)) {
+                const found = usableTileLink(tile, this.originProfile);
+                if (found?.ref.key === ref.key && found.link.isConnected)
+                    return found.link;
+            }
+            return null;
+        }
+        toast(message) {
+            let element = document.querySelector('.xmn-toast');
+            if (!element) {
+                element = document.createElement('div');
+                element.className = 'xmn-toast';
+                element.setAttribute('role', 'status');
+                document.body.appendChild(element);
+            }
+            element.textContent = message;
+            window.setTimeout(() => {
+                if (element?.textContent === message)
+                    element.remove();
+            }, 2800);
+        }
+        async waitForViewerToClose(viewer) {
+            for (let i = 0; i < 12; i++) {
+                if (!viewer.isConnected || !document.querySelector(VIEWER_SELECTOR))
+                    return true;
+                await pause(125);
+            }
+            return !viewer.isConnected;
+        }
+        /** Only called after closing viewer; load by observing new entries, never by a fixed 300ms guess. */
+        async loadNext(targetIndex, generation) {
+            for (let attempt = 0; attempt < 20; attempt++) {
+                if (generation !== this.navGeneration)
+                    return null;
+                this.scanTiles();
+                if (this.refs[targetIndex])
+                    return this.refs[targetIndex];
+                // The content column may be virtualized or the page may already be at its end.
+                if (attempt % 3 === 0)
+                    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
+                await pause(200);
+            }
+            this.scanTiles();
+            return this.refs[targetIndex] ?? null;
+        }
+        async navigate(direction) {
+            const currentIndex = this.activeIndex();
+            const oldViewer = this.viewer;
+            if (this.navigationBusy || currentIndex === null || !oldViewer || !this.originProfile)
+                return;
+            const nextIndex = currentIndex + direction;
+            if (nextIndex < 0)
+                return;
+            const generation = this.navGeneration;
+            const profile = this.originProfile;
+            const currentRef = this.refs[currentIndex];
+            const closeButton = this.findCloseButton(oldViewer);
+            if (!closeButton) {
+                this.toast('Xの閉じるボタンが見つからず、移動を中止しました');
+                return;
+            }
+            this.navigationBusy = true;
+            this.updateViewerState();
+            try {
+                closeButton.click();
+                if (!await this.waitForViewerToClose(oldViewer)) {
+                    this.toast('ビューアを閉じられませんでした');
+                    return;
+                }
+                if (generation !== this.navGeneration || XMN.mediaProfileFromPath(window.location.pathname) !== profile)
+                    return;
+                const destination = this.refs[nextIndex] ?? (direction === 1 ? await this.loadNext(nextIndex, generation) : null);
+                if (generation !== this.navGeneration)
+                    return;
+                const link = destination ? this.findLiveLink(destination) : null;
+                if (link) {
+                    link.click();
+                }
+                else {
+                    // Don't navigate to a guessed URL or re-open an unrelated status.
+                    this.toast('次の項目を見つけられませんでした。一覧で続きを読み込んでください');
+                    // Restore current viewer when its source is still present.
+                    this.findLiveLink(currentRef)?.click();
+                }
+            }
+            catch (error) {
+                console.warn('X Media Navigator navigation cancelled:', error);
+                this.toast('メディアの切り替えに失敗しました');
+            }
+            finally {
+                this.navigationBusy = false;
+                this.updateViewerState();
+            }
         }
     }
-
-    tryAddingButtons();
+    XMN.Controller = Controller;
+})(XMN || (XMN = {}));
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => new XMN.Controller(), { once: true });
 }
-
-
-    /**
-     * メディアビューアの変更を監視します。
-     */
-    function observeMediaViewer(mediaContainer) {
-        if (mediaObserver) {
-            mediaObserver.disconnect();
-        }
-
-        mediaObserver = new MutationObserver(() => {
-            const existingButtons = mediaContainer.querySelectorAll(".custom-navigation");
-            if (existingButtons.length === 0) {
-                console.log("メディアビューアが更新されました。ボタンを再追加します。");
-                addNavigationButtons(mediaContainer);
-                displayCurrentTileNumber();
-            }
-        });
-
-        mediaObserver.observe(mediaContainer, { childList: true, subtree: true });
-
-        // メディアビューアが開かれた際にキーボードイベントリスナーを追加
-        document.addEventListener('keydown', handleKeyDown, true); // キャプチャリングフェーズで追加
-    }
-
-    /**
-     * ナビゲーションボタンを追加します。
-     */
-    function addNavigationButtons(container) {
-        const nextButton = document.createElement("div");
-        nextButton.innerText = "▶";
-        nextButton.classList.add("custom-navigation", "next-button");
-
-        const prevButton = document.createElement("div");
-        prevButton.innerText = "◀";
-        prevButton.classList.add("custom-navigation", "prev-button");
-
-        container.appendChild(nextButton);
-        container.appendChild(prevButton);
-
-        // 次へボタンのクリックイベント
-        nextButton.addEventListener("click", (event) => {
-            event.stopPropagation();
-            if (currentTileNumber < tileNumberMap.size) {
-                closeMediaAndThen(() => {
-                    navigateToTile(1); // 次のタイルへ移動
-                });
-            } else {
-                // 最後のタイルの場合、メディアビューアを閉じてページをスクロールし、新しいタイルに遷移
-                console.log("最後のタイルです。ページをスクロールして新しいタイルを読み込みます。");
-                closeMediaAndThen(() => {
-                    loadMoreTiles(() => {
-                        // 新しいタイルに自動的に遷移
-                        navigateToTile(1);
-                    });
-                });
-            }
-        });
-
-        // 前へボタンのクリックイベント
-        prevButton.addEventListener("click", (event) => {
-            event.stopPropagation();
-            if (currentTileNumber > 1) {
-                closeMediaAndThen(() => {
-                    navigateToTile(-1); // 前のタイルへ移動
-                });
-            }
-        });
-
-        // ボタンの初期状態を更新
-        updateNavigationButtons();
-    }
-
-
-    /**
-     * メディアビューアを閉じてコールバックを実行します。
-     */
-    function closeMediaAndThen(callback) {
-        const closeButton = document.querySelector(closeButtonSelector);
-        if (closeButton) {
-            closeButton.click();
-            // タイムアウトを300msに延長
-            setTimeout(() => {
-                callback();
-            }, 300);
-        } else {
-            callback();
-        }
-    }
-
-    /**
-     * 現在のタイル番号を設定します。
-     */
-    function setCurrentTileNumber(statusId) {
-        if (tileIndexMap.has(statusId)) {
-            currentTileNumber = tileIndexMap.get(statusId);
-        }
-    }
-
-    /**
-     * タイルを移動します。
-     */
-    function navigateToTile(direction) {
-        currentTileNumber += direction;
-
-        if (currentTileNumber < 1) {
-            currentTileNumber = 1;
-        } else if (currentTileNumber > tileNumberMap.size) {
-            currentTileNumber = tileNumberMap.size;
-        }
-
-        const targetTile = tileNumberMap.get(currentTileNumber);
-        if (targetTile) {
-            const link = targetTile.querySelector("a[role='link']");
-            if (link) link.click();
-            console.log(`移動: ${currentTileNumber} 番のタイルへ`);
-            displayCurrentTileNumber();
-            updateNavigationButtons(); // ナビゲーションボタンの状態を更新
-        }
-    }
-
-    /**
-     * 現在のタイル番号を表示します。
-     */
-    function displayCurrentTileNumber() {
-        const mediaContainer = document.querySelector("div[data-testid='swipe-to-dismiss']");
-        if (!mediaContainer) return;
-
-        let statusText = mediaContainer.querySelector(".current-tile-number");
-        if (!statusText) {
-            statusText = document.createElement("div");
-            statusText.classList.add("current-tile-number");
-            // スタイルの設定は外部CSSで行う前提
-            mediaContainer.appendChild(statusText);
-        }
-
-        statusText.textContent = `現在のタイル番号: ${currentTileNumber}`;
-    }
-
-    /**
-     * ナビゲーションボタンの有効/無効を更新します。
-     */
-    function updateNavigationButtons() {
-        const mediaContainer = document.querySelector("div[data-testid='swipe-to-dismiss']");
-        if (!mediaContainer) return;
-    
-        const nextButton = mediaContainer.querySelector(".next-button");
-        const prevButton = mediaContainer.querySelector(".prev-button");
-    
-        if (nextButton && prevButton) {
-            // 「戻る」ボタンの表示/非表示を制御
-            if (currentTileNumber <= 1) {
-                prevButton.style.display = 'none';
-            } else {
-                prevButton.style.display = 'block';
-            }
-    
-            // 「次へ」ボタンの有効/無効は既存のロジックを維持
-            if (currentTileNumber >= tileNumberMap.size) {
-                nextButton.classList.add('disabled');
-            } else {
-                nextButton.classList.remove('disabled');
-            }
-        }
-    }
-
-    /**
-     * 新しいタイルを読み込むためにページをスクロールします。
-     */
-    function loadMoreTiles(callback) {
-        console.log("ページをスクロールして新しいタイルを読み込みます。");
-        // ページの最下部までスクロール
-        window.scrollTo({
-            top: document.body.scrollHeight,
-            behavior: 'smooth'
-        });
-
-        // スクロール完了を検知するためにスクロールイベントを監視
-        let scrollTimeout;
-        function onScroll() {
-            clearTimeout(scrollTimeout);
-            scrollTimeout = setTimeout(() => {
-                window.removeEventListener('scroll', onScroll);
-                console.log("新しいタイルが読み込まれました。");
-                // 新しいタイルを追加
-                addAbsoluteNumbersToTiles();
-                updateNavigationButtons();
-                if (typeof callback === 'function') {
-                    callback();
-                }
-            }, 300); // スクロール後0.3秒待機（必要に応じて調整）
-        }
-
-        window.addEventListener('scroll', onScroll);
-    }
-
-    /**
-     * キーボードの左右矢印キーでナビゲーションを実行します。
-     */
-    function handleKeyDown(event) {
-        const mediaContainer = document.querySelector("div[data-testid='swipe-to-dismiss']");
-        if (!mediaContainer) return; // メディアビューアが開いていない場合は無視
-
-        // デバッグ用にキー情報をログに出力
-        console.log(`キーが押されました: key='${event.key}', code='${event.code}'`);
-
-        // 使用するキーを明示的に定義
-        const rightKeys = ['ArrowRight', 'Right'];
-        const leftKeys = ['ArrowLeft', 'Left'];
-
-        if (rightKeys.includes(event.key) || rightKeys.includes(event.code)) {
-            if (currentTileNumber >= tileNumberMap.size) {
-                console.log("右矢印キーが押されましたが、既に最後のタイルです。ページをスクロールして新しいタイルを読み込みます。");
-                // 最後のタイルで右矢印キーが押された場合、ページをスクロールして新しいタイルを読み込み、自動で次のタイルに遷移
-                event.preventDefault(); // デフォルトの動作を防止
-                event.stopPropagation();
-                event.stopImmediatePropagation();
-                closeMediaAndThen(() => {
-                    loadMoreTiles(() => {
-                        navigateToTile(1); // 新しく読み込まれたタイルに遷移
-                    });
-                });
-                return; // 処理を終了
-            }
-            // 右矢印キーが押された場合、次のタイルへ移動
-            event.preventDefault(); // デフォルトの動作を防止
-            event.stopPropagation();
-            event.stopImmediatePropagation();
-            console.log("右矢印キーが押されました。次のタイルへ移動します。");
-            closeMediaAndThen(() => {
-                navigateToTile(1); // 次のタイルへ移動
-            });
-        } else if (leftKeys.includes(event.key) || leftKeys.includes(event.code)) {
-            if (currentTileNumber <= 1) {
-                console.log("左矢印キーが押されましたが、既に最初のタイルです。");
-                return; // 左端の場合は無視
-            }
-            // 左矢印キーが押された場合、前のタイルへ移動
-            event.preventDefault(); // デフォルトの動作を防止
-            event.stopPropagation();
-            event.stopImmediatePropagation();
-            console.log("左矢印キーが押されました。前のタイルへ移動します。");
-            closeMediaAndThen(() => {
-                navigateToTile(-1); // 前のタイルへ移動
-            });
-        }
-    }
-
-
-    /**
-     * URLの変更を監視し、ページ状態を切り替えます。
-    */
-    function monitorURLChange() {
-        setInterval(() => {
-            const newPath = window.location.pathname;
-    
-            if (newPath !== currentPath) {
-                // まず previousPath を currentPath に更新
-                previousPath = currentPath; 
-                currentPath = newPath;
-    
-                console.log(`\n🔄 URLが変更されました: ${previousPath} → ${currentPath}`);
-                console.log(`🔎 previousPath: ${previousPath}, newPath: ${currentPath}`);
-    
-                // 条件判定: 前のページが /media で、現在のページが /status/ の場合のみ許可
-                const isComingFromMedia = previousPath.includes("/media");
-                const isStatusPage = currentPath.includes("/status/");
-    
-                console.log(`✅ isComingFromMedia: ${isComingFromMedia}, isStatusPage: ${isStatusPage}`);
-    
-                if (isStatusPage && isComingFromMedia) {
-                    console.log("🟢 前のページが /media でした。ボタンを追加します。");
-                    checkAndAddButtons();
-                } else {
-                    console.log("🔴 ボタンは追加しません。");
-                }
-    
-                // ページ状態の切り替え
-                const newIsMediaPage = isMediaPage();
-                console.log(`🔧 isMediaPage: ${newIsMediaPage}, isCurrentlyMediaPage: ${isCurrentlyMediaPage}`);
-    
-                if (newIsMediaPage && !isCurrentlyMediaPage) {
-                    console.log("🟢 メディアページに入ったので処理を開始します。");
-                    onMediaPageLoad();
-                } else if (!newIsMediaPage && isCurrentlyMediaPage) {
-                    console.log("🔴 メディアページから離れたので処理を停止します。");
-                    onExitMediaPage();
-                }
-    
-                console.log(`📝 更新済み: previousPath = ${previousPath}, currentPath = ${currentPath}`);
-            }
-        }, 100); // 100msごとにチェック
-    }
-    
-    
-    // 初期実行
-    currentPath = window.location.pathname;
-    isCurrentlyMediaPage = isMediaPage();
-    if (isCurrentlyMediaPage) {
-        onMediaPageLoad();
-    }
-    monitorURLChange(); // URL変更の監視を開始
-
-})();
+else {
+    new XMN.Controller();
+}

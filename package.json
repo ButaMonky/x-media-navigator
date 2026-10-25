@@ -1,14 +1,15 @@
 {
   "name": "x-media-navigator",
-  "version": "0.0.0",
+  "version": "2.0.0-dev.1",
   "private": true,
-  "type": "module",
-  "description": "Private baseline analysis and future regression tests for an X media navigation extension",
+  "description": "TypeScript rebuild of X media profile navigation; private development",
   "scripts": {
-    "check": "node --check extension/content_script.js && node --check extension/background.js",
-    "test": "node --test tests/*.test.mjs"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "npm run build && node --check extension/content_script.js",
+    "test": "npm run build && tsc -p tsconfig.core.json && node --test tests/*.test.mjs",
+    "test:browser": "npm run build && node --test tests/browser.test.mjs"
   },
-  "engines": {
-    "node": ">=20"
-  }
+  "devDependencies": { "typescript": "5.8.3" },
+  "engines": { "node": ">=20" }
 }

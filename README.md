@@ -1,35 +1,52 @@
-# X Media Navigator — private development
+# X Media Navigator — TypeScript rebuild (private beta)
 
-X (Twitter) のプロフィール「メディア」タブ用ナビゲーション拡張の解析・改良プロジェクト。
-元製品の著作者・配布元とは独立した非公式の開発用リポジトリです。
+X (Twitter) プロフィールのメディアタブから開いた画像・動画を、一覧順に移動する非公式Chrome拡張機能の開発版です。
 
-## 現在の状態 (2026-10-24)
-- Chrome Web Store 版 v1.3 (extension ID: fkljpdamgibhefcblfeabdhkfenmbnik) をユーザーのインストール環境から**読み取りのみ**で取得。
-- `upstream/chrome-v1.3/` は改変禁止の参照用スナップショット。Chrome生成の `_metadata/` は含めない。
-- `extension/` は改良用コピー。現段階で動作ロジックは同一。`manifest.json` の拡張名を開発用に変更し、`key` と `update_url` を除外した。
-- **元のインストール済み拡張機能は未変更**。X上での動作・回帰テストはまだ未実施。
-- 静的解析で左右キーがX標準の画像送りを奪う直接原因を確認。詳細: `docs/analysis/baseline-v1.3.md`。
+**状態:** TypeScriptリファクタリングの検証ブランチ。**X実サイトでの動作確認が済むまでリリース不可**。既存のChromeウェブストア版は書き換えません。
 
-## ディレクトリ
-- `upstream/chrome-v1.3/`: 配布済みの参照スナップショット（編集禁止）
-- `extension/`: ローカル開発用拡張（Manifest V3）
-- `docs/PROVENANCE.md`: 出所・検証情報・ライセンス上の注意
-- `docs/analysis/baseline-v1.3.md`: 初回ソースコード監査
-- `docs/TEST_PLAN.md`: 再現・回帰テスト設計
-- `tests/`: 将来の動作テスト項目と配布物の健全性検査
+## 操作
 
-## 開発ルール
-1. まず原因・根拠・対象コードを記録し、最小修正と回帰テストをセットにする。
-2. 元拡張の上書きやChromeのプロファイルへの書き込みをしない。
-3. テスト用の開発版とストア版を同時に有効化しない（キー処理などが競合する）。
-4. Cookie、認証トークン、実ユーザーの投稿、閲覧履歴、Chromeプロファイルをコミットしない。
-5. GitHub Issuesに発見・仮説・再現・修正済み・検証待ちを区別して記録する。
+| 操作 | 挙動 |
+| --- | --- |
+| `←` / `→` | **X本来の動作を優先**。投稿内の画像切替・動画操作を乗っ取らない |
+| `Shift + ←` / `Shift + →` | 前後の**メディア一覧タイル**に移動 |
+| 画面上の `◀` / `▶` | 前後の一覧タイルに移動 |
 
-## 検証
-Node.js があれば `npm test` および `npm run check` で基本的な健全性検査を実行可能。
-ブラウザ上の結合テストは別途必要。TODO項目はテスト済みを意味しない。
+`/ユーザー名/media` の一覧から開いたビューアでのみ動きます。別プロフィールの投稿や通常の投稿ビューアでは勝手に動きません。
 
-## ライセンス
-対応する Firefox アドオン v1.3 の配布ページは MIT License と表示している。
-Chrome配布ファイル中には明示的な LICENSE ファイルが見つからなかったため、再配布時は出典と著作者表示を再確認すること。
-このリポジトリを第三者に公開する前に権利確認と第三者素材の点検を行う。
+## ディレクトリ構成
+
+- `src/core.ts` — URL・メディア識別子・ショートカットの純粋ロジック
+- `src/content.ts` — 状態管理、DOM監視、ナビゲーションの実装
+- `extension/` — Chromeが直接読み込む配布用ディレクトリ。JavaScriptは**自動生成**。
+- `upstream/chrome-v1.3/` — Chrome v1.3の参照用スナップショット。**編集禁止**。
+- `tests/` — 単体・模擬DOM・任意のChromiumテスト
+- `docs/analysis/` — 初期コード監査・呼び出し関係
+- `docs/MIGRATION_V2.md` — 変更点・リスク・検証の段階
+- `docs/IDEAS.md` — 利便性改善の優先順位
+
+## 開発・テスト
+
+Node.js 20以上が必要です。
+
+```sh
+npm install
+npm run build
+npm test
+npm run check
+```
+
+Chromeの拡張機能として読み込むのは **`extension/`** です。TypeScriptファイルを直接読み込むことはできません。
+開発版をテストするときはChromeの「デベロッパーモード」から「パッケージ化されていない拡張機能を読み込む」を選択してください。**元のストア版は一時的に無効化**してください。
+
+`XMN_RUN_CHROMIUM=1 npm run test:browser` は、Chromiumが利用できる環境でのみ動く任意の擬似X統合テストです。Xの実サイト検証とは異なります。
+
+## 維持すべき原則
+
+1. TypeScriptを単一の開発正本とし、`extension/content_script.js` は毎回ビルドで更新する。
+2. Chrome配布済み原本・既存インストール・ユーザープロファイルには一切書き込まない。
+3. 動作していない機能を「修正済み」とせず、静的証拠・自動テスト・X実機確認を分ける。
+4. 追加権限、閲覧履歴の保存、外部サーバーへの送信を機能の前提にしない。
+5. Firefox側のMIT表記とChrome配布物の権利関係を確認するまで第三者公開しない。
+
+初期解析: `docs/analysis/baseline-v1.3.md`。今後の機能案は `docs/IDEAS.md`。
