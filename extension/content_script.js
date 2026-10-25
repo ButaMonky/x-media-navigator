@@ -811,9 +811,9 @@ var XMN;
                     if (last && typeof last.scrollIntoView === 'function') {
                         last.scrollIntoView({ block: 'end', behavior: 'auto' });
                     }
-                    else {
-                        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
-                    }
+                    // Some timelines listen for window scroll instead of item visibility.
+                    // Keep the original scroll fallback even when the nested scroll succeeds.
+                    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
                 }
                 await pause(200);
             }

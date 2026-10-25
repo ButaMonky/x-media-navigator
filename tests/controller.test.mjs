@@ -530,10 +530,10 @@ test('lazy loading scrolls the visible final tile, including nested media lists'
   context.window.setTimeout = (fn) => setTimeout(fn, 1);
   document.documentElement = { scrollHeight: 9000 };
   const instance = { navGeneration: 2, refs: [ref('/alice/status/101/photo/1')], scanTiles() {
-    if (calls.length >= 2 && this.refs.length === 1) this.refs.push(ref('/alice/status/102/photo/1'));
+    if (calls.length >= 4 && this.refs.length === 1) this.refs.push(ref('/alice/status/102/photo/1'));
   }};
   const next = await proto.loadNextPost.call(instance, '101', 2);
   assert.equal(next.statusId, '102');
-  assert.deepEqual(calls, ['end', 'end']);
+  assert.deepEqual(calls, ['end', 'window', 'end', 'window']);
   state.pathname = '/alice/media';
 });
