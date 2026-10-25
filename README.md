@@ -35,6 +35,10 @@ X (Twitter) プロフィールのメディアタブから開いた画像・動�
 - `docs/IDEAS.md` — 利便性改善の優先順位
 - `docs/research/2026-10-25-media-timeline.md` — 2026年の写真/動画タブと画面操作の調査根拠
 
+## インストール用の非公開ベータ
+
+**[ZIPの入手・導入手順](docs/INSTALL_BETA.md)** にGitHub Actionsからのダウンロード方法を記載しました。実際のChromeを使用する検証表は **[QA_BETA_V221.md](docs/QA_BETA_V221.md)**。ベータZIPを利用するだけならNode.jsやTypeScriptは必要ありません。既存のWebストア版は変更しません。
+
 ## 開発・テスト
 
 Node.js 20以上が必要です。

@@ -26,3 +26,30 @@ jobs:
           fi
       - name: Verify committed compiled JS is up to date
         run: git diff --exit-code -- extension/content_script.js
+      - name: Verify private beta bundle and rerun Chromium (push only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/research/media-filter-boundary-v22'
+        shell: bash
+        run: |
+          set -euo pipefail
+          browser="$(command -v google-chrome || command -v chromium || true)"
+          if [[ -z "$browser" ]]; then
+            echo 'Beta packaging blocked: Chromium is required, not an optional skipped test.'
+            exit 1
+          fi
+          XMN_RUN_CHROMIUM=1 CHROMIUM_PATH="$browser" npm run test:browser
+          node scripts/verify-beta.mjs
+      - name: Upload installable private beta (unpacked Chrome extension)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/research/media-filter-boundary-v22'
+        uses: actions/upload-artifact@v4
+        with:
+          name: X-Media-Navigator-v2.2.1-beta1
+          path: |
+            extension/manifest.json
+            extension/content_script.js
+            extension/style.css
+            extension/icon16.png
+            extension/icon48.png
+            extension/icon128.png
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 9
