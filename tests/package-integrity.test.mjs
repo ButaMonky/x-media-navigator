@@ -14,7 +14,8 @@ const get = (base, path) => readFileSync(resolve(base, path));
 test('development manifest is a distinct, least-permission MV3 extension', () => {
   const m = JSON.parse(get(dev, 'manifest.json').toString('utf8'));
   assert.equal(m.manifest_version, 3);
-  assert.equal(m.version, '2.0.0');
+  const packageVersion = JSON.parse(get(root, 'package.json').toString('utf8')).version;
+  assert.equal(m.version, packageVersion.replace(/-dev\..*$/, ''));
   for (const key of ['key', 'update_url', 'host_permissions', 'permissions', 'background']) {
     assert.equal(Object.hasOwn(m, key), false, key);
   }
