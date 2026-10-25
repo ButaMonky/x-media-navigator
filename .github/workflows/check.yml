@@ -15,5 +15,14 @@ jobs:
       - run: npm install --ignore-scripts --no-audit --no-fund
       - run: npm test
       - run: npm run typecheck
+      - name: Synthetic browser navigation check (when Chrome is installed)
+        run: |
+          if command -v google-chrome >/dev/null 2>&1; then
+            XMN_RUN_CHROMIUM=1 CHROMIUM_PATH="$(command -v google-chrome)" npm run test:browser
+          elif command -v chromium >/dev/null 2>&1; then
+            XMN_RUN_CHROMIUM=1 CHROMIUM_PATH="$(command -v chromium)" npm run test:browser
+          else
+            echo "Chrome is not installed; browser integration test not run."
+          fi
       - name: Verify committed compiled JS is up to date
         run: git diff --exit-code -- extension/content_script.js
