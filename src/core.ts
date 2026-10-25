@@ -45,13 +45,16 @@ namespace XMN {
     return indexes.size === 4 && [1, 2, 3, 4].every((index) => indexes.has(index));
   }
 
-  /** Accept only a clearly displayed image counter, not generic UI text. */
+  /** Parse only explicit media counters; Japanese "N枚中M枚目" lists total first. */
   export function parseGalleryCounter(label: string): { current: number; total: number } | null {
-    const match = /^(?:(?:image|photo|picture|画像|写真)\s*)?(\d+)\s*(?:\/|of|枚中)\s*(\d+)\s*(?:枚目|枚)?$/i.exec(label.trim());
-    if (!match) return null;
-    const current = Number(match[1]), total = Number(match[2]);
-    return Number.isInteger(current) && current >= 1 && total <= 4 && total >= current
-      ? { current, total } : null;
+    const text = label.trim().normalize('NFKC');
+    const japanese = /^(?:全\s*)?(\d+)\s*枚中\s*(\d+)\s*枚目$/.exec(text);
+    const standard = /^(?:(?:image|photo|picture|画像|写真)\s*)?(\d+)\s*(?:\/|of)\s*(\d+)\s*(?:枚目|枚)?$/i.exec(text);
+    if (!japanese && !standard) return null;
+    const current = Number(japanese ? japanese[2] : standard![1]);
+    const total = Number(japanese ? japanese[1] : standard![2]);
+    return Number.isInteger(current) && Number.isInteger(total) && current >= 1 &&
+      total >= current && total <= 4 ? { current, total } : null;
   }
 
   export function profileStatusFromPath(pathname: string, profile: string): boolean {

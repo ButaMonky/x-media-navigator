@@ -503,3 +503,37 @@ test('filter normalization preserves lazy-loaded next post only when media grid 
   assert.equal(controller.navigationBusy,false);
   state.pathname='/alice/media';state.search='';
 });
+test('native gallery controls with Japanese directional labels stay owned by X', () => {
+  context.HTMLButtonElement = FakeElement;
+  const next = new FakeElement('button', { 'aria-label': '次の画像へ' });
+  const prev = new FakeElement('button', { 'aria-label': '前の写真へ' });
+  next.disabled = false;
+  prev.disabled = false;
+  const viewer = new FakeElement('div');
+  viewer.querySelectorAll = (selector) => selector === '[aria-label], [title]' ? [next, prev] : [];
+  assert.equal(proto.nativeGalleryArrowAvailable.call({}, viewer, 1), true);
+  assert.equal(proto.nativeGalleryArrowAvailable.call({}, viewer, -1), true);
+  next.disabled = true;
+  assert.equal(proto.nativeGalleryArrowAvailable.call({}, viewer, 1), false);
+  prev.attrs['aria-disabled'] = 'true';
+  assert.equal(proto.nativeGalleryArrowAvailable.call({}, viewer, -1), false);
+});
+
+test('lazy loading scrolls the visible final tile, including nested media lists', async () => {
+  state.pathname = '/alice/media';
+  const tile = makeTile('/alice/status/101/photo/1').tile;
+  const calls = [];
+  tile.scrollIntoView = (options) => calls.push(options.block);
+  state.root = new FakeElement('div');
+  state.root.tiles = [tile];
+  context.window.scrollTo = () => calls.push('window');
+  context.window.setTimeout = (fn) => setTimeout(fn, 1);
+  document.documentElement = { scrollHeight: 9000 };
+  const instance = { navGeneration: 2, refs: [ref('/alice/status/101/photo/1')], scanTiles() {
+    if (calls.length >= 2 && this.refs.length === 1) this.refs.push(ref('/alice/status/102/photo/1'));
+  }};
+  const next = await proto.loadNextPost.call(instance, '101', 2);
+  assert.equal(next.statusId, '102');
+  assert.deepEqual(calls, ['end', 'end']);
+  state.pathname = '/alice/media';
+});

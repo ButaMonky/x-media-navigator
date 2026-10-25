@@ -149,3 +149,20 @@ test('recognizes only explicit bounded gallery counters', () => {
     assert.equal(XMN.parseGalleryCounter(label), null, label);
   }
 });
+test('Japanese photo counters preserve total/current ordering and full-width digits', () => {
+  const valid = [
+    ['3枚中2枚目', 2, 3],
+    ['全3枚中3枚目', 3, 3],
+    ['全４枚中４枚目', 4, 4],
+    ['画像 ２／３', 2, 3],
+    ['写真 1/1', 1, 1],
+  ];
+  for (const [label, current, total] of valid) {
+    const count = XMN.parseGalleryCounter(label);
+    assert.equal(count?.current, current, label);
+    assert.equal(count?.total, total, label);
+  }
+  for (const label of ['2枚中3枚目', '5枚中1枚目', '全3枚中4枚目', '3/5', '画像 2/3 件']) {
+    assert.equal(XMN.parseGalleryCounter(label), null, label);
+  }
+});

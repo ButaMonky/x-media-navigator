@@ -36,14 +36,17 @@ var XMN;
         return indexes.size === 4 && [1, 2, 3, 4].every((index) => indexes.has(index));
     }
     XMN.completeFourPhotoSet = completeFourPhotoSet;
-    /** Accept only a clearly displayed image counter, not generic UI text. */
+    /** Parse only explicit media counters; Japanese "N枚中M枚目" lists total first. */
     function parseGalleryCounter(label) {
-        const match = /^(?:(?:image|photo|picture|画像|写真)\s*)?(\d+)\s*(?:\/|of|枚中)\s*(\d+)\s*(?:枚目|枚)?$/i.exec(label.trim());
-        if (!match)
+        const text = label.trim().normalize('NFKC');
+        const japanese = /^(?:全\s*)?(\d+)\s*枚中\s*(\d+)\s*枚目$/.exec(text);
+        const standard = /^(?:(?:image|photo|picture|画像|写真)\s*)?(\d+)\s*(?:\/|of)\s*(\d+)\s*(?:枚目|枚)?$/i.exec(text);
+        if (!japanese && !standard)
             return null;
-        const current = Number(match[1]), total = Number(match[2]);
-        return Number.isInteger(current) && current >= 1 && total <= 4 && total >= current
-            ? { current, total } : null;
+        const current = Number(japanese ? japanese[2] : standard[1]);
+        const total = Number(japanese ? japanese[1] : standard[2]);
+        return Number.isInteger(current) && Number.isInteger(total) && current >= 1 &&
+            total >= current && total <= 4 ? { current, total } : null;
     }
     XMN.parseGalleryCounter = parseGalleryCounter;
     function profileStatusFromPath(pathname, profile) {
@@ -167,8 +170,8 @@ var XMN;
 (function (XMN) {
     const VIEWER_SELECTOR = '[data-testid="swipe-to-dismiss"]';
     const TILE_SELECTOR = 'li[role="listitem"]';
-    const NATIVE_NEXT = /^(next( (photo|image))?|次の(画像|写真)|次へ)$/i;
-    const NATIVE_PREVIOUS = /^(prev(ious)?( (photo|image))?|前の(画像|写真)|前へ)$/i;
+    const NATIVE_NEXT = /^(next(?: (?:photo|image|media))?|次の(?:画像|写真|メディア)(?:へ)?|次へ)$/i;
+    const NATIVE_PREVIOUS = /^(prev(?:ious)?(?: (?:photo|image|media))?|前の(?:画像|写真|メディア)(?:へ)?|前へ)$/i;
     const CLOSE_SELECTOR = [
         'button[data-testid="app-bar-close"]',
         '[role="button"][data-testid="app-bar-close"]',
@@ -800,9 +803,18 @@ var XMN;
                 const nextIndex = XMN.adjacentPostIndex(this.refs, statusId, 1);
                 if (nextIndex !== null)
                     return this.refs[nextIndex];
-                // X owns infinite scrolling. Only scroll the already-open media timeline.
-                if (attempt % 3 === 0)
-                    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
+                // Prefer scrolling the final *visible media tile*. scrollIntoView also
+                // reaches nested scroll containers, unlike window.scrollTo alone.
+                if (attempt % 3 === 0) {
+                    const tiles = mediaColumn()?.querySelectorAll(TILE_SELECTOR);
+                    const last = tiles?.length ? tiles[tiles.length - 1] : null;
+                    if (last && typeof last.scrollIntoView === 'function') {
+                        last.scrollIntoView({ block: 'end', behavior: 'auto' });
+                    }
+                    else {
+                        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
+                    }
+                }
                 await pause(200);
             }
             this.scanTiles();

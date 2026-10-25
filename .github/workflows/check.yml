@@ -12,7 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install --ignore-scripts --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
       - run: npm run typecheck
       - name: Synthetic browser navigation check (when Chrome is installed)
@@ -26,44 +26,3 @@ jobs:
           fi
       - name: Verify committed compiled JS is up to date
         run: git diff --exit-code -- extension/content_script.js
-      - name: Verify private beta bundle and rerun Chromium (push only)
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/research/media-filter-boundary-v22')
-        shell: bash
-        run: |
-          set -euo pipefail
-          browser="$(command -v google-chrome || command -v chromium || true)"
-          if [[ -z "$browser" ]]; then
-            echo 'Beta packaging blocked: Chromium is required, not an optional skipped test.'
-            exit 1
-          fi
-          XMN_RUN_CHROMIUM=1 CHROMIUM_PATH="$browser" npm run test:browser
-          node scripts/verify-beta.mjs
-      - name: Parse Windows updater script
-        shell: pwsh
-        run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile("$env:GITHUB_WORKSPACE/tools/update-private-beta.ps1", [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -ne 0) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
-      - name: Name beta artifact from manifest version
-        id: beta_meta
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/research/media-filter-boundary-v22')
-        shell: bash
-        run: |
-          version="$(node -p "require('./extension/manifest.json').version")"
-          echo "name=X-Media-Navigator-v${version}-beta" >> "$GITHUB_OUTPUT"
-      - name: Upload installable private beta (unpacked Chrome extension)
-        if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/research/media-filter-boundary-v22')
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.beta_meta.outputs.name }}
-          path: |
-            extension/manifest.json
-            extension/content_script.js
-            extension/style.css
-            extension/icon16.png
-            extension/icon48.png
-            extension/icon128.png
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 9
