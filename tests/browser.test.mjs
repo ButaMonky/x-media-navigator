@@ -128,6 +128,20 @@ async function exercise() {
   key('ArrowRight');
   await wait(400);
   result('missing close button safely aborts',location.pathname.endsWith('/22/photo/1') && !!document.getElementById('modal'));
+
+  // A previously observed destination may be removed by X's virtualized grid.
+  // Preflight must preserve the current viewer rather than closing and losing it.
+  document.getElementById('modal')?.remove();
+  history.replaceState({},'', '/alice/media');
+  await wait(550);
+  source('/alice/status/22/photo/1').click();
+  await wait(580);
+  source('/alice/status/33/photo/1').closest('li').remove();
+  const vanishedKey=key('ArrowRight');
+  await wait(350);
+  result('evicted known destination keeps gallery open',
+    vanishedKey.defaultPrevented && location.pathname.endsWith('/22/photo/1') &&
+    !!document.getElementById('modal'));
   // X can switch only the media filter query while retaining the previous list DOM.
   document.getElementById('modal')?.remove();
   history.replaceState({},'', '/alice/media?filter=photo');
@@ -190,7 +204,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 13, report);
+    assert.equal(report.split('|').length, 14, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

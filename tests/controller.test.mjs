@@ -302,3 +302,45 @@ test('unchanged media DOM is not rescanned on every route poll', () => {
   assert.equal(scans,1,'initial observer attachment scans once, then waits for DOM changes');
   state.pathname='/alice/media';state.search='';
 });
+
+
+test('virtualized missing destination keeps the gallery open instead of losing its position', async () => {
+  state.pathname='/alice/status/11/photo/1'; state.search='?filter=photo';
+  const viewer={isConnected:true}; let closeAttempts=0; const messages=[];
+  const instance={
+    navigationBusy:false,navGeneration:1,originProfile:'alice',originTimeline:'alice|photo',viewer,
+    refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
+    activeIndex(){return 0;},
+    findLiveLink(){return null;},
+    findCloseButton(){closeAttempts++;return {click(){viewer.isConnected=false;}};},
+    toast(message){messages.push(message);},updateViewerState(){},
+  };
+  await proto.navigate.call(instance,1);
+  assert.equal(closeAttempts,0);
+  assert.equal(viewer.isConnected,true);
+  assert.equal(instance.navigationBusy,false);
+  assert.match(messages[0],/ビューアは閉じません/);
+  state.pathname='/alice/media'; state.search='';
+});
+
+test('SPA filter mismatch after modal close never opens a stale timeline ref', async () => {
+  state.pathname='/alice/status/11/photo/1'; state.search='';
+  const viewer={isConnected:true}; let closeAttempts=0,clicked=0;const messages=[];
+  const instance={
+    navigationBusy:false,navGeneration:3,originProfile:'alice',originTimeline:'alice|photo',viewer,
+    refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
+    activeIndex(){return 0;},
+    findLiveLink(){return {click(){clicked++;}};},
+    findCloseButton(){return {click(){
+      closeAttempts++;viewer.isConnected=false;state.pathname='/alice/media';state.search='?filter=video';
+    }};},
+    async waitForViewerToClose(){return true;},
+    toast(message){messages.push(message);},updateViewerState(){},
+  };
+  await proto.navigate.call(instance,1);
+  assert.equal(closeAttempts,1);
+  assert.equal(clicked,0);
+  assert.equal(instance.navigationBusy,false);
+  assert.match(messages[0],/切り替わった/);
+  state.pathname='/alice/media'; state.search='';
+});

@@ -500,6 +500,12 @@ namespace XMN {
       if (direction === -1 && nextIndex === null) return;
       const generation = this.navGeneration;
       const profile = this.originProfile;
+      // An old media-timeline entry may have been evicted from X's virtualized DOM.
+      // Do not close the active viewer when the known destination is no longer clickable.
+      if (nextIndex !== null && !this.findLiveLink(this.refs[nextIndex])) {
+        this.toast('移動先が一覧から消えています。ビューアは閉じません');
+        return;
+      }
       const closeButton = this.findCloseButton(oldViewer);
       if (!closeButton) {
         this.toast('Xの閉じるボタンが見つからず、移動を中止しました');
@@ -514,6 +520,12 @@ namespace XMN {
           return;
         }
         if (generation !== this.navGeneration || mediaProfileFromPath(window.location.pathname) !== profile) return;
+        // SPA navigation may return to a different Photos/Videos filter than the
+        // timeline that supplied these refs. Never open a ref from the wrong grid.
+        if (this.originTimeline && mediaTimelineKey(window.location.pathname, window.location.search) !== this.originTimeline) {
+          this.toast('一覧の種類が切り替わったため、移動を中止しました');
+          return;
+        }
         let destination = nextIndex === null ? null : this.refs[nextIndex];
         // At the end, only click an observed, different post. Never guess a URL.
         if (!destination && direction === 1) {
