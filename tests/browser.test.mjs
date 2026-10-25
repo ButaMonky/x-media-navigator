@@ -75,6 +75,10 @@ function show(href, withClose=true) {
     modal.appendChild(close);
   }
   const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';modal.appendChild(viewer);
+  const activePhoto = document.createElement('img');
+  activePhoto.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  activePhoto.alt='Current X media photo';
+  viewer.appendChild(activePhoto);
   const article = document.createElement('article'); article.dataset.testid='tweet';
   const status = /status\\/(\\d+)/.exec(href)?.[1];
   const links = Array.from(ul.querySelectorAll('a[href]')).filter(a=>a.getAttribute('href').includes('/status/'+status+'/photo/'));
@@ -205,9 +209,13 @@ async function exercise() {
   source('/alice/status/55/photo/2').click();
   await wait(650);
   document.getElementById('gallery-counter')?.remove();
+  const setsize=document.createElement('div');
+  setsize.setAttribute('aria-posinset','2');
+  setsize.setAttribute('aria-setsize','2');
+  document.querySelector('[data-testid="swipe-to-dismiss"]')?.appendChild(setsize);
   const withoutCounter=key('ArrowRight');
   await wait(900);
-  result('two-photo grid without gallery counter navigates with one ArrowRight',
+  result('ARIA gallery setsize permits one ArrowRight without a counter',
     withoutCounter.defaultPrevented &&
     location.pathname.endsWith('/66/photo/1') && clicked.at(-1)==='/alice/status/66/photo/1');
 

@@ -182,6 +182,11 @@ var XMN;
 (function (XMN) {
     const VIEWER_SELECTOR = '[data-testid="swipe-to-dismiss"]';
     const TILE_SELECTOR = 'li[role="listitem"]';
+    // Bounded, progressive future-post prefetch. Never saturate the network.
+    const PREFETCH_MAX_IMAGES = 5;
+    const PREFETCH_MAX_CONCURRENT = 2;
+    const PREFETCH_MAX_RECORDS = 6;
+    const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
     const NATIVE_NEXT = /^(next(?: (?:photo|image|media))?|次の(?:画像|写真|メディア)(?:へ)?|次へ)$/i;
     const NATIVE_PREVIOUS = /^(prev(?:ious)?(?: (?:photo|image|media))?|前の(?:画像|写真|メディア)(?:へ)?|前へ)$/i;
     const CLOSE_SELECTOR = [
@@ -238,7 +243,13 @@ var XMN;
             this.refs = [];
             this.indexes = new Map();
             this.imageSources = new Map();
+            this.knownPhotoTotals = new Map();
             this.prefetched = new Map();
+            this.prefetchQueue = [];
+            this.prefetchWanted = new Set();
+            this.prefetchInFlight = 0;
+            this.prefetchFailed = new Set();
+            this.prefetchFailurePath = '';
             this.handoff = null;
             this.preloadTimer = null;
             this.preloadForPath = '';
@@ -265,8 +276,14 @@ var XMN;
             this.refs = [];
             this.indexes.clear();
             this.imageSources.clear();
+            this.knownPhotoTotals.clear();
             this.clearVisualHandoff();
             this.prefetched.clear();
+            this.prefetchQueue = [];
+            this.prefetchWanted.clear();
+            this.prefetchFailed.clear();
+            this.prefetchFailurePath = '';
+            this.prefetchInFlight = 0;
             this.preloadForPath = '';
             this.pendingRightConfirmation = null;
             this.nativeAdvancedPost = null;
@@ -473,8 +490,10 @@ var XMN;
                 this.viewer = viewer;
                 this.viewObserver = new MutationObserver(() => {
                     // X may replace viewer children during /photo/N transitions.
-                    if (this.viewer?.isConnected)
+                    if (this.viewer?.isConnected) {
                         this.ensureViewerButtons();
+                        this.finishVisualHandoff(this.viewer);
+                    }
                 });
                 this.viewObserver.observe(viewer, { childList: true, subtree: true });
             }
@@ -550,27 +569,48 @@ var XMN;
             }
         }
         /**
-         * A positive gallery-size hint from the original post's media thumbnails.
-         * Do not count media from unrelated replies or quoted posts.
-         * If X changes its DOM or count is uncertain, do not take over ArrowRight.
+         * Prove the actual media count from accessibility metadata or the official
+         * four-attachment limit. A carousel may mount only its visible photos;
+         * one to three tweetPhoto nodes never prove that there are no more photos.
          */
         photoCount(viewer, statusId) {
-            const root = viewer.closest('[role="dialog"]') ?? viewer.parentElement;
             const profile = this.originProfile;
-            if (!root || !profile)
+            if (!profile)
                 return null;
             const displayed = XMN.mediaRefFromHref(window.location.pathname, profile);
+            const known = this.knownPhotoTotals?.get(statusId);
+            if (known && displayed?.kind === 'photo' && displayed.mediaIndex !== null &&
+                displayed.statusId === statusId && displayed.mediaIndex <= known)
+                return known;
+            const root = viewer.closest('[role="dialog"]') ?? viewer.parentElement;
+            if (!root)
+                return null;
             // X can render a gallery counter. Confirm it belongs to the displayed photo,
             // rather than matching a number in an unrelated reply or recommended post.
             if (displayed?.kind === 'photo' && displayed.statusId === statusId) {
-                for (const node of viewer.querySelectorAll('[aria-label], [title]')) {
+                for (const node of viewer.querySelectorAll('[aria-label], [title], [aria-setsize][aria-posinset]')) {
                     if (node.closest('.xmn-nav-button, .xmn-status'))
                         continue;
                     for (const label of [node.getAttribute('aria-label'), node.getAttribute('title')]) {
                         const count = label && XMN.parseGalleryCounter(label);
-                        if (count && count.current === displayed.mediaIndex)
+                        if (count && count.current === displayed.mediaIndex) {
+                            this.rememberPhotoTotal(statusId, count.total);
                             return count.total;
+                        }
                     }
+                    // Carousels commonly expose the size of a set even when they only
+                    // mount the current slide. Never infer size from mounted children.
+                    const position = Number(node.getAttribute('aria-posinset'));
+                    const size = Number(node.getAttribute('aria-setsize'));
+                    if (Number.isInteger(size) && size >= 1 && size <= 4 &&
+                        position === displayed.mediaIndex && size >= position) {
+                        this.rememberPhotoTotal(statusId, size);
+                        return size;
+                    }
+                }
+                if (displayed.mediaIndex === 4) {
+                    this.rememberPhotoTotal(statusId, 4);
+                    return 4;
                 }
             }
             // Official X rules cap photos at four; seeing all four distinct photo URLs
@@ -584,40 +624,26 @@ var XMN;
                         indexes.add(ref.mediaIndex);
                 }
             }
-            if (XMN.completeFourPhotoSet(indexes))
+            if (XMN.completeFourPhotoSet(indexes)) {
+                this.rememberPhotoTotal(statusId, 4);
                 return 4;
-            // X may render the COMPLETE original post's photo grid with 1–3 photos,
-            // without providing an explicit gallery counter in the fullscreen modal.
-            // Require one uniquely indexed link per owned tweetPhoto tile. Do not
-            // infer a count from arbitrary links or from one visible gallery image.
-            for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
-                if (article.closest('[data-testid="quoteTweet"]'))
-                    continue;
-                const photoTiles = Array.from(article.querySelectorAll('[data-testid="tweetPhoto"]'))
-                    .filter((tile) => !tile.closest('[data-testid="quoteTweet"]'));
-                if (photoTiles.length < 1 || photoTiles.length > 3)
-                    continue;
-                const ownedIndexes = [];
-                let valid = true;
-                for (const tile of photoTiles) {
-                    const found = Array.from(tile.querySelectorAll('a[href*="/photo/"]'))
-                        .map((link) => XMN.mediaRefFromHref(link.getAttribute('href') ?? '', profile))
-                        .filter((ref) => ref !== null && ref.kind === 'photo' && ref.statusId === statusId);
-                    if (found.length !== 1 || found[0].mediaIndex === null) {
-                        valid = false;
-                        break;
-                    }
-                    ownedIndexes.push(found[0].mediaIndex);
-                }
-                const seen = new Set(ownedIndexes);
-                if (valid && seen.size === photoTiles.length &&
-                    Array.from({ length: photoTiles.length }, (_, index) => index + 1).every((index) => seen.has(index)) &&
-                    displayed?.statusId === statusId && displayed?.kind === 'photo' &&
-                    displayed.mediaIndex !== null && displayed.mediaIndex <= photoTiles.length) {
-                    return photoTiles.length;
-                }
             }
             return null;
+        }
+        /** Cache only counts supported by explicit X evidence or a confirmed edge. */
+        rememberPhotoTotal(statusId, total) {
+            if (!total || !Number.isInteger(total) || total < 1 || total > 4)
+                return;
+            if (!this.knownPhotoTotals)
+                this.knownPhotoTotals = new Map();
+            this.knownPhotoTotals.delete(statusId);
+            this.knownPhotoTotals.set(statusId, total);
+            while (this.knownPhotoTotals.size > 128) {
+                const first = this.knownPhotoTotals.keys().next().value;
+                if (!first)
+                    break;
+                this.knownPhotoTotals.delete(first);
+            }
         }
         nativeGalleryArrowAvailable(viewer, direction) {
             const root = viewer.closest('[role="dialog"]') ?? viewer;
@@ -632,6 +658,24 @@ var XMN;
             }
             return false;
         }
+        /** An explicitly disabled PHOTO-next button is positive end-of-gallery evidence. */
+        nativeGalleryArrowDisabled(viewer) {
+            if (typeof viewer.closest !== 'function' || typeof viewer.querySelectorAll !== 'function')
+                return false;
+            const root = viewer.closest('[role="dialog"]') ?? viewer;
+            for (const button of root.querySelectorAll('[aria-label], [title]')) {
+                if (button.closest('.xmn-nav-button'))
+                    continue;
+                const label = (button.getAttribute('aria-label') || button.getAttribute('title') || '').trim();
+                // A generic disabled "Next" could belong to the sidebar, not photos.
+                if (!/next\s*(?:photo|image)|次の(?:画像|写真)/i.test(label))
+                    continue;
+                if (button.getAttribute('aria-disabled') === 'true' ||
+                    (button instanceof HTMLButtonElement && button.disabled))
+                    return true;
+            }
+            return false;
+        }
         onKeyDown(event) {
             if (!this.viewer?.isConnected || !this.originProfile ||
                 isEditingTarget(event.target) || this.navigationBusy)
@@ -640,7 +684,9 @@ var XMN;
             if (currentIndex === null)
                 return;
             const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
-            const photoCount = current ? this.photoCount(this.viewer, current.statusId) : null;
+            const count = current ? this.photoCount(this.viewer, current.statusId) : null;
+            const photoCount = count ?? (current?.kind === 'photo' &&
+                this.nativeGalleryArrowDisabled?.(this.viewer) ? current.mediaIndex : null);
             const nativeNext = this.nativeGalleryArrowAvailable(this.viewer, 1);
             const direction = XMN.galleryBoundaryDirection(event, current, photoCount, nativeNext, this.nativeGalleryArrowAvailable(this.viewer, -1));
             if (direction === null) {
@@ -655,6 +701,9 @@ var XMN;
             if (direction === -1 && current && XMN.adjacentPostIndex(this.refs, current.statusId, -1, currentIndex) === null)
                 return;
             this.pendingRightConfirmation = null;
+            if (direction === 1 && current?.kind === 'photo' && current.mediaIndex !== null &&
+                (photoCount === current.mediaIndex))
+                this.rememberPhotoTotal?.(current.statusId, photoCount);
             event.preventDefault();
             event.stopImmediatePropagation();
             void this.navigate(direction);
@@ -681,6 +730,7 @@ var XMN;
             const pending = this.pendingRightConfirmation;
             if (pending && pending.path === path && pending.signature === signature &&
                 Date.now() < pending.expiresAt) {
+                this.rememberPhotoTotal(current.statusId, current.mediaIndex);
                 this.pendingRightConfirmation = null;
                 if (this.rightProbeTimer !== null)
                     window.clearTimeout(this.rightProbeTimer);
@@ -713,6 +763,7 @@ var XMN;
                     return;
                 if (current.mediaIndex !== null && current.mediaIndex > 1 &&
                     this.nativeAdvancedPost === current.statusId) {
+                    this.rememberPhotoTotal(current.statusId, current.mediaIndex);
                     void this.navigate(1);
                     return;
                 }
@@ -725,7 +776,7 @@ var XMN;
         schedulePreload() {
             if (!this.originProfile || !this.viewer || document.hidden)
                 return;
-            const key = `${this.originTimeline ?? ''}|${window.location.pathname}|${this.refs.length}`;
+            const key = `${this.originTimeline ?? ''}|${window.location.pathname}|${this.refs.length}|${this.imageSources.size}`;
             if (key === this.preloadForPath)
                 return;
             this.preloadForPath = key;
@@ -747,60 +798,114 @@ var XMN;
             const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
             if (index === null || !current)
                 return;
+            if (this.prefetchFailurePath !== window.location.pathname) {
+                // Retry transient CDN errors once the user actually navigates away.
+                // Never spin on the same missing image while a modal stays open.
+                this.prefetchFailed.clear();
+                this.prefetchFailurePath = window.location.pathname;
+            }
             const targets = [];
-            // Preheat the next photo AND the next POST while the first image is still
-            // displayed. This avoids starting the post's CDN request only at the end.
-            const forward = this.refs[index + 1];
-            if (forward?.statusId === current.statusId && forward.kind === 'photo' &&
-                forward.mediaIndex !== null && current.mediaIndex !== null &&
-                forward.mediaIndex > current.mediaIndex)
-                targets.push(forward);
-            const nextPost = XMN.adjacentPostIndex(this.refs, current.statusId, 1, index);
-            if (nextPost !== null)
-                targets.push(this.refs[nextPost]);
-            // Use remaining capacity for backwards navigation.
-            if (targets.length < 2) {
-                const back = this.refs[index - 1];
-                if (back?.statusId === current.statusId && back.kind === 'photo' &&
-                    back.mediaIndex !== null && current.mediaIndex !== null &&
-                    back.mediaIndex < current.mediaIndex)
-                    targets.push(back);
-                else {
-                    const previousPost = XMN.adjacentPostIndex(this.refs, current.statusId, -1, index);
-                    if (previousPost !== null)
-                        targets.push(this.refs[previousPost]);
+            // 1. All already indexed later photos of this very post.
+            for (let i = index + 1; i < this.refs.length && this.refs[i].statusId === current.statusId; i++) {
+                if (this.refs[i].kind === 'photo')
+                    targets.push(this.refs[i]);
+            }
+            // 2. Several future POSTS, while preserving the observed media order.
+            let cursor = index;
+            for (let hops = 0; hops < 8 && targets.length < PREFETCH_MAX_IMAGES + 3; hops++) {
+                const next = XMN.adjacentPostIndex(this.refs, this.refs[cursor].statusId, 1, cursor);
+                if (next === null)
+                    break;
+                cursor = next;
+                if (this.refs[cursor].kind === 'photo')
+                    targets.push(this.refs[cursor]);
+            }
+            // 3. Backtracking after future media are queued.
+            const back = this.refs[index - 1];
+            if (back?.kind === 'photo' && back.statusId === current.statusId)
+                targets.push(back);
+            else {
+                const previous = XMN.adjacentPostIndex(this.refs, current.statusId, -1, index);
+                if (previous !== null && this.refs[previous].kind === 'photo')
+                    targets.push(this.refs[previous]);
+            }
+            const memory = navigator.deviceMemory;
+            const max = connection?.effectiveType === '3g' || (memory !== undefined && memory <= 4)
+                ? 2 : PREFETCH_MAX_IMAGES;
+            const urls = targets.map((ref) => this.imageSources.get(ref.key)).filter((url) => !!url);
+            const unique = [...new Set(urls)].slice(0, max);
+            this.prefetchWanted = new Set(unique);
+            // Preserve decoded nearby images instead of dropping/re-downloading them
+            // for every arrow press. The queue starts at most two transfers at once.
+            for (const url of unique) {
+                const cached = this.prefetched.get(url);
+                if (cached) {
+                    this.prefetched.delete(url);
+                    this.prefetched.set(url, cached);
                 }
             }
-            const urls = targets.map((ref) => this.imageSources.get(ref.key)).filter((url) => !!url);
-            const unique = [...new Set(urls)].slice(0, 2);
-            for (const [url] of this.prefetched) {
-                if (!unique.includes(url))
-                    this.prefetched.delete(url);
+            this.prefetchQueue = unique.filter((url) => !this.prefetched.has(url) && !this.prefetchFailed.has(url));
+            this.drainPrefetchQueue();
+        }
+        trimPrefetched() {
+            let bytes = [...this.prefetched.values()].reduce((sum, value) => sum + value.bytes, 0);
+            while (this.prefetched.size > PREFETCH_MAX_RECORDS || bytes > PREFETCH_MAX_DECODED_BYTES) {
+                const candidates = [...this.prefetched].filter(([url, item]) => !item.loading && (!this.handoff || !this.handoff.host.contains(item.image)));
+                const victim = candidates.find(([url]) => !this.prefetchWanted.has(url)) ?? candidates[0];
+                if (!victim)
+                    break; // Only in-flight or currently displayed images remain.
+                this.prefetched.delete(victim[0]);
+                bytes -= victim[1].bytes;
             }
-            for (const url of unique) {
-                if (this.prefetched.has(url))
+        }
+        drainPrefetchQueue() {
+            if (document.hidden || !this.viewer?.isConnected || this.navigationBusy)
+                return;
+            while (this.prefetchInFlight < PREFETCH_MAX_CONCURRENT && this.prefetchQueue.length) {
+                const url = this.prefetchQueue.shift();
+                if (!this.prefetchWanted.has(url) || this.prefetched.has(url) || this.prefetchFailed.has(url))
                     continue;
                 const image = new Image();
-                const record = { image, ready: false };
+                const record = { image, ready: false, loading: true, bytes: 0 };
+                const generation = this.navGeneration;
+                let settled = false;
+                const finish = (success) => {
+                    if (settled)
+                        return;
+                    settled = true;
+                    if (generation !== this.navGeneration)
+                        return;
+                    this.prefetchInFlight = Math.max(0, this.prefetchInFlight - 1);
+                    if (this.prefetched.get(url) === record) {
+                        record.loading = false;
+                        record.ready = success && image.naturalWidth > 0;
+                        if (!record.ready) {
+                            this.prefetched.delete(url);
+                            this.prefetchFailed.add(url);
+                            if (this.prefetchFailed.size > 64)
+                                this.prefetchFailed.delete(this.prefetchFailed.values().next().value);
+                        }
+                        else {
+                            record.bytes = (image.naturalWidth || 0) * (image.naturalHeight || 0) * 4;
+                        }
+                    }
+                    this.trimPrefetched();
+                    this.drainPrefetchQueue();
+                };
                 image.decoding = 'async';
                 image.fetchPriority = 'low';
-                // A failed URL must not be retried forever while the viewer remains open.
-                image.onerror = () => {
-                    if (this.prefetched.get(url) === record)
-                        this.prefetched.delete(url);
+                image.onerror = () => finish(false);
+                image.onload = () => {
+                    if (typeof image.decode !== 'function')
+                        finish(true);
                 };
                 this.prefetched.set(url, record);
+                this.prefetchInFlight++;
                 image.src = url;
                 if (typeof image.decode === 'function') {
-                    // decode() establishes readiness to paint without a blank frame.
-                    void image.decode().then(() => {
-                        if (this.prefetched.get(url) === record && image.naturalWidth > 0)
-                            record.ready = true;
-                    }).catch(() => {
-                        if (this.prefetched.get(url) === record)
-                            this.prefetched.delete(url);
-                    });
+                    void image.decode().then(() => finish(true)).catch(() => finish(false));
                 }
+                this.trimPrefetched();
             }
         }
         /**
@@ -823,18 +928,48 @@ var XMN;
                 host = document.createElement('div');
                 host.className = 'xmn-visual-handoff';
                 host.setAttribute('aria-hidden', 'true');
+                // Avoid hiding X's right-side tweet/reply panel. Only keep the
+                // media viewport painted while the native modal is replaced.
+                const bounds = this.viewer?.getBoundingClientRect?.();
+                if (bounds && bounds.width > 100 && bounds.height > 100 &&
+                    typeof window.innerWidth === 'number' && bounds.width < window.innerWidth - 100) {
+                    host.style?.setProperty('inset', 'auto');
+                    host.style?.setProperty('left', `${bounds.left}px`);
+                    host.style?.setProperty('top', `${bounds.top}px`);
+                    host.style?.setProperty('width', `${bounds.width}px`);
+                    host.style?.setProperty('height', `${bounds.height}px`);
+                }
                 record.image.classList.add('xmn-handoff-image');
                 host.appendChild(record.image);
                 document.body.appendChild(host);
                 const timeout = window.setTimeout(() => this.clearVisualHandoff(), 1800);
-                this.handoff = {
+                const handoff = {
                     host,
                     targetStatus: target.statusId,
                     targetMediaIndex: target.mediaIndex,
                     timeout,
                     generation: this.navGeneration,
                     revealTimer: null,
+                    sourceViewer: this.viewer,
+                    observer: null,
+                    waitingImage: null,
                 };
+                this.handoff = handoff;
+                // Only for the short handoff window: detect the new SPA modal as
+                // soon as it mounts rather than waiting for the 450ms route poll.
+                if (typeof MutationObserver !== 'undefined') {
+                    const observer = new MutationObserver(() => {
+                        if (this.handoff !== handoff)
+                            return;
+                        const opened = document.querySelector(VIEWER_SELECTOR);
+                        if (opened && opened !== handoff.sourceViewer && this.originProfile &&
+                            XMN.profileStatusFromPath(window.location.pathname, this.originProfile)) {
+                            this.syncViewer(opened);
+                        }
+                    });
+                    observer.observe(document.body, { childList: true, subtree: true });
+                    handoff.observer = observer;
+                }
                 return true;
             }
             catch {
@@ -852,12 +987,20 @@ var XMN;
                 (handoff.targetMediaIndex !== null && shown.mediaIndex !== null &&
                     handoff.targetMediaIndex !== shown.mediaIndex))
                 return;
-            // Give X a frame to paint the newly opened viewer before removing the
-            // handoff image. The failsafe timer still expires if X never renders it.
+            const actualImage = viewer.querySelector('img[src]');
+            // A mounted React viewer is not necessarily ready to paint. Do not
+            // reveal it until its own photo pixels have loaded.
+            if (!actualImage || !actualImage.complete || actualImage.naturalWidth < 1) {
+                if (actualImage && handoff.waitingImage !== actualImage) {
+                    handoff.waitingImage = actualImage;
+                    actualImage.addEventListener('load', () => this.finishVisualHandoff(viewer), { once: true });
+                }
+                return;
+            }
             handoff.revealTimer = window.setTimeout(() => {
                 if (this.handoff === handoff)
                     this.clearVisualHandoff();
-            }, 130);
+            }, 90);
         }
         clearVisualHandoff() {
             const handoff = this.handoff;
@@ -867,6 +1010,7 @@ var XMN;
             window.clearTimeout(handoff.timeout);
             if (handoff.revealTimer !== null)
                 window.clearTimeout(handoff.revealTimer);
+            handoff.observer?.disconnect();
             handoff.host.remove();
         }
         findCloseButton(viewer) {
