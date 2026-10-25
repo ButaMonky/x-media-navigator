@@ -144,7 +144,7 @@ test('Chromium synthetic-X DOM: gallery native arrow, post shortcut, reflow, laz
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 6, report);
+    assert.equal(report.split('|').length, 7, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

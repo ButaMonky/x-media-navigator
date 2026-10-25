@@ -49,7 +49,7 @@
 - TypeScript `tsc -p tsconfig.json`: PASS。
 - JavaScript `node --check`: PASS。
 - Node.js pure/core・モックController・manifest検査: PASS。
-- Chromium headless integration: **NOT RUN/ENVIRONMENT BLOCKED** (環境でブラウザ起動がタイムアウト)。
+- Chromium擬似X統合テスト: **GitHub Actionsで7シナリオPASS**（ローカルの隔離環境での起動はタイムアウト）。実サイトのXではない。
 - Chrome + X実サイトの操作検証: **NOT RUN**。
 
 ## 次に必要な実機検証
