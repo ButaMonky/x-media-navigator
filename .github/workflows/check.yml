@@ -27,7 +27,7 @@ jobs:
       - name: Verify committed compiled JS is up to date
         run: git diff --exit-code -- extension/content_script.js
       - name: Verify private beta bundle and rerun Chromium (push only)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/research/media-filter-boundary-v22'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/research/media-filter-boundary-v22')
         shell: bash
         run: |
           set -euo pipefail
@@ -38,11 +38,25 @@ jobs:
           fi
           XMN_RUN_CHROMIUM=1 CHROMIUM_PATH="$browser" npm run test:browser
           node scripts/verify-beta.mjs
+      - name: Parse Windows updater script
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$env:GITHUB_WORKSPACE/tools/update-private-beta.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) { $errors | ForEach-Object { Write-Error $_.ToString() }; exit 1 }
+      - name: Name beta artifact from manifest version
+        id: beta_meta
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/research/media-filter-boundary-v22')
+        shell: bash
+        run: |
+          version="$(node -p "require('./extension/manifest.json').version")"
+          echo "name=X-Media-Navigator-v${version}-beta" >> "$GITHUB_OUTPUT"
       - name: Upload installable private beta (unpacked Chrome extension)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/research/media-filter-boundary-v22'
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/beta' || github.ref == 'refs/heads/research/media-filter-boundary-v22')
         uses: actions/upload-artifact@v4
         with:
-          name: X-Media-Navigator-v2.2.2-beta2
+          name: ${{ steps.beta_meta.outputs.name }}
           path: |
             extension/manifest.json
             extension/content_script.js
