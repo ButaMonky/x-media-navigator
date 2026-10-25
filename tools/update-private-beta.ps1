@@ -51,6 +51,21 @@ function Assert-Extension([string]$dir, [string]$expectedVersion) {
     return $manifest
 }
 
+function Save-UpdateState([string]$version, $run, $artifact, $backupPath) {
+    $newState = [ordered]@{
+        version = $version
+        head_sha = [string]$run.head_sha
+        run_id = [string]$run.id
+        artifact_id = [string]$artifact.id
+        installed_at = (Get-Date).ToString('o')
+        install_dir = $installDir
+        previous_backup = $backupPath
+    }
+    $tempState = Join-Path $dataDir ('state-' + [guid]::NewGuid().ToString('N') + '.json')
+    $newState | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $tempState -Encoding UTF8
+    Move-Item -LiteralPath $tempState -Destination $stateFile -Force
+}
+
 try {
     if (-not $mutex.WaitOne(0)) { Write-Output 'Updater already running; skipping'; return }
     $locked = $true
@@ -114,6 +129,27 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Artifact download failed' }
         $null = Assert-Extension $stage $targetVersion
 
+        # A documentation-only commit must not replace identical installed files.
+        if (Test-Path -LiteralPath $installedManifest -PathType Leaf) {
+            $same = $true
+            foreach ($name in $allowed) {
+                $oldFile = Join-Path $installDir $name
+                $newFile = Join-Path $stage $name
+                if (!(Test-Path -LiteralPath $oldFile -PathType Leaf) -or
+                    (Get-FileHash -LiteralPath $oldFile -Algorithm SHA256).Hash -ne
+                    (Get-FileHash -LiteralPath $newFile -Algorithm SHA256).Hash) {
+                    $same = $false
+                    break
+                }
+            }
+            if ($same) {
+                $oldBackup = if ($state) { $state.previous_backup } else { $null }
+                Save-UpdateState $targetVersion $selected $selectedArtifact $oldBackup
+                Write-Status "UNCHANGED FILES version=$targetVersion commit=$($selected.head_sha); folder left untouched"
+                return
+            }
+        }
+
         $backupPath = $null
         $oldMoved = $false
         if (Test-Path -LiteralPath $installDir) {
@@ -130,18 +166,7 @@ try {
             throw
         }
 
-        $newState = [ordered]@{
-            version = $targetVersion
-            head_sha = [string]$selected.head_sha
-            run_id = [string]$selected.id
-            artifact_id = [string]$selectedArtifact.id
-            installed_at = (Get-Date).ToString('o')
-            install_dir = $installDir
-            previous_backup = $backupPath
-        }
-        $tempState = Join-Path $dataDir ('state-' + [guid]::NewGuid().ToString('N') + '.json')
-        $newState | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $tempState -Encoding UTF8
-        Move-Item -LiteralPath $tempState -Destination $stateFile -Force
+        Save-UpdateState $targetVersion $selected $selectedArtifact $backupPath
         Write-Status "INSTALLED version=$targetVersion commit=$($selected.head_sha) path=$installDir"
         Write-Status 'Reload the unpacked Chrome extension card; the global Update button does not fetch GitHub files'
     } finally {
