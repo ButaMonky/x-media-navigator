@@ -1,0 +1,124 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
+
+const source = readFileSync(new URL('./.build/core.js', import.meta.url), 'utf8');
+const context = vm.createContext({ URL, Set });
+vm.runInContext(source, context, { filename: 'core.js' });
+const { XMN } = context;
+
+test('only a valid profile media route activates the extension', () => {
+  assert.equal(XMN.mediaProfileFromPath('/Alice/media'), 'alice');
+  assert.equal(XMN.mediaProfileFromPath('/alice/media/'), 'alice');
+  for (const path of ['/alice/status/123', '/home', '/alice/likes', '/alice/media/abc', '/abcdefghijklmnop/media']) {
+    assert.equal(XMN.mediaProfileFromPath(path), null, path);
+  }
+});
+
+test('status route must belong to the originating user', () => {
+  assert.equal(XMN.profileStatusFromPath('/ALICE/status/123/photo/1', 'alice'), true);
+  assert.equal(XMN.profileStatusFromPath('/other/status/123/photo/1', 'alice'), false);
+  assert.equal(XMN.profileStatusFromPath('/alice/media', 'alice'), false);
+});
+
+test('media identity distinguishes images of the same post', () => {
+  const one = XMN.mediaRefFromHref('/Alice/status/234/photo/1?tracking=abc', 'alice');
+  const two = XMN.mediaRefFromHref('/alice/status/234/photo/2', 'alice');
+  const movie = XMN.mediaRefFromHref('/alice/status/234/video/1', 'alice');
+  assert.equal(one.statusId, '234');
+  assert.equal(one.mediaIndex, 1);
+  assert.equal(one.href, '/Alice/status/234/photo/1');
+  assert.notEqual(one.key, two.key);
+  assert.notEqual(one.key, movie.key);
+});
+
+test('media links cannot escape the active profile or x.com/twitter.com', () => {
+  for (const href of [
+    'https://example.org/alice/status/234/photo/1',
+    '//malware.example/alice/status/234/photo/1',
+    'javascript:alert(1)',
+    '/bob/status/234/photo/1',
+    '/alice/status/not-number/photo/1',
+    '/alice/status/234/photo/0',
+    '/alice/status/234/photo/999',
+  ]) {
+    assert.equal(XMN.mediaRefFromHref(href, 'alice'), null, href);
+  }
+  assert.equal(XMN.mediaRefFromHref('https://twitter.com/alice/status/234/video/1', 'alice').kind, 'video');
+});
+
+test('the displayed media URL maps to an exact tile instead of only a status ID', () => {
+  const refs = [
+    '/alice/status/1/photo/1',
+    '/alice/status/1/photo/2',
+    '/alice/status/2/photo/1',
+  ].map((href) => XMN.mediaRefFromHref(href, 'alice'));
+  assert.equal(XMN.findCurrentIndex(refs, '/alice/status/1/photo/2', 'alice'), 1);
+  assert.equal(XMN.findCurrentIndex(refs, '/alice/status/1', 'alice'), null, 'ambiguous status URL');
+  assert.equal(XMN.findCurrentIndex(refs, '/bob/status/1/photo/1', 'alice'), null);
+});
+
+test('status-only routing is allowed only when uniquely identifiable', () => {
+  const refs = [XMN.mediaRefFromHref('/alice/status/2/photo/1', 'alice')];
+  assert.equal(XMN.findCurrentIndex(refs, '/alice/status/2', 'alice'), 0);
+});
+
+test('direction lookup does not clamp back to the same tile at bounds', () => {
+  assert.equal(XMN.adjacentIndex(0, 3, -1), null);
+  assert.equal(XMN.adjacentIndex(2, 3, 1), null);
+  assert.equal(XMN.adjacentIndex(1, 3, -1), 0);
+  assert.equal(XMN.adjacentIndex(1, 3, 1), 2);
+  assert.equal(XMN.adjacentIndex(-1, 3, 1), null);
+});
+
+test('bare arrow keys are eligible, modifiers and repeats are not', () => {
+  const event = { key:'ArrowRight', shiftKey:false,altKey:false,ctrlKey:false,metaKey:false };
+  assert.equal(XMN.postShortcutDirection(event), 1);
+  assert.equal(XMN.postShortcutDirection({...event,key:'ArrowLeft'}), -1);
+  for (const variant of [{shiftKey:true},{ctrlKey:true},{altKey:true},{metaKey:true},{repeat:true},{isComposing:true}]) {
+    assert.equal(XMN.postShortcutDirection({...event,...variant}),null);
+  }
+});
+
+test('bare arrows change POSTS only at first/last photo; video remains native', () => {
+  const a=XMN.mediaRefFromHref('/alice/status/11/photo/1','alice');
+  const b=XMN.mediaRefFromHref('/alice/status/11/photo/2','alice');
+  const c=XMN.mediaRefFromHref('/alice/status/11/photo/3','alice');
+  const movie=XMN.mediaRefFromHref('/alice/status/44/video/1','alice');
+  const key=(key)=>({key,shiftKey:false,altKey:false,ctrlKey:false,metaKey:false});
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),a,3),null);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),b,3),null);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),c,3),1);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),c,3,true),null,'native X next button wins');
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),c,null),null,'unknown gallery size: safe fallback');
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),a,3),-1);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),a,3,false,true),null,'native X previous button wins');
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),b,3),null);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),movie,1),null,'do not hijack video seek');
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),null,1),null);
+  assert.equal(XMN.galleryBoundaryDirection({...key('ArrowRight'),shiftKey:true},c,3),null);
+});
+
+test('post navigation skips the remaining image tiles of the same status', () => {
+  const refs=['/alice/status/11/photo/1','/alice/status/11/photo/2','/alice/status/22/photo/1',
+    '/alice/status/22/photo/2','/alice/status/33/photo/1'].map((p)=>XMN.mediaRefFromHref(p,'alice'));
+  assert.equal(XMN.adjacentPostIndex(refs,'11',1),2);
+  assert.equal(XMN.adjacentPostIndex(refs,'22',-1),1,'backwards returns previous post last photo');
+  assert.equal(XMN.adjacentPostIndex(refs,'22',1),4);
+  assert.equal(XMN.adjacentPostIndex(refs,'11',-1),null);
+  assert.equal(XMN.adjacentPostIndex(refs,'33',1),null);
+  assert.equal(XMN.adjacentPostIndex(refs,'other',1),null);
+});
+
+test('image preloader only uses X image CDN, never arbitrary third-party or videos', () => {
+  assert.equal(XMN.preloadImageUrl('https://pbs.twimg.com/media/ABCdef_01?format=jpg&name=small'),
+    'https://pbs.twimg.com/media/ABCdef_01?format=jpg&name=large');
+  for (const url of ['https://evil.example/media/ABC?format=jpg&name=small',
+    'http://pbs.twimg.com/media/ABC?format=jpg&name=small',
+    'https://pbs.twimg.com/profile_images/ABC?format=jpg&name=small',
+    'https://pbs.twimg.com/media/ABC?format=svg&name=small',
+    'https://pbs.twimg.com/media/ABC?format=jpg',
+    'https://video.twimg.com/video/ABC',
+    'data:image/png;base64,AAAA']) assert.equal(XMN.preloadImageUrl(url),null,url);
+});

@@ -9,9 +9,9 @@
 - 元PCのユーザー名や絶対パスはGitHubには保存しない。
 
 ## 元コード整合性
-- `upstream/chrome-v1.3/content_script.js` の SHA-256:
-  `B3185DC554E2B981C65970192D750AC82ADAE5BAC0A043E2084D4BB85D153CB0`
-- 元のインストール済みファイルと参照用スナップショットはバイト同一で保存する方針。
+- 元PC上のWindowsインストール済みソースのSHA-256（改行CRLF）: `B3185DC554E2B981C65970192D750AC82ADAE5BAC0A043E2084D4BB85D153CB0`
+- GitHub内の `upstream/chrome-v1.3/content_script.js` のSHA-256（GitでLFに改行正規化後）: `BC67D0F31B7482B3FB06EB686E7CE944B4014746375696D8CDD9D915117190BE`
+- Gitの改行正規化でバイト単位の同一性は保持されなかった。元PC上での照合とGitHub上での照合を分けて記録する。
 - Chrome の `_metadata/` は署名検証由来の生成情報であり、リポジトリへ含めない。
 - `upstream/chrome-v1.3/manifest.json` は元の配布物のまま保存 (公開鍵および更新URLを含む)。
 - `extension/manifest.json` は開発用として `key` と `update_url` を除外し、名称を変更。
@@ -27,4 +27,4 @@
 - Syntax check: VERIFIED (Node.js `--check`)
 - Real browser reproduction: NOT RUN
 - Browser extension installation of development build: NOT RUN
-- Navigational bug fix: NOT STARTED
+- TypeScript v2 code changes: IMPLEMENTED ON DRAFT BRANCH; production behavior NOT VERIFIED

@@ -11,16 +11,19 @@ const dev = resolve(root, 'extension');
 const upstream = resolve(root, 'upstream/chrome-v1.3');
 const get = (base, path) => readFileSync(resolve(base, path));
 
-test('development manifest does not reuse Chrome Store identity/update endpoint', () => {
+test('development manifest is a distinct, least-permission MV3 extension', () => {
   const m = JSON.parse(get(dev, 'manifest.json').toString('utf8'));
   assert.equal(m.manifest_version, 3);
-  assert.equal(m.version, '1.3');
-  assert.equal(Object.hasOwn(m, 'key'), false);
-  assert.equal(Object.hasOwn(m, 'update_url'), false);
-  assert.match(m.name, /Development/);
+  const packageVersion = JSON.parse(get(root, 'package.json').toString('utf8')).version;
+  assert.equal(m.version, packageVersion.replace(/-dev\..*$/, ''));
+  for (const key of ['key', 'update_url', 'host_permissions', 'permissions', 'background']) {
+    assert.equal(Object.hasOwn(m, key), false, key);
+  }
+  assert.match(m.name, /TypeScript Dev/);
+  assert.deepEqual(m.content_scripts[0].matches, ['https://x.com/*', 'https://twitter.com/*']);
 });
 
-test('manifest content scripts and CSS exist and parse', () => {
+test('manifest content scripts, CSS and referenced icons exist', () => {
   const m = JSON.parse(get(dev, 'manifest.json').toString('utf8'));
   for (const item of m.content_scripts ?? []) {
     for (const script of item.js ?? []) {
@@ -29,9 +32,19 @@ test('manifest content scripts and CSS exist and parse', () => {
     }
     for (const css of item.css ?? []) assert.ok(existsSync(resolve(dev, css)), css);
   }
+  for (const filename of Object.values(m.icons)) assert.ok(existsSync(resolve(dev, filename)), filename);
 });
 
-test('reference content script matches recorded original SHA-256', () => {
+test('Git-managed LF-normalized v1.3 baseline matches its recorded hash', (t) => {
+  if (!existsSync(resolve(upstream, 'content_script.js'))) { t.skip('Snapshot is retained in private GitHub repo, not scratch build'); return; }
   const hash = createHash('sha256').update(get(upstream, 'content_script.js')).digest('hex').toUpperCase();
-  assert.equal(hash, 'B3185DC554E2B981C65970192D750AC82ADAE5BAC0A043E2084D4BB85D153CB0');
+  assert.equal(hash, 'BC67D0F31B7482B3FB06EB686E7CE944B4014746375696D8CDD9D915117190BE');
+});
+
+test('source-of-truth is TypeScript and no browser secret is embedded', () => {
+  assert.ok(existsSync(resolve(root, 'src/core.ts')));
+  assert.ok(existsSync(resolve(root, 'src/content.ts')));
+  const manifest = get(dev, 'manifest.json').toString('utf8');
+  assert.ok(!manifest.includes('chrome-extension://'));
+  assert.ok(!manifest.includes('localStorage'));
 });
