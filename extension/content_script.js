@@ -239,6 +239,7 @@ var XMN;
             this.indexes = new Map();
             this.imageSources = new Map();
             this.prefetched = new Map();
+            this.handoff = null;
             this.preloadTimer = null;
             this.preloadForPath = '';
             this.pendingRightConfirmation = null;
@@ -264,6 +265,7 @@ var XMN;
             this.refs = [];
             this.indexes.clear();
             this.imageSources.clear();
+            this.clearVisualHandoff();
             this.prefetched.clear();
             this.preloadForPath = '';
             this.pendingRightConfirmation = null;
@@ -477,6 +479,7 @@ var XMN;
                 this.viewObserver.observe(viewer, { childList: true, subtree: true });
             }
             this.ensureViewerButtons();
+            this.finishVisualHandoff(viewer);
         }
         ensureViewerButtons() {
             const viewer = this.viewer;
@@ -722,9 +725,10 @@ var XMN;
         schedulePreload() {
             if (!this.originProfile || !this.viewer || document.hidden)
                 return;
-            if (window.location.pathname === this.preloadForPath)
+            const key = `${this.originTimeline ?? ''}|${window.location.pathname}|${this.refs.length}`;
+            if (key === this.preloadForPath)
                 return;
-            this.preloadForPath = window.location.pathname;
+            this.preloadForPath = key;
             if (this.preloadTimer !== null)
                 window.clearTimeout(this.preloadTimer);
             this.preloadTimer = window.setTimeout(() => {
@@ -744,16 +748,28 @@ var XMN;
             if (index === null || !current)
                 return;
             const targets = [];
-            // Native next/previous photos are preheated first; otherwise adjacent posts.
-            for (const direction of [1, -1]) {
-                const neighbor = this.refs[index + direction];
-                const post = XMN.adjacentPostIndex(this.refs, current.statusId, direction, index);
-                const photoCandidate = neighbor?.statusId === current.statusId &&
-                    neighbor.kind === 'photo' && neighbor.mediaIndex !== null && current.mediaIndex !== null &&
-                    (neighbor.mediaIndex - current.mediaIndex) * direction > 0 ? neighbor : null;
-                const candidate = photoCandidate ?? (post !== null ? this.refs[post] : null);
-                if (candidate)
-                    targets.push(candidate);
+            // Preheat the next photo AND the next POST while the first image is still
+            // displayed. This avoids starting the post's CDN request only at the end.
+            const forward = this.refs[index + 1];
+            if (forward?.statusId === current.statusId && forward.kind === 'photo' &&
+                forward.mediaIndex !== null && current.mediaIndex !== null &&
+                forward.mediaIndex > current.mediaIndex)
+                targets.push(forward);
+            const nextPost = XMN.adjacentPostIndex(this.refs, current.statusId, 1, index);
+            if (nextPost !== null)
+                targets.push(this.refs[nextPost]);
+            // Use remaining capacity for backwards navigation.
+            if (targets.length < 2) {
+                const back = this.refs[index - 1];
+                if (back?.statusId === current.statusId && back.kind === 'photo' &&
+                    back.mediaIndex !== null && current.mediaIndex !== null &&
+                    back.mediaIndex < current.mediaIndex)
+                    targets.push(back);
+                else {
+                    const previousPost = XMN.adjacentPostIndex(this.refs, current.statusId, -1, index);
+                    if (previousPost !== null)
+                        targets.push(this.refs[previousPost]);
+                }
             }
             const urls = targets.map((ref) => this.imageSources.get(ref.key)).filter((url) => !!url);
             const unique = [...new Set(urls)].slice(0, 2);
@@ -765,18 +781,93 @@ var XMN;
                 if (this.prefetched.has(url))
                     continue;
                 const image = new Image();
+                const record = { image, ready: false };
                 image.decoding = 'async';
                 image.fetchPriority = 'low';
+                // A failed URL must not be retried forever while the viewer remains open.
+                image.onerror = () => {
+                    if (this.prefetched.get(url) === record)
+                        this.prefetched.delete(url);
+                };
+                this.prefetched.set(url, record);
                 image.src = url;
-                this.prefetched.set(url, image);
-                // Decode proactively when supported, but never block X's own UI.
                 if (typeof image.decode === 'function') {
-                    void image.decode().catch(() => {
-                        if (this.prefetched.get(url) === image)
+                    // decode() establishes readiness to paint without a blank frame.
+                    void image.decode().then(() => {
+                        if (this.prefetched.get(url) === record && image.naturalWidth > 0)
+                            record.ready = true;
+                    }).catch(() => {
+                        if (this.prefetched.get(url) === record)
                             this.prefetched.delete(url);
                     });
                 }
             }
+        }
+        /**
+         * Visual-only handoff while X closes and reopens its SPA photo viewer.
+         * X still owns the URL, history and modal; this only paints an already
+         * decoded, low-priority CDN image for <= 1.8s. No extra network request.
+         */
+        beginVisualHandoff(target) {
+            if (target.kind !== 'photo' || this.handoff || !this.originProfile || document.hidden)
+                return false;
+            if (typeof window.matchMedia === 'function' &&
+                window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+                return false;
+            const url = this.imageSources?.get(target.key);
+            const record = url ? this.prefetched?.get(url) : undefined;
+            if (!url || XMN.preloadImageUrl(url) !== url || !record?.ready || record.image.naturalWidth < 1)
+                return false;
+            let host = null;
+            try {
+                host = document.createElement('div');
+                host.className = 'xmn-visual-handoff';
+                host.setAttribute('aria-hidden', 'true');
+                record.image.classList.add('xmn-handoff-image');
+                host.appendChild(record.image);
+                document.body.appendChild(host);
+                const timeout = window.setTimeout(() => this.clearVisualHandoff(), 1800);
+                this.handoff = {
+                    host,
+                    targetStatus: target.statusId,
+                    targetMediaIndex: target.mediaIndex,
+                    timeout,
+                    generation: this.navGeneration,
+                    revealTimer: null,
+                };
+                return true;
+            }
+            catch {
+                host?.remove();
+                return false; // Handoff is optional; never interrupt native SPA navigation.
+            }
+        }
+        finishVisualHandoff(viewer) {
+            const handoff = this.handoff;
+            if (!handoff || handoff.revealTimer !== null || !viewer.isConnected ||
+                handoff.generation !== this.navGeneration || !this.originProfile)
+                return;
+            const shown = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
+            if (!shown || shown.statusId !== handoff.targetStatus ||
+                (handoff.targetMediaIndex !== null && shown.mediaIndex !== null &&
+                    handoff.targetMediaIndex !== shown.mediaIndex))
+                return;
+            // Give X a frame to paint the newly opened viewer before removing the
+            // handoff image. The failsafe timer still expires if X never renders it.
+            handoff.revealTimer = window.setTimeout(() => {
+                if (this.handoff === handoff)
+                    this.clearVisualHandoff();
+            }, 130);
+        }
+        clearVisualHandoff() {
+            const handoff = this.handoff;
+            if (!handoff)
+                return;
+            this.handoff = null;
+            window.clearTimeout(handoff.timeout);
+            if (handoff.revealTimer !== null)
+                window.clearTimeout(handoff.revealTimer);
+            handoff.host.remove();
         }
         findCloseButton(viewer) {
             const dialog = viewer.closest('[role="dialog"]');
@@ -875,6 +966,11 @@ var XMN;
             }
             this.navigationBusy = true;
             this.updateViewerState();
+            // Only show a handoff for a previously decoded, owned destination photo.
+            // The fallback (no ready photo) is always X's unmodified navigation.
+            if (nextIndex !== null)
+                this.beginVisualHandoff(this.refs[nextIndex]);
+            let destinationOpened = false;
             try {
                 closeButton.click();
                 if (!await this.waitForViewerToClose(oldViewer)) {
@@ -912,6 +1008,7 @@ var XMN;
                 const link = destination && destination.statusId !== currentRef.statusId ? this.findLiveLink(destination) : null;
                 if (link) {
                     link.click();
+                    destinationOpened = true;
                 }
                 else {
                     // Don't navigate to a guessed URL or re-open an unrelated status.
@@ -925,6 +1022,8 @@ var XMN;
                 this.toast('メディアの切り替えに失敗しました');
             }
             finally {
+                if (!destinationOpened)
+                    this.clearVisualHandoff();
                 this.navigationBusy = false;
                 this.updateViewerState();
             }

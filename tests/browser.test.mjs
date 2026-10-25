@@ -10,14 +10,40 @@ import vm from 'node:vm';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const contentScript = readFileSync(join(root, 'extension/content_script.js'));
+const extensionCss = readFileSync(join(root, 'extension/style.css'));
 const browser = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
 
-const fixture = `<!doctype html><html lang="ja"><head><meta charset="utf-8"></head><body>
+const fixture = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="/extension/style.css"></head><body>
 <main><div data-testid="primaryColumn"><ul id="tiles"></ul></div></main>
 <script>
 const wait = ms => new Promise(r => setTimeout(r, ms));
 window.prefetchLoads=[];
-window.Image = class { set src(value) { window.prefetchLoads.push(value); } };
+window.Image = function() {
+  // Use a real DOM Image, but replace its payload with a local 1px fixture.
+  const image = document.createElement('img');
+  Object.defineProperty(image,'src',{configurable:true,
+    get(){return image.dataset.requested || '';},
+    set(value){
+      image.dataset.requested=value;
+      window.prefetchLoads.push(value);
+      image.setAttribute('src','data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=');
+    }
+  });
+  Object.defineProperty(image,'naturalWidth',{configurable:true,get(){return 1;}});
+  image.decode=()=>Promise.resolve();
+  return image;
+};
+let handoffsSeen=0, nonBlockingHandoff=true;
+new MutationObserver(mutations=>{
+  for(const mutation of mutations){
+    for(const item of mutation.addedNodes){
+      if(item.nodeType===1 && item.classList.contains('xmn-visual-handoff')){
+        handoffsSeen++;
+        nonBlockingHandoff=nonBlockingHandoff && getComputedStyle(item).pointerEvents==='none';
+      }
+    }
+  }
+}).observe(document.body,{childList:true});
 const records = [];
 let nativeMoves = 0, clicked = [];
 const ul = document.getElementById('tiles');
@@ -111,6 +137,8 @@ async function exercise() {
   const boundaryRight=key('ArrowRight');
   await wait(850);
   result('last photo ArrowRight advances to next POST',boundaryRight.defaultPrevented && location.pathname.endsWith('/22/photo/1') && clicked.at(-1)==='/alice/status/22/photo/1');
+  result('predecoded SPA handoff is non-interactive and clears after viewer switch',
+    handoffsSeen>0 && nonBlockingHandoff && !document.querySelector('.xmn-visual-handoff'));
   const boundaryLeft=key('ArrowLeft');
   await wait(850);
   result('first photo ArrowLeft returns to previous POST last image',boundaryLeft.defaultPrevented && location.pathname.endsWith('/11/photo/2') && clicked.at(-1)==='/alice/status/11/photo/2');
@@ -241,6 +269,8 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
   const server = createServer((req, res) => {
     if (req.url === '/extension/content_script.js') {
       res.writeHead(200, {'content-type':'text/javascript; charset=utf-8'});res.end(contentScript);
+    } else if (req.url === '/extension/style.css') {
+      res.writeHead(200, {'content-type':'text/css; charset=utf-8'});res.end(extensionCss);
     } else {
       res.writeHead(200, {'content-type':'text/html; charset=utf-8'});res.end(fixture);
     }
@@ -254,7 +284,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 17, report);
+    assert.equal(report.split('|').length, 18, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

@@ -123,3 +123,11 @@
 - contenteditable=plaintext-only、combobox、spinbuttonでも矢印キーを横取りしない（AUD-023）。
 - 確認中のv2.2.3を含むPC固定フォルダは未変更。GitHub研究ブランチに保存し、自動検査・実機確認後に配布を判断する。
 - 詳細：docs/research/2026-10-26-owner-order-keyguards.md
+
+## v2.3.0 experimental（2026-10-26）先読み／SPA視覚引継ぎ
+
+- 同じ投稿の次写真と別投稿の先頭写真を、アルバムの途中から最大2件先読み。decode()成功したものだけ再描画用として準備完了扱いにする。
+- 別投稿へ切り替わる間のみ、既にデコード済みの画像をpointer-events:none、aria-hidden=trueの視覚的レイヤーとして最大1.8秒表示。新しいXビューアを認識したら短時間で解放。
+- XのSPA・React Router・履歴・内部API・認証へ介入しない。動画は対象外、低速回線・省データ・タブ非表示・モーション低減では適用を制限。
+- PCで確認中のv2.2.3には反映しない。新しい研究ブランチに実装し、模擬ブラウザ／Node／CIのテストと実際のXにおける確認を分けて記録する。
+- 記録：docs/research/2026-10-26-seamless-prefetch.md

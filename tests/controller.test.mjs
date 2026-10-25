@@ -129,6 +129,7 @@ test('navigation only clicks a known destination after viewer closes', async () 
     navigationBusy:false, navGeneration:2, originProfile:'alice',viewer,
     refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
     activeIndex(){return 0;},updateViewerState(){},
+    beginVisualHandoff(){return false;},clearVisualHandoff(){},
     findCloseButton(){return {click(){sequence.push('close');viewer.isConnected=false;state.pathname='/alice/media';}};},
     async waitForViewerToClose(){sequence.push('closed');return true;},
     findLiveLink(item){return {click(){sequence.push(item.key);}};},
@@ -332,6 +333,7 @@ test('SPA filter mismatch after modal close never opens a stale timeline ref', a
     navigationBusy:false,navGeneration:3,originProfile:'alice',originTimeline:'alice|photo',viewer,
     refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
     activeIndex(){return 0;},
+    beginVisualHandoff(){return false;},clearVisualHandoff(){},
     findLiveLink(){return {click(){clicked++;}};},
     findCloseButton(){return {click(){
       closeAttempts++;viewer.isConnected=false;state.pathname='/alice/media';state.search='?filter=video';
@@ -598,4 +600,94 @@ test('one explicit media link remains indexable before its thumbnail loads', () 
   assert.deepEqual(instance.refs.map((x)=>x.statusId),['630']);
   assert.equal(generic.children.length,0,'status-only text without media is not a media tile');
   state.root=null;
+});
+test('preloads the next photo and the NEXT POST before reaching the album edge', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  document.hidden=false;
+  context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'}};
+  const requests=[];
+  context.Image=class {
+    naturalWidth=800;
+    classList={add(){}};
+    set src(value) { requests.push(value); this.value=value; }
+    get src() { return this.value; }
+    decode() { return Promise.resolve(); }
+  };
+  const refs=['/alice/status/11/photo/1','/alice/status/11/photo/2',
+              '/alice/status/22/photo/1'].map(ref);
+  const urls=refs.map((item,i)=>'https://pbs.twimg.com/media/ITEM'+i+'?format=jpg&name=large');
+  const ctrl={
+    viewer:{isConnected:true}, originProfile:'alice', refs, activeIndex(){return 0;},
+    imageSources:new Map(refs.map((item,i)=>[item.key,urls[i]])),prefetched:new Map(),
+  };
+  proto.preloadAdjacentImages.call(ctrl);
+  assert.deepEqual(requests,[urls[1],urls[2]],'lookahead starts before the last native photo');
+  assert.equal(ctrl.prefetched.size,2,'at most two images are preheated');
+  await Promise.resolve();
+  assert.equal(ctrl.prefetched.get(urls[1]).ready,true);
+  assert.equal(ctrl.prefetched.get(urls[2]).ready,true);
+  proto.preloadAdjacentImages.call(ctrl);
+  assert.equal(requests.length,2,'no duplicate transfer');
+  state.pathname='/alice/media';
+});
+
+test('decoded next-photo handoff is non-interactive and expires or reveals safely', () => {
+  const oldBody=document.body, oldCreate=document.createElement;
+  const oldSetTimeout=context.window.setTimeout, oldClearTimeout=context.window.clearTimeout;
+  const oldMatchMedia=context.window.matchMedia;
+  try {
+    let id=0;
+    const timers=new Map();
+    context.window.setTimeout=(cb)=>{timers.set(++id,cb);return id;};
+    context.window.clearTimeout=(token)=>timers.delete(token);
+    context.window.matchMedia=()=>({matches:false});
+    document.hidden=false;
+    const body=new FakeElement('body');
+    document.body=body;
+    document.createElement=(tag)=>{
+      const node=new FakeElement(tag);
+      node.remove=()=>{body.children=body.children.filter(item=>item!==node);};
+      return node;
+    };
+    const target=ref('/alice/status/22/photo/1');
+    const url='https://pbs.twimg.com/media/NEXT?format=jpg&name=large';
+    const img=new FakeElement('img');
+    img.naturalWidth=800;
+    const ctrl=Object.create(proto);
+    ctrl.handoff=null;
+    ctrl.navGeneration=3;
+    ctrl.originProfile='alice';
+    ctrl.imageSources=new Map([[target.key,url]]);
+    ctrl.prefetched=new Map([[url,{image:img,ready:false}]]);
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),false,'not decoded means no overlay');
+    ctrl.prefetched.get(url).ready=true;
+    context.window.matchMedia=()=>({matches:true});
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),false,'respects reduced motion');
+    context.window.matchMedia=()=>({matches:false});
+    state.pathname='/alice/status/11/photo/1';
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),true);
+    assert.equal(body.children.length,1);
+    const host=body.children[0];
+    assert.equal(host.attrs['aria-hidden'],'true');
+    assert.equal(host.children[0],img,'reuses decoded HTMLImageElement without another request');
+    assert.equal(ctrl.handoff.targetStatus,'22');
+    state.pathname='/alice/status/22/photo/1';
+    proto.finishVisualHandoff.call(ctrl,{isConnected:true});
+    assert.notEqual(ctrl.handoff.revealTimer,null);
+    const reveal=timers.get(ctrl.handoff.revealTimer);
+    reveal();
+    assert.equal(ctrl.handoff,null);
+    assert.equal(body.children.length,0,'overlay is removed after destination viewer is ready');
+    state.pathname='/alice/status/11/photo/1';
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),true);
+    const expires=timers.get(ctrl.handoff.timeout);
+    expires();
+    assert.equal(ctrl.handoff,null,'failsafe automatically removes overlay on a broken SPA route');
+    assert.equal(body.children.length,0);
+  } finally {
+    document.body=oldBody;document.createElement=oldCreate;
+    context.window.setTimeout=oldSetTimeout;context.window.clearTimeout=oldClearTimeout;
+    context.window.matchMedia=oldMatchMedia;
+    state.pathname='/alice/media';
+  }
 });
