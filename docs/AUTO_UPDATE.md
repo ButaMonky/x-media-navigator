@@ -3,7 +3,7 @@
 ## これは何を自動化するか
 
 - 常に同じ場所をChromeに登録します：
-  C:\Users\Saito\Downloads\X-Media-Navigator-Current
+  %USERPROFILE%\Downloads\X-Media-Navigator-Current
 - GitHubの非公開betaブランチで、テスト成功済みのpush実行が作ったベータZIPのみ取得。
 - Windowsタスクスケジューラが15分ごとに新バージョンを調べ、更新があれば固定フォルダを安全に交換。
 - 変更前のフォルダはバックアップ。失敗時には以前の版を維持・復元。
@@ -15,10 +15,10 @@
 
 1. Windows PCでGitHub CLI (gh) に、非公開リポジトリ ButaMonky/x-media-navigator にアクセスできるアカウントでログインしていることを確認。
 2. GitHubのbetaブランチから tools/update-private-beta.ps1 をPCの固定位置へ配置。
-   管理用の例：C:\Users\Saito\Documents\XMN-PrivateBetaUpdater\update-private-beta.ps1
+   管理用の例：$env:USERPROFILE\Documents\XMN-PrivateBetaUpdater\update-private-beta.ps1
 3. PowerShell から次を一度実行：
 
-    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "C:\Users\Saito\Documents\XMN-PrivateBetaUpdater\update-private-beta.ps1"
+    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "$env:USERPROFILE\Documents\XMN-PrivateBetaUpdater\update-private-beta.ps1"
 
 4. インストールフォルダの manifest.json が存在することを確認。
 5. chrome://extensions でデベロッパーモードをオンにし「パッケージ化されていない拡張機能を読み込む」から、固定フォルダ X-Media-Navigator-Current を **一回だけ** 選択。
