@@ -129,6 +129,7 @@ test('navigation only clicks a known destination after viewer closes', async () 
     navigationBusy:false, navGeneration:2, originProfile:'alice',viewer,
     refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
     activeIndex(){return 0;},updateViewerState(){},
+    beginVisualHandoff(){return false;},clearVisualHandoff(){},
     findCloseButton(){return {click(){sequence.push('close');viewer.isConnected=false;state.pathname='/alice/media';}};},
     async waitForViewerToClose(){sequence.push('closed');return true;},
     findLiveLink(item){return {click(){sequence.push(item.key);}};},
@@ -163,8 +164,9 @@ test('preloading is bounded, prioritizes adjacent images, and respects save-data
     [refs[1].key,'https://pbs.twimg.com/media/B?format=jpg&name=large'],
     [refs[2].key,'https://pbs.twimg.com/media/C?format=jpg&name=large']
   ]);
-  const instance = {viewer:{isConnected:true},originProfile:'alice',refs,imageSources:sources,
-    prefetched:new Map(),activeIndex(){return 1;}};
+  const instance = Object.assign(Object.create(proto), {viewer:{isConnected:true},originProfile:'alice',refs,imageSources:sources,
+    prefetched:new Map(),prefetchFailed:new Set(),prefetchQueue:[],prefetchWanted:new Set(),prefetchInFlight:0,
+    activeIndex(){return 1;}});
   proto.preloadAdjacentImages.call(instance);
   assert.equal(calls.length,2);
   assert.deepEqual(calls,[sources.get(refs[2].key),sources.get(refs[0].key)]);
@@ -260,6 +262,7 @@ test('photo count requires an explicit matching counter or all four photos', () 
   const counter=new FakeElement('span',{'aria-label':'Image 1 of 2'});
   viewer.querySelectorAll=()=>[counter];
   assert.equal(proto.photoCount.call(controller,viewer,'100'),2);
+  controller.knownPhotoTotals.clear();
   counter.setAttribute('aria-label','Image 2 of 3');
   assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'counter for a different displayed index is ignored');
   viewer.querySelectorAll=()=>[];
@@ -332,6 +335,7 @@ test('SPA filter mismatch after modal close never opens a stale timeline ref', a
     navigationBusy:false,navGeneration:3,originProfile:'alice',originTimeline:'alice|photo',viewer,
     refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
     activeIndex(){return 0;},
+    beginVisualHandoff(){return false;},clearVisualHandoff(){},
     findLiveLink(){return {click(){clicked++;}};},
     findCloseButton(){return {click(){
       closeAttempts++;viewer.isConnected=false;state.pathname='/alice/media';state.search='?filter=video';
@@ -348,7 +352,7 @@ test('SPA filter mismatch after modal close never opens a stale timeline ref', a
 });
 
 
-test('complete original-post photo tile grid proves 2/3 photos without counter, but partial/quoted tiles do not', () => {
+test('carousel showing two or three images never proves the entire album size', () => {
   const controller=Object.create(proto);
   controller.originProfile='alice';controller.refs=[];
   const root=new FakeElement('div');
@@ -363,10 +367,10 @@ test('complete original-post photo tile grid proves 2/3 photos without counter, 
   article.querySelectorAll=(selector)=>selector==='[data-testid="tweetPhoto"]'?tiles:[];
   root.querySelectorAll=(selector)=>selector==='article[data-testid="tweet"]'?[article]:[];
   state.pathname='/alice/status/100/photo/2';
-  assert.equal(proto.photoCount.call(controller,viewer,'100'),2,'two fully represented photo tiles');
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'two mounted photos might only be 2 of 4');
   tiles=entries(3);
   state.pathname='/alice/status/100/photo/3';
-  assert.equal(proto.photoCount.call(controller,viewer,'100'),3,'three fully represented photo tiles');
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'three mounted photos might only be 3 of 4');
   tiles=entries(3);tiles[2].querySelectorAll=()=>[];
   assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'incomplete grid cannot prove count');
   tiles=entries(2,'bob');
@@ -598,4 +602,260 @@ test('one explicit media link remains indexable before its thumbnail loads', () 
   assert.deepEqual(instance.refs.map((x)=>x.statusId),['630']);
   assert.equal(generic.children.length,0,'status-only text without media is not a media tile');
   state.root=null;
+});
+test('preloads the next photo and the NEXT POST before reaching the album edge', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  document.hidden=false;
+  context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'}};
+  const requests=[];
+  context.Image=class {
+    naturalWidth=800;
+    classList={add(){}};
+    set src(value) { requests.push(value); this.value=value; }
+    get src() { return this.value; }
+    decode() { return Promise.resolve(); }
+  };
+  const refs=['/alice/status/11/photo/1','/alice/status/11/photo/2',
+              '/alice/status/22/photo/1'].map(ref);
+  const urls=refs.map((item,i)=>'https://pbs.twimg.com/media/ITEM'+i+'?format=jpg&name=large');
+  const ctrl=Object.assign(Object.create(proto), {
+    viewer:{isConnected:true}, originProfile:'alice', refs, activeIndex(){return 0;},
+    imageSources:new Map(refs.map((item,i)=>[item.key,urls[i]])),prefetched:new Map(),
+    prefetchQueue:[],prefetchWanted:new Set(),prefetchInFlight:0,prefetchFailed:new Set(),
+  });
+  proto.preloadAdjacentImages.call(ctrl);
+  assert.deepEqual(requests,[urls[1],urls[2]],'lookahead starts before the last native photo');
+  assert.equal(ctrl.prefetched.size,2,'at most two images are preheated');
+  await Promise.resolve();
+  assert.equal(ctrl.prefetched.get(urls[1]).ready,true);
+  assert.equal(ctrl.prefetched.get(urls[2]).ready,true);
+  proto.preloadAdjacentImages.call(ctrl);
+  assert.equal(requests.length,2,'no duplicate transfer');
+  state.pathname='/alice/media';
+});
+
+test('decoded next-photo handoff is non-interactive and expires or reveals safely', () => {
+  const oldBody=document.body, oldCreate=document.createElement;
+  const oldSetTimeout=context.window.setTimeout, oldClearTimeout=context.window.clearTimeout;
+  const oldMatchMedia=context.window.matchMedia;
+  try {
+    let id=0;
+    const timers=new Map();
+    context.window.setTimeout=(cb)=>{timers.set(++id,cb);return id;};
+    context.window.clearTimeout=(token)=>timers.delete(token);
+    context.window.matchMedia=()=>({matches:false});
+    document.hidden=false;
+    const body=new FakeElement('body');
+    document.body=body;
+    document.createElement=(tag)=>{
+      const node=new FakeElement(tag);
+      node.remove=()=>{body.children=body.children.filter(item=>item!==node);};
+      return node;
+    };
+    const target=ref('/alice/status/22/photo/1');
+    const url='https://pbs.twimg.com/media/NEXT?format=jpg&name=large';
+    const img=new FakeElement('img');
+    img.naturalWidth=800;
+    const ctrl=Object.create(proto);
+    ctrl.handoff=null;
+    ctrl.navGeneration=3;
+    ctrl.originProfile='alice';
+    ctrl.imageSources=new Map([[target.key,url]]);
+    ctrl.prefetched=new Map([[url,{image:img,ready:false}]]);
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),false,'not decoded means no overlay');
+    ctrl.prefetched.get(url).ready=true;
+    context.window.matchMedia=()=>({matches:true});
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),false,'respects reduced motion');
+    context.window.matchMedia=()=>({matches:false});
+    state.pathname='/alice/status/11/photo/1';
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),true);
+    assert.equal(body.children.length,1);
+    const host=body.children[0];
+    assert.equal(host.attrs['aria-hidden'],'true');
+    assert.equal(host.children[0],img,'reuses decoded HTMLImageElement without another request');
+    assert.equal(ctrl.handoff.targetStatus,'22');
+    state.pathname='/alice/status/22/photo/1';
+    proto.finishVisualHandoff.call(ctrl,{isConnected:true,querySelector:()=>({complete:true,naturalWidth:1})});
+    assert.notEqual(ctrl.handoff.revealTimer,null);
+    const reveal=timers.get(ctrl.handoff.revealTimer);
+    reveal();
+    assert.equal(ctrl.handoff,null);
+    assert.equal(body.children.length,0,'overlay is removed after destination viewer is ready');
+    state.pathname='/alice/status/11/photo/1';
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),true);
+    const expires=timers.get(ctrl.handoff.timeout);
+    expires();
+    assert.equal(ctrl.handoff,null,'failsafe automatically removes overlay on a broken SPA route');
+    assert.equal(body.children.length,0);
+  } finally {
+    document.body=oldBody;document.createElement=oldCreate;
+    context.window.setTimeout=oldSetTimeout;context.window.clearTimeout=oldClearTimeout;
+    context.window.matchMedia=oldMatchMedia;
+    state.pathname='/alice/media';
+  }
+});
+test('lookahead queues five future posts with at most two parallel downloads', async () => {
+  const previousImage = context.Image;
+  context.navigator = { onLine: true, connection: { saveData: false, effectiveType: '4g' } };
+  document.hidden = false;
+  const started = [], completeDecode = [];
+  context.Image = class {
+    naturalWidth = 1200; naturalHeight = 800;
+    set src(url) { started.push(url); this.currentUrl = url; }
+    get src() { return this.currentUrl; }
+    decode() { return new Promise(resolve => completeDecode.push(resolve)); }
+  };
+  try {
+    const refs = Array.from({ length: 8 }, (_, i) => ref('/alice/status/' + (100 + i) + '/photo/1'));
+    const sources = new Map(refs.map((item, i) => [
+      item.key, 'https://pbs.twimg.com/media/Z' + i + '?format=jpg&name=large',
+    ]));
+    const ctrl = Object.assign(Object.create(proto), {
+      viewer: { isConnected: true }, originProfile: 'alice', refs,
+      imageSources: sources, prefetched: new Map(),
+      prefetchQueue: [], prefetchWanted: new Set(), prefetchInFlight: 0,
+      prefetchFailed: new Set(), navGeneration: 1, navigationBusy: false,
+      activeIndex() { return 0; },
+    });
+    state.pathname = '/alice/status/100/photo/1';
+    proto.preloadAdjacentImages.call(ctrl);
+    assert.equal(started.length, 2, 'only two parallel requests');
+    assert.equal(ctrl.prefetchInFlight, 2);
+    assert.equal(ctrl.prefetchQueue.length, 3, 'three later posts are queued');
+    for (let i = 0; i < 5; i++) {
+      completeDecode[i]();
+      await Promise.resolve(); await Promise.resolve();
+      assert.ok(ctrl.prefetchInFlight <= 2);
+    }
+    assert.equal(started.length, 5, 'five future posts are warmed');
+    assert.equal(ctrl.prefetched.size, 5);
+    assert.equal(ctrl.prefetchInFlight, 0);
+    proto.preloadAdjacentImages.call(ctrl);
+    assert.equal(started.length, 5, 'cached URLs do not fetch twice');
+    context.navigator.connection.effectiveType = '3g';
+    const slow = Object.assign(Object.create(proto), {
+      ...ctrl, prefetched: new Map(), prefetchQueue: [],
+      prefetchWanted: new Set(), prefetchInFlight: 0, prefetchFailed: new Set(),
+    });
+    proto.preloadAdjacentImages.call(slow);
+    assert.equal(started.length, 7, '3g connection limits lookahead to two');
+    assert.equal(slow.prefetchQueue.length, 0);
+  } finally {
+    context.Image = previousImage;
+    state.pathname = '/alice/media';
+  }
+});
+
+test('ARIA setsize and explicit disabled native next allow one right press', () => {
+  const viewer = new FakeElement('div');
+  viewer.parentElement = new FakeElement('div');
+  const node = new FakeElement('span', { 'aria-posinset': '2', 'aria-setsize': '3' });
+  viewer.querySelectorAll = (selector) => selector.includes('aria-setsize') ? [node] : [];
+  const controller = Object.create(proto);
+  controller.originProfile = 'alice';
+  state.pathname = '/alice/status/42/photo/2';
+  assert.equal(proto.photoCount.call(controller, viewer, '42'), 3);
+  state.pathname = '/alice/status/42/photo/4';
+  assert.equal(proto.photoCount.call(controller, viewer, '42'), 4, 'fourth photo is always last');
+
+  const button = new FakeElement('button', { 'aria-label': '次の画像', 'aria-disabled': 'true' });
+  viewer.querySelectorAll = () => [button];
+  const calls = [];
+  controller.viewer = viewer; controller.navigationBusy = false;
+  controller.activeIndex = () => 0; controller.photoCount = () => null;
+  controller.nativeGalleryArrowAvailable = () => false;
+  controller.navigate = (direction) => calls.push(direction);
+  state.pathname = '/alice/status/42/photo/1';
+  const event = keyEvent('ArrowRight');
+  proto.onKeyDown.call(controller, event);
+  assert.equal(event.prevented, true, 'native disabled photo-next proves album end');
+  assert.deepEqual(calls, [1]);
+  state.pathname = '/alice/media';
+});
+
+test('visual handoff waits for actual X image load instead of modal mounting only', () => {
+  const timers = new Map(); let nextTimer = 1;
+  const oldSetTimeout = context.window.setTimeout, oldClearTimeout = context.window.clearTimeout;
+  context.window.setTimeout = (handler) => { const id = nextTimer++; timers.set(id, handler); return id; };
+  context.window.clearTimeout = (id) => timers.delete(id);
+  try {
+    const image = { complete: false, naturalWidth: 0, handler: null,
+      addEventListener(event, fn) { if (event === 'load') this.handler = fn; } };
+    const viewer = { isConnected: true, querySelector() { return image; } };
+    const host = { removed: false, remove() { this.removed = true; } };
+    const controller = Object.create(proto);
+    controller.originProfile = 'alice'; controller.navGeneration = 2;
+    controller.handoff = { host, targetStatus: '77', targetMediaIndex: 1,
+      generation: 2, timeout: 99, revealTimer: null, observer: null, waitingImage: null };
+    state.pathname = '/alice/status/77/photo/1';
+    proto.finishVisualHandoff.call(controller, viewer);
+    assert.equal(controller.handoff.revealTimer, null, 'not ready when img has not loaded');
+    assert.equal(typeof image.handler, 'function');
+    image.complete = true; image.naturalWidth = 100;
+    image.handler();
+    assert.notEqual(controller.handoff.revealTimer, null);
+    const done = timers.get(controller.handoff.revealTimer);
+    done();
+    assert.equal(controller.handoff, null);
+    assert.equal(host.removed, true);
+  } finally {
+    context.window.setTimeout = oldSetTimeout;
+    context.window.clearTimeout = oldClearTimeout;
+    state.pathname = '/alice/media';
+  }
+});
+
+test('a confirmed album total is reused on later visits without double-pressing', () => {
+  const controller=Object.create(proto);
+  controller.originProfile='alice';
+  controller.knownPhotoTotals=new Map();
+  const viewer=new FakeElement('div');
+  viewer.parentElement=new FakeElement('div');
+  viewer.querySelectorAll=()=>[];
+  state.pathname='/alice/status/42/photo/2';
+  proto.rememberPhotoTotal.call(controller,'42',2);
+  assert.equal(proto.photoCount.call(controller,viewer,'42'),2);
+  state.pathname='/alice/status/43/photo/2';
+  assert.equal(proto.photoCount.call(controller,viewer,'43'),null,'not inherited by another post');
+  state.pathname='/alice/status/42/photo/1';
+  assert.equal(proto.photoCount.call(controller,viewer,'42'),2,'evidence survives reopening');
+  proto.rememberPhotoTotal.call(controller,'42',5);
+  assert.equal(controller.knownPhotoTotals.get('42'),2,'invalid count cannot replace an exact count');
+  state.pathname='/alice/media';
+});
+
+test('a failed prefetch does not enter an infinite retry loop', async () => {
+  const prior=context.Image, priorNav=context.navigator;
+  document.hidden=false;
+  const started=[];
+  context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'}};
+  context.Image=class {
+    naturalWidth=100;naturalHeight=100;
+    set src(v){this.value=v;started.push(v);}
+    get src(){return this.value;}
+    decode(){return this.value.includes('FAIL') ? Promise.reject(new Error('network')) : Promise.resolve();}
+  };
+  try {
+    const refs=['/alice/status/11/photo/1','/alice/status/12/photo/1',
+      '/alice/status/13/photo/1','/alice/status/14/photo/1'].map(ref);
+    const urls=refs.map((r,i)=>'https://pbs.twimg.com/media/'+(i===1?'FAIL':('OK'+i))+'?format=jpg&name=large');
+    const ctrl=Object.assign(Object.create(proto),{
+      viewer:{isConnected:true},originProfile:'alice',refs,
+      activeIndex(){return 0;},navGeneration:8,navigationBusy:false,
+      prefetched:new Map(),prefetchQueue:[],prefetchWanted:new Set(),
+      prefetchFailed:new Set(),prefetchInFlight:0,
+      imageSources:new Map(refs.map((r,i)=>[r.key,urls[i]])),
+    });
+    state.pathname='/alice/status/11/photo/1';
+    proto.preloadAdjacentImages.call(ctrl);
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    assert.equal(started.filter(url=>url===urls[1]).length,1);
+    assert.equal(ctrl.prefetchFailed.has(urls[1]),true);
+    assert.ok(started.includes(urls[3]),'other future posts still load');
+    proto.preloadAdjacentImages.call(ctrl);
+    assert.equal(started.filter(url=>url===urls[1]).length,1,'failed URL does not loop');
+  } finally {
+    state.pathname='/alice/media';
+    context.Image=prior;context.navigator=priorNav;
+  }
 });
