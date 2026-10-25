@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('../extension/content_script.js', import.meta.url), 'utf8');
-const state = { pathname: '/alice/media', root: null };
+const state = { pathname: '/alice/media', search: '', root: null };
 class FakeElement {
   constructor(tag='div', attrs={}) {
     this.tag=tag;this.attrs=attrs;this.children=[];this.classList={ add(){} };this.isConnected=true;
@@ -30,7 +30,7 @@ const document = {
   querySelector(selector) { return selector==='main [data-testid="primaryColumn"]' ? state.root : null; },
   createElement(tag) { return new FakeElement(tag); },
 };
-const context = vm.createContext({ URL, Set, Map, Element:FakeElement, document, window: { location:state }, console });
+const context = vm.createContext({ URL, URLSearchParams, Set, Map, Element:FakeElement, document, window: { location:state }, console });
 vm.runInContext(source, context);
 const proto = context.XMN.Controller.prototype;
 const ref = (href) => context.XMN.mediaRefFromHref(href, 'alice');
@@ -195,4 +195,84 @@ test('lazy-loader keeps waiting when only more images from the SAME post arrive'
   const result=await proto.loadNextPost.call(instance,'11',5);
   assert.equal(result.statusId,'22');
   assert.equal(scans,4);
+});
+
+
+test('changing the media filter holds old tiles until X replaces the visible grid', () => {
+  state.pathname='/alice/media';state.search='?filter=photo';
+  const oldTile=makeTile('/alice/status/10/photo/1');
+  state.root=new FakeElement('div'); state.root.tiles=[oldTile.tile];
+  const controller=Object.create(proto);
+  controller.originProfile='alice';controller.originTimeline='alice|photo';
+  controller.refs=[ref('/alice/status/10/photo/1')];controller.indexes=new Map();
+  controller.pendingGrid=null;controller.lastPath='/alice/media';
+  let scans=0, resets=0;
+  controller.resetSession=function(){resets++;this.refs=[];this.pendingGrid=null;};
+  controller.ensureListObserver=function(){};
+  controller.stopListObserver=function(){};
+  controller.scanTiles=function(){scans++;this.refs=[ref(state.root.tiles[0].links[0].getAttribute('href'))];};
+  controller.removeViewerUI=function(){};
+  controller.syncViewer=function(){};
+  proto.tick.call(controller);
+  assert.equal(scans,1);
+  state.search='?filter=video';
+  proto.tick.call(controller);
+  assert.equal(resets,1);
+  assert.equal(scans,1,'old photo grid must not be indexed as video');
+  assert.ok(controller.pendingGrid);
+  // Moving only an unrelated query parameter should not reset any session.
+  state.search='?filter=video&utm_source=test';
+  proto.tick.call(controller);
+  assert.equal(resets,1);
+  assert.equal(scans,1);
+  state.root.tiles=[makeTile('/alice/status/20/video/1').tile];
+  proto.tick.call(controller);
+  assert.equal(scans,2,'new list finally accepted');
+  assert.equal(controller.refs[0].statusId,'20');
+  assert.equal(controller.pendingGrid,null);
+  state.search='';state.pathname='/alice/media';
+});
+
+test('photo count requires an explicit matching counter or all four photos', () => {
+  state.pathname='/alice/status/100/photo/1';
+  const controller=Object.create(proto);
+  controller.originProfile='alice';controller.refs=[];
+  const article=new FakeElement('article');
+  article.querySelectorAll=(selector)=>selector==='a[href*="/photo/"]'
+    ? ['/alice/status/100/photo/1','/alice/status/100/photo/2'].map(h=>new FakeElement('a',{href:h})) : [];
+  const root=new FakeElement('div');
+  root.querySelectorAll=(selector)=>selector==='article[data-testid="tweet"]'?[article]:[];
+  const viewer=new FakeElement('div');viewer.parentElement=root;
+  viewer.querySelectorAll=()=>[];
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'2 known links might be only 2 of 4');
+  const counter=new FakeElement('span',{'aria-label':'Image 1 of 2'});
+  viewer.querySelectorAll=()=>[counter];
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),2);
+  counter.setAttribute('aria-label','Image 2 of 3');
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'counter for a different displayed index is ignored');
+  viewer.querySelectorAll=()=>[];
+  article.querySelectorAll=()=>['/alice/status/100/photo/1','/alice/status/100/photo/2',
+    '/alice/status/100/photo/3','/alice/status/100/photo/4'].map(h=>new FakeElement('a',{href:h}));
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),4);
+  state.pathname='/alice/media';
+});
+
+
+test('thumbnail URL cache stays bounded over a long media timeline', () => {
+  state.pathname='/alice/media';state.search='';
+  const tiles=Array.from({length:145},(_,i)=>{
+    const {tile}=makeTile('/alice/status/'+(300+i)+'/photo/1');
+    const old=tile.querySelector.bind(tile);
+    tile.querySelector=(selector)=>selector==='img[src]'
+      ? { currentSrc:'https://pbs.twimg.com/media/T'+i+'?format=jpg&name=small' }
+      : old(selector);
+    return tile;
+  });
+  state.root=new FakeElement('div');state.root.tiles=tiles;
+  const instance={originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()};
+  proto.scanTiles.call(instance);
+  assert.equal(instance.refs.length,145);
+  assert.equal(instance.imageSources.size,128);
+  assert.ok(!instance.imageSources.has(ref('/alice/status/300/photo/1').key));
+  assert.ok(instance.imageSources.has(ref('/alice/status/444/photo/1').key));
 });

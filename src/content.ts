@@ -49,6 +49,8 @@ namespace XMN {
   /** Maintain a stable ordered list of media refs, never cached DOM nodes. */
   export class Controller {
     private originProfile: string | null = null;
+    private originTimeline: string | null = null;
+    private pendingGrid: { column: Element | null; firstTiles: Element[]; firstKeys: string[] } | null = null;
     private refs: MediaRef[] = [];
     private indexes = new Map<string, number>();
     private imageSources = new Map<string, string>();
@@ -76,6 +78,7 @@ namespace XMN {
     private resetSession(): void {
       this.navGeneration++;
       this.navigationBusy = false;
+      this.pendingGrid = null;
       this.refs = [];
       this.indexes.clear();
       this.imageSources.clear();
@@ -100,17 +103,29 @@ namespace XMN {
     private tick(): void {
       const path = window.location.pathname;
       const atMedia = mediaProfileFromPath(path);
-      if (atMedia) {
+      const timeline = mediaTimelineKey(path, window.location.search);
+      if (atMedia && timeline) {
         if (this.originProfile !== atMedia) {
           this.resetSession();
           this.originProfile = atMedia;
+          this.originTimeline = timeline;
+        } else if (this.originTimeline !== timeline) {
+          // The URL can change before X paints the new filter results. Never collect
+          // stale photos into the new video timeline (or vice versa).
+          const snapshot = this.captureGrid();
+          this.resetSession();
+          this.originProfile = atMedia;
+          this.originTimeline = timeline;
+          this.pendingGrid = snapshot;
         }
         this.ensureListObserver();
-        this.scanTiles();
+        if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid)) this.pendingGrid = null;
+        if (!this.pendingGrid) this.scanTiles();
       } else if (!this.originProfile || !profileStatusFromPath(path, this.originProfile)) {
         if (this.originProfile !== null) {
           this.resetSession();
           this.originProfile = null;
+          this.originTimeline = null;
         }
       } else {
         // The timeline is a retained DOM tree beneath the modal. Do NOT index the
@@ -128,6 +143,27 @@ namespace XMN {
       }
     }
 
+    /** First few anchors and DOM nodes distinguish X's data swap from our badge cleanup. */
+    private captureGrid(): { column: Element | null; firstTiles: Element[]; firstKeys: string[] } {
+      const column = mediaColumn();
+      const firstTiles = column ? Array.from(column.querySelectorAll(TILE_SELECTOR)).slice(0, 8) : [];
+      const firstKeys = firstTiles.map((tile) => {
+        const link = this.originProfile ? usableTileLink(tile, this.originProfile) : null;
+        return link?.ref.key ?? '';
+      });
+      return { column, firstTiles, firstKeys };
+    }
+
+    private hasGridTurnedOver(previous: { column: Element | null; firstTiles: Element[]; firstKeys: string[] }): boolean {
+      const current = this.captureGrid();
+      if (current.firstTiles.length === 0) return false;
+      // Waiting for X's actual list replacement is safer than a fixed delay.
+      if (current.column !== previous.column) return true;
+      const replaced = current.firstTiles.some((tile, index) => tile !== previous.firstTiles[index]);
+      const keysChanged = current.firstKeys.some((key, index) => key !== previous.firstKeys[index]);
+      return replaced || keysChanged;
+    }
+
     private ensureListObserver(): void {
       const column = mediaColumn();
       if (!column || column === this.observedColumn) return;
@@ -137,14 +173,18 @@ namespace XMN {
         if (this.scanTimer !== null) return;
         this.scanTimer = window.setTimeout(() => {
           this.scanTimer = null;
-          if (mediaProfileFromPath(window.location.pathname) === this.originProfile) this.scanTiles();
+          if (mediaProfileFromPath(window.location.pathname) === this.originProfile) {
+            if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid)) this.pendingGrid = null;
+            if (!this.pendingGrid) this.scanTiles();
+          }
         }, 100);
       });
       this.listObserver.observe(column, { childList: true, subtree: true });
     }
 
     private scanTiles(): void {
-      if (!this.originProfile || mediaProfileFromPath(window.location.pathname) !== this.originProfile) return;
+      if (!this.originProfile || this.pendingGrid ||
+          mediaProfileFromPath(window.location.pathname) !== this.originProfile) return;
       const root = mediaColumn();
       if (!root) return;
       for (const tile of Array.from(root.querySelectorAll<HTMLElement>(TILE_SELECTOR))) {
@@ -154,7 +194,16 @@ namespace XMN {
         // Capture only CDN image locations from the already-rendered media tiles.
         const thumbnail = tile.querySelector<HTMLImageElement>('img[src]');
         const imageUrl = thumbnail ? preloadImageUrl(thumbnail.currentSrc || thumbnail.src || '') : null;
-        if (imageUrl) this.imageSources.set(ref.key, imageUrl);
+        if (imageUrl) {
+          // Keep only nearby/recent thumbnail URLs in memory during long timelines.
+          this.imageSources.delete(ref.key);
+          this.imageSources.set(ref.key, imageUrl);
+          while (this.imageSources.size > 128) {
+            const oldest = this.imageSources.keys().next().value;
+            if (oldest === undefined) break;
+            this.imageSources.delete(oldest);
+          }
+        }
         let index = this.indexes.get(ref.key);
         if (index === undefined) {
           index = this.refs.length;
@@ -271,28 +320,29 @@ namespace XMN {
     private photoCount(viewer: HTMLElement, statusId: string): number | null {
       const root = viewer.closest('[role="dialog"]') ?? viewer.parentElement;
       if (!root || !this.originProfile) return null;
-      for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
-        const photos = Array.from(article.querySelectorAll('[data-testid="tweetPhoto"] a[href], a[href*="/photo/"]'));
-        const indexes = new Set<number>();
-        for (const link of photos) {
-          const ref = mediaRefFromHref(link.getAttribute('href') ?? '', this.originProfile);
-          if (ref?.kind === 'photo' && ref.statusId === statusId && ref.mediaIndex !== null) indexes.add(ref.mediaIndex);
+      const displayed = mediaRefFromHref(window.location.pathname, this.originProfile);
+      // X can render a gallery counter. Confirm it belongs to the displayed photo,
+      // rather than matching a number in an unrelated reply or recommended post.
+      if (displayed?.kind === 'photo' && displayed.statusId === statusId) {
+        for (const node of viewer.querySelectorAll<HTMLElement>('[aria-label], [title]')) {
+          if (node.closest('.xmn-nav-button, .xmn-status')) continue;
+          for (const label of [node.getAttribute('aria-label'), node.getAttribute('title')]) {
+            const count = label && parseGalleryCounter(label);
+            if (count && count.current === displayed.mediaIndex) return count.total;
+          }
         }
-        const max = Math.max(0, ...indexes);
-        if (max > 0 && indexes.size === max) return max;
       }
-      // A full run of contiguous media-tab tiles is a useful fallback, but
-      // only if the next registered tile is a DIFFERENT post.
-      const group = this.refs.filter((ref) => ref.statusId === statusId && ref.kind === 'photo');
-      const indexes = new Set(group.map((ref) => ref.mediaIndex).filter((i): i is number => i !== null));
-      const max = Math.max(0, ...indexes);
-      let groupEnd = -1;
-      for (let i = this.refs.length - 1; i >= 0; i--) {
-        if (this.refs[i].statusId === statusId) { groupEnd = i; break; }
+      // Official X rules cap photos at four; seeing all four distinct photo URLs
+      // is therefore complete evidence. One, two, or three visible thumbnails
+      // are NOT proof that the post contains no additional hidden photos.
+      const indexes = new Set<number>();
+      for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
+        for (const link of article.querySelectorAll('a[href*="/photo/"]')) {
+          const ref = mediaRefFromHref(link.getAttribute('href') ?? '', this.originProfile);
+          if (ref?.statusId === statusId && ref.kind === 'photo' && ref.mediaIndex !== null) indexes.add(ref.mediaIndex);
+        }
       }
-      if (max > 0 && indexes.size === max && groupEnd >= 0 &&
-          groupEnd < this.refs.length - 1 && this.refs[groupEnd + 1].statusId !== statusId) return max;
-      return null;
+      return completeFourPhotoSet(indexes) ? 4 : null;
     }
 
     private nativeGalleryArrowAvailable(viewer: HTMLElement, direction: Direction): boolean {
@@ -366,6 +416,12 @@ namespace XMN {
         image.fetchPriority = 'low';
         image.src = url;
         this.prefetched.set(url, image);
+        // Decode proactively when supported, but never block X's own UI.
+        if (typeof image.decode === 'function') {
+          void image.decode().catch(() => {
+            if (this.prefetched.get(url) === image) this.prefetched.delete(url);
+          });
+        }
       }
     }
 

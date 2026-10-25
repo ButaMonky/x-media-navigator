@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
 const source = readFileSync(new URL('./.build/core.js', import.meta.url), 'utf8');
-const context = vm.createContext({ URL, Set });
+const context = vm.createContext({ URL, URLSearchParams, Set });
 vm.runInContext(source, context, { filename: 'core.js' });
 const { XMN } = context;
 
@@ -121,4 +121,31 @@ test('image preloader only uses X image CDN, never arbitrary third-party or vide
     'https://pbs.twimg.com/media/ABC?format=jpg',
     'https://video.twimg.com/video/ABC',
     'data:image/png;base64,AAAA']) assert.equal(XMN.preloadImageUrl(url),null,url);
+});
+
+
+test('media timeline context distinguishes Photos/Videos but ignores tracking parameters', () => {
+  assert.equal(XMN.mediaTimelineKey('/Alice/media', '?filter=photo'), 'alice|photo');
+  assert.equal(XMN.mediaTimelineKey('/alice/media/', '?filter=PHOTO&utm_source=foo'), 'alice|photo');
+  assert.equal(XMN.mediaTimelineKey('/alice/media', '?filter=video'), 'alice|video');
+  assert.equal(XMN.mediaTimelineKey('/alice/media', '?filter=unknown'), 'alice|unknown');
+  assert.equal(XMN.mediaTimelineKey('/alice/media', '?utm_source=bar'), 'alice|default');
+  assert.notEqual(XMN.mediaTimelineKey('/alice/media','?filter=photo'), XMN.mediaTimelineKey('/alice/media','?filter=video'));
+  assert.equal(XMN.mediaTimelineKey('/alice/status/1/photo/2', '?filter=photo'), null);
+});
+
+test('an incomplete set of thumbnails never proves the last photo', () => {
+  for (const group of [[],[1],[1,2],[1,2,3],[1,3,4],[0,1,2,3]]) {
+    assert.equal(XMN.completeFourPhotoSet(new Set(group)), false, JSON.stringify(group));
+  }
+  assert.equal(XMN.completeFourPhotoSet(new Set([4,2,3,1])), true);
+});
+
+test('recognizes only explicit bounded gallery counters', () => {
+  for (const label of ['Image 2 of 4', 'Photo 1 of 2', '画像 4/4', '1 / 1']) {
+    assert.ok(XMN.parseGalleryCounter(label), label);
+  }
+  for (const label of ['20 of 40', '2 of 5', 'Image 2 of 1', '2 likes', '1/2 comments']) {
+    assert.equal(XMN.parseGalleryCounter(label), null, label);
+  }
 });

@@ -16,6 +16,36 @@ var XMN;
         return match[1].toLowerCase();
     }
     XMN.mediaProfileFromPath = mediaProfileFromPath;
+    /**
+     * Media tab URL may keep the same pathname when the Photos/Videos dropdown changes.
+     * An absent filter is NOT assumed to mean video: record it independently.
+     * Unrelated query params are deliberately ignored.
+     */
+    function mediaTimelineKey(pathname, search) {
+        const profile = mediaProfileFromPath(pathname);
+        if (!profile)
+            return null;
+        const filters = new URLSearchParams(search).getAll('filter').map((value) => value.trim().toLowerCase());
+        const mode = filters.length === 0 ? 'default'
+            : filters.length === 1 ? (filters[0] || 'empty') : `multi:${filters.join(',')}`;
+        return `${profile}|${encodeURIComponent(mode)}`;
+    }
+    XMN.mediaTimelineKey = mediaTimelineKey;
+    /** Only a complete 4-photo set proves album completion without a gallery counter. */
+    function completeFourPhotoSet(indexes) {
+        return indexes.size === 4 && [1, 2, 3, 4].every((index) => indexes.has(index));
+    }
+    XMN.completeFourPhotoSet = completeFourPhotoSet;
+    /** Accept only a clearly displayed image counter, not generic UI text. */
+    function parseGalleryCounter(label) {
+        const match = /^(?:(?:image|photo|picture|画像|写真)\s*)?(\d+)\s*(?:\/|of|枚中)\s*(\d+)\s*(?:枚目|枚)?$/i.exec(label.trim());
+        if (!match)
+            return null;
+        const current = Number(match[1]), total = Number(match[2]);
+        return Number.isInteger(current) && current >= 1 && total <= 4 && total >= current
+            ? { current, total } : null;
+    }
+    XMN.parseGalleryCounter = parseGalleryCounter;
     function profileStatusFromPath(pathname, profile) {
         const match = POST_ROUTE_RE.exec(pathname);
         return !!match && match[1].toLowerCase() === profile.toLowerCase();
@@ -176,6 +206,8 @@ var XMN;
     class Controller {
         constructor() {
             this.originProfile = null;
+            this.originTimeline = null;
+            this.pendingGrid = null;
             this.refs = [];
             this.indexes = new Map();
             this.imageSources = new Map();
@@ -198,6 +230,7 @@ var XMN;
         resetSession() {
             this.navGeneration++;
             this.navigationBusy = false;
+            this.pendingGrid = null;
             this.refs = [];
             this.indexes.clear();
             this.imageSources.clear();
@@ -222,18 +255,33 @@ var XMN;
         tick() {
             const path = window.location.pathname;
             const atMedia = XMN.mediaProfileFromPath(path);
-            if (atMedia) {
+            const timeline = XMN.mediaTimelineKey(path, window.location.search);
+            if (atMedia && timeline) {
                 if (this.originProfile !== atMedia) {
                     this.resetSession();
                     this.originProfile = atMedia;
+                    this.originTimeline = timeline;
+                }
+                else if (this.originTimeline !== timeline) {
+                    // The URL can change before X paints the new filter results. Never collect
+                    // stale photos into the new video timeline (or vice versa).
+                    const snapshot = this.captureGrid();
+                    this.resetSession();
+                    this.originProfile = atMedia;
+                    this.originTimeline = timeline;
+                    this.pendingGrid = snapshot;
                 }
                 this.ensureListObserver();
-                this.scanTiles();
+                if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid))
+                    this.pendingGrid = null;
+                if (!this.pendingGrid)
+                    this.scanTiles();
             }
             else if (!this.originProfile || !XMN.profileStatusFromPath(path, this.originProfile)) {
                 if (this.originProfile !== null) {
                     this.resetSession();
                     this.originProfile = null;
+                    this.originTimeline = null;
                 }
             }
             else {
@@ -252,6 +300,27 @@ var XMN;
                 this.removeViewerUI();
             }
         }
+        /** First few anchors and DOM nodes distinguish X's data swap from our badge cleanup. */
+        captureGrid() {
+            const column = mediaColumn();
+            const firstTiles = column ? Array.from(column.querySelectorAll(TILE_SELECTOR)).slice(0, 8) : [];
+            const firstKeys = firstTiles.map((tile) => {
+                const link = this.originProfile ? usableTileLink(tile, this.originProfile) : null;
+                return link?.ref.key ?? '';
+            });
+            return { column, firstTiles, firstKeys };
+        }
+        hasGridTurnedOver(previous) {
+            const current = this.captureGrid();
+            if (current.firstTiles.length === 0)
+                return false;
+            // Waiting for X's actual list replacement is safer than a fixed delay.
+            if (current.column !== previous.column)
+                return true;
+            const replaced = current.firstTiles.some((tile, index) => tile !== previous.firstTiles[index]);
+            const keysChanged = current.firstKeys.some((key, index) => key !== previous.firstKeys[index]);
+            return replaced || keysChanged;
+        }
         ensureListObserver() {
             const column = mediaColumn();
             if (!column || column === this.observedColumn)
@@ -263,14 +332,19 @@ var XMN;
                     return;
                 this.scanTimer = window.setTimeout(() => {
                     this.scanTimer = null;
-                    if (XMN.mediaProfileFromPath(window.location.pathname) === this.originProfile)
-                        this.scanTiles();
+                    if (XMN.mediaProfileFromPath(window.location.pathname) === this.originProfile) {
+                        if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid))
+                            this.pendingGrid = null;
+                        if (!this.pendingGrid)
+                            this.scanTiles();
+                    }
                 }, 100);
             });
             this.listObserver.observe(column, { childList: true, subtree: true });
         }
         scanTiles() {
-            if (!this.originProfile || XMN.mediaProfileFromPath(window.location.pathname) !== this.originProfile)
+            if (!this.originProfile || this.pendingGrid ||
+                XMN.mediaProfileFromPath(window.location.pathname) !== this.originProfile)
                 return;
             const root = mediaColumn();
             if (!root)
@@ -283,8 +357,17 @@ var XMN;
                 // Capture only CDN image locations from the already-rendered media tiles.
                 const thumbnail = tile.querySelector('img[src]');
                 const imageUrl = thumbnail ? XMN.preloadImageUrl(thumbnail.currentSrc || thumbnail.src || '') : null;
-                if (imageUrl)
+                if (imageUrl) {
+                    // Keep only nearby/recent thumbnail URLs in memory during long timelines.
+                    this.imageSources.delete(ref.key);
                     this.imageSources.set(ref.key, imageUrl);
+                    while (this.imageSources.size > 128) {
+                        const oldest = this.imageSources.keys().next().value;
+                        if (oldest === undefined)
+                            break;
+                        this.imageSources.delete(oldest);
+                    }
+                }
                 let index = this.indexes.get(ref.key);
                 if (index === undefined) {
                     index = this.refs.length;
@@ -406,34 +489,32 @@ var XMN;
             const root = viewer.closest('[role="dialog"]') ?? viewer.parentElement;
             if (!root || !this.originProfile)
                 return null;
+            const displayed = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
+            // X can render a gallery counter. Confirm it belongs to the displayed photo,
+            // rather than matching a number in an unrelated reply or recommended post.
+            if (displayed?.kind === 'photo' && displayed.statusId === statusId) {
+                for (const node of viewer.querySelectorAll('[aria-label], [title]')) {
+                    if (node.closest('.xmn-nav-button, .xmn-status'))
+                        continue;
+                    for (const label of [node.getAttribute('aria-label'), node.getAttribute('title')]) {
+                        const count = label && XMN.parseGalleryCounter(label);
+                        if (count && count.current === displayed.mediaIndex)
+                            return count.total;
+                    }
+                }
+            }
+            // Official X rules cap photos at four; seeing all four distinct photo URLs
+            // is therefore complete evidence. One, two, or three visible thumbnails
+            // are NOT proof that the post contains no additional hidden photos.
+            const indexes = new Set();
             for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
-                const photos = Array.from(article.querySelectorAll('[data-testid="tweetPhoto"] a[href], a[href*="/photo/"]'));
-                const indexes = new Set();
-                for (const link of photos) {
+                for (const link of article.querySelectorAll('a[href*="/photo/"]')) {
                     const ref = XMN.mediaRefFromHref(link.getAttribute('href') ?? '', this.originProfile);
-                    if (ref?.kind === 'photo' && ref.statusId === statusId && ref.mediaIndex !== null)
+                    if (ref?.statusId === statusId && ref.kind === 'photo' && ref.mediaIndex !== null)
                         indexes.add(ref.mediaIndex);
                 }
-                const max = Math.max(0, ...indexes);
-                if (max > 0 && indexes.size === max)
-                    return max;
             }
-            // A full run of contiguous media-tab tiles is a useful fallback, but
-            // only if the next registered tile is a DIFFERENT post.
-            const group = this.refs.filter((ref) => ref.statusId === statusId && ref.kind === 'photo');
-            const indexes = new Set(group.map((ref) => ref.mediaIndex).filter((i) => i !== null));
-            const max = Math.max(0, ...indexes);
-            let groupEnd = -1;
-            for (let i = this.refs.length - 1; i >= 0; i--) {
-                if (this.refs[i].statusId === statusId) {
-                    groupEnd = i;
-                    break;
-                }
-            }
-            if (max > 0 && indexes.size === max && groupEnd >= 0 &&
-                groupEnd < this.refs.length - 1 && this.refs[groupEnd + 1].statusId !== statusId)
-                return max;
-            return null;
+            return XMN.completeFourPhotoSet(indexes) ? 4 : null;
         }
         nativeGalleryArrowAvailable(viewer, direction) {
             const root = viewer.closest('[role="dialog"]') ?? viewer;
@@ -513,6 +594,13 @@ var XMN;
                 image.fetchPriority = 'low';
                 image.src = url;
                 this.prefetched.set(url, image);
+                // Decode proactively when supported, but never block X's own UI.
+                if (typeof image.decode === 'function') {
+                    void image.decode().catch(() => {
+                        if (this.prefetched.get(url) === image)
+                            this.prefetched.delete(url);
+                    });
+                }
             }
         }
         findCloseButton(viewer) {

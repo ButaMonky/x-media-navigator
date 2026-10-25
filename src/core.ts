@@ -26,6 +26,34 @@ namespace XMN {
     return match[1].toLowerCase();
   }
 
+  /**
+   * Media tab URL may keep the same pathname when the Photos/Videos dropdown changes.
+   * An absent filter is NOT assumed to mean video: record it independently.
+   * Unrelated query params are deliberately ignored.
+   */
+  export function mediaTimelineKey(pathname: string, search: string): string | null {
+    const profile = mediaProfileFromPath(pathname);
+    if (!profile) return null;
+    const filters = new URLSearchParams(search).getAll('filter').map((value) => value.trim().toLowerCase());
+    const mode = filters.length === 0 ? 'default'
+      : filters.length === 1 ? (filters[0] || 'empty') : `multi:${filters.join(',')}`;
+    return `${profile}|${encodeURIComponent(mode)}`;
+  }
+
+  /** Only a complete 4-photo set proves album completion without a gallery counter. */
+  export function completeFourPhotoSet(indexes: ReadonlySet<number>): boolean {
+    return indexes.size === 4 && [1, 2, 3, 4].every((index) => indexes.has(index));
+  }
+
+  /** Accept only a clearly displayed image counter, not generic UI text. */
+  export function parseGalleryCounter(label: string): { current: number; total: number } | null {
+    const match = /^(?:(?:image|photo|picture|画像|写真)\s*)?(\d+)\s*(?:\/|of|枚中)\s*(\d+)\s*(?:枚目|枚)?$/i.exec(label.trim());
+    if (!match) return null;
+    const current = Number(match[1]), total = Number(match[2]);
+    return Number.isInteger(current) && current >= 1 && total <= 4 && total >= current
+      ? { current, total } : null;
+  }
+
   export function profileStatusFromPath(pathname: string, profile: string): boolean {
     const match = POST_ROUTE_RE.exec(pathname);
     return !!match && match[1].toLowerCase() === profile.toLowerCase();

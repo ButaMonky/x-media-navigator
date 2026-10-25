@@ -44,6 +44,11 @@ function show(href, withClose=true) {
   const status = /status\\/(\\d+)/.exec(href)?.[1];
   const links = Array.from(ul.querySelectorAll('a[href]')).filter(a=>a.getAttribute('href').includes('/status/'+status+'/photo/'));
   for (const source of links) { const a = document.createElement('a'); a.href = source.getAttribute('href');article.appendChild(a); }
+  // The synthetic native gallery supplies an explicit current/total counter.
+  const index = href.includes('/photo/2') ? 2 : 1;
+  const counter = document.createElement('span');counter.id='gallery-counter';
+  counter.setAttribute('aria-label','Image '+index+' of '+(links.length || 1));
+  viewer.appendChild(counter);
   modal.appendChild(article);
   const input = document.createElement('input');input.id='test-input';modal.appendChild(input);
   document.body.appendChild(modal);
@@ -61,6 +66,9 @@ document.addEventListener('keydown', e => {
   if (source('/alice/status/'+m[1]+'/photo/'+next)) {
     nativeMoves++;
     history.replaceState({},'', '/alice/status/'+m[1]+'/photo/'+next);
+    const counter=document.getElementById('gallery-counter');
+    if (counter) counter.setAttribute('aria-label','Image '+next+' of '+
+      Array.from(ul.querySelectorAll('a[href]')).filter(a=>a.getAttribute('href').includes('/status/'+m[1]+'/photo/')).length);
   }
 });
 window.scrollTo = () => {
@@ -120,6 +128,16 @@ async function exercise() {
   key('ArrowRight');
   await wait(400);
   result('missing close button safely aborts',location.pathname.endsWith('/22/photo/1') && !!document.getElementById('modal'));
+  // X can switch only the media filter query while retaining the previous list DOM.
+  document.getElementById('modal')?.remove();
+  history.replaceState({},'', '/alice/media?filter=photo');
+  await wait(570);
+  result('new filter waits for visible list refresh',document.querySelectorAll('.xmn-tile-badge').length===0);
+  ul.replaceChildren(tile('/alice/status/55/photo/1'));
+  await wait(650);
+  result('filter DOM replacement discards old list',
+    document.querySelectorAll('.xmn-tile-badge').length===1 &&
+    ul.firstElementChild.querySelector('.xmn-tile-badge')?.textContent==='1');
   document.body.setAttribute('data-xmn-results',records.map(r=>r.label+':'+(r.pass?'PASS':'FAIL')).join('|'));
 }
 
@@ -127,10 +145,9 @@ async function exercise() {
 <script>exercise().catch(e=>document.body.setAttribute('data-xmn-results','EXCEPTION:'+e.message));</script>
 </body></html>`;
 
-test('synthetic X inline JavaScript parses before opening Chromium', () => {
-  for (const [, source] of fixture.matchAll(/<script(?:[^>]*)>([\s\S]*?)<\/script>/g)) {
-    if (source.trim()) assert.doesNotThrow(() => new vm.Script(source));
-  }
+test('synthetic X inline JavaScript parses', () => {
+  const inline = Array.from(fixture.matchAll(/<script>([\s\S]*?)<\/script>/g));
+  for (const script of inline) assert.doesNotThrow(() => new vm.Script(script[1]));
 });
 
 function runChromium(url, userDataDir) {
@@ -173,7 +190,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 11, report);
+    assert.equal(report.split('|').length, 13, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
