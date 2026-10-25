@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const contentScript = readFileSync(join(root, 'extension/content_script.js'));
@@ -40,7 +41,7 @@ function show(href, withClose=true) {
   }
   const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';modal.appendChild(viewer);
   const article = document.createElement('article'); article.dataset.testid='tweet';
-  const status = /status\/(\d+)/.exec(href)?.[1];
+  const status = /status\\/(\\d+)/.exec(href)?.[1];
   const links = Array.from(ul.querySelectorAll('a[href]')).filter(a=>a.getAttribute('href').includes('/status/'+status+'/photo/'));
   for (const source of links) { const a = document.createElement('a'); a.href = source.getAttribute('href');article.appendChild(a); }
   modal.appendChild(article);
@@ -54,7 +55,7 @@ ul.addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (e.shiftKey || !['ArrowRight','ArrowLeft'].includes(e.key)) return;
   const pathname=location.pathname;
-  const m=/status\/(\d+)\/photo\/(\d+)/.exec(pathname);
+  const m=/status\\/(\\d+)\\/photo\\/(\\d+)/.exec(pathname);
   if (!m) return;
   const next=Number(m[2])+(e.key==='ArrowRight'?1:-1);
   if (source('/alice/status/'+m[1]+'/photo/'+next)) {
@@ -125,6 +126,12 @@ async function exercise() {
 </script><script src="/extension/content_script.js"></script>
 <script>exercise().catch(e=>document.body.setAttribute('data-xmn-results','EXCEPTION:'+e.message));</script>
 </body></html>`;
+
+test('synthetic X inline JavaScript parses before opening Chromium', () => {
+  for (const [, source] of fixture.matchAll(/<script(?:[^>]*)>([\s\S]*?)<\/script>/g)) {
+    if (source.trim()) assert.doesNotThrow(() => new vm.Script(source));
+  }
+});
 
 function runChromium(url, userDataDir) {
   return new Promise((resolve, reject) => {
