@@ -1,4 +1,4 @@
-/* The media-gallery's own arrow controls retain their semantics. Our buttons jump between tiles. */
+/* The media-gallery's own arrow controls retain their semantics. Our buttons move between posts. */
 .xmn-nav-button {
   position: absolute;
   top: 70%;

@@ -15,12 +15,16 @@ const fixture = `<!doctype html><html lang="ja"><head><meta charset="utf-8"></he
 <main><div data-testid="primaryColumn"><ul id="tiles"></ul></div></main>
 <script>
 const wait = ms => new Promise(r => setTimeout(r, ms));
+window.prefetchLoads=[];
+window.Image = class { set src(value) { window.prefetchLoads.push(value); } };
 const records = [];
 let nativeMoves = 0, clicked = [];
 const ul = document.getElementById('tiles');
 function tile(href) {
   const li = document.createElement('li'); li.setAttribute('role','listitem');
   li.innerHTML = '<a href="'+href+'"><img alt="thumbnail" src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="></a>';
+  const thumb=li.querySelector('img');
+  Object.defineProperty(thumb,'currentSrc',{value:'https://pbs.twimg.com/media/M'+href.replace(/[^a-zA-Z0-9]/g,'_')+'?format=jpg&name=small'});
   return li;
 }
 ['/alice/status/11/photo/1','/alice/status/11/photo/2','/alice/status/22/photo/1','/bob/status/999/photo/1'].forEach(href => ul.appendChild(tile(href)));
@@ -35,6 +39,11 @@ function show(href, withClose=true) {
     modal.appendChild(close);
   }
   const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';modal.appendChild(viewer);
+  const article = document.createElement('article'); article.dataset.testid='tweet';
+  const status = /status\/(\d+)/.exec(href)?.[1];
+  const links = Array.from(ul.querySelectorAll('a[href]')).filter(a=>a.getAttribute('href').includes('/status/'+status+'/photo/'));
+  for (const source of links) { const a = document.createElement('a'); a.href = source.getAttribute('href');article.appendChild(a); }
+  modal.appendChild(article);
   const input = document.createElement('input');input.id='test-input';modal.appendChild(input);
   document.body.appendChild(modal);
 }
@@ -43,8 +52,14 @@ ul.addEventListener('click', e => {
   const href=a.getAttribute('href');e.preventDefault();clicked.push(href);show(href);
 });
 document.addEventListener('keydown', e => {
-  if (e.key === 'ArrowRight' && !e.shiftKey && location.pathname === '/alice/status/11/photo/1') {
-    nativeMoves++;history.replaceState({},'', '/alice/status/11/photo/2');
+  if (e.shiftKey || !['ArrowRight','ArrowLeft'].includes(e.key)) return;
+  const pathname=location.pathname;
+  const m=/status\/(\d+)\/photo\/(\d+)/.exec(pathname);
+  if (!m) return;
+  const next=Number(m[2])+(e.key==='ArrowRight'?1:-1);
+  if (source('/alice/status/'+m[1]+'/photo/'+next)) {
+    nativeMoves++;
+    history.replaceState({},'', '/alice/status/'+m[1]+'/photo/'+next);
   }
 });
 window.scrollTo = () => {
@@ -59,47 +74,54 @@ const key = (keyName, shift=false, el=document.body) => {
 };
 function result(label, pass) { records.push({label,pass}); }
 async function exercise() {
-  await wait(750); // content script has had time to scan media tab
+  await wait(750);
   const badges = Array.from(document.querySelectorAll('.xmn-tile-badge')).map(n=>n.textContent);
-  result('profile scope 3 badges', badges.length === 3 && badges.join(',') === '1,2,3');
+  result('profile scope 3 badges', badges.length===3 && badges.join(',')==='1,2,3');
   source('/alice/status/11/photo/1').click();
   await wait(620);
-  const bare = key('ArrowRight');
+  const nativeRight=key('ArrowRight');
   await wait(500);
-  result('bare ArrowRight native media', !bare.defaultPrevented && nativeMoves===1 && location.pathname.endsWith('/11/photo/2'));
-  key('ArrowRight', true);
+  result('gallery first image native ArrowRight',!nativeRight.defaultPrevented && nativeMoves===1 && location.pathname.endsWith('/11/photo/2'));
+  result('adjacent CDN image preload initiated',window.prefetchLoads.length>0 && window.prefetchLoads[0].startsWith('https://pbs.twimg.com/media/') && window.prefetchLoads[0].includes('name=large'));
+  const boundaryRight=key('ArrowRight');
   await wait(850);
-  result('Shift+Right next tile', location.pathname.endsWith('/22/photo/1') && clicked.at(-1)==='/alice/status/22/photo/1');
+  result('last photo ArrowRight advances to next POST',boundaryRight.defaultPrevented && location.pathname.endsWith('/22/photo/1') && clicked.at(-1)==='/alice/status/22/photo/1');
+  const boundaryLeft=key('ArrowLeft');
+  await wait(850);
+  result('first photo ArrowLeft returns to previous POST last image',boundaryLeft.defaultPrevented && location.pathname.endsWith('/11/photo/2') && clicked.at(-1)==='/alice/status/11/photo/2');
+  const nativeLeft=key('ArrowLeft');
+  await wait(500);
+  result('gallery second image native ArrowLeft',!nativeLeft.defaultPrevented && nativeMoves===2 && location.pathname.endsWith('/11/photo/1'));
+  const modified=key('ArrowRight',true);
+  await wait(350);
+  result('Shift+arrow not a shortcut',!modified.defaultPrevented && location.pathname.endsWith('/11/photo/1'));
   document.querySelector('#modal button[aria-label="Close"]').click();
   await wait(500);
-  const old = source('/alice/status/11/photo/2').closest('li');
+  const old=source('/alice/status/11/photo/2').closest('li');
   old.replaceWith(tile('/alice/status/11/photo/2'));
-  source('/alice/status/11/photo/1').click();
+  source('/alice/status/11/photo/2').click();
   await wait(550);
-  key('ArrowRight', true);
-  await wait(750);
-  result('recreated DOM navigates correct tile', location.pathname.endsWith('/11/photo/2') && clicked.at(-1)==='/alice/status/11/photo/2');
+  key('ArrowRight');
+  await wait(850);
+  result('recreated DOM navigates to next POST',location.pathname.endsWith('/22/photo/1') && clicked.at(-1)==='/alice/status/22/photo/1');
   const input=document.getElementById('test-input');input.focus();
-  const inputEvent=key('ArrowRight',true,input);
-  await wait(550);
-  result('focused input retains native keys', location.pathname.endsWith('/11/photo/2') && !inputEvent.defaultPrevented);
-  document.querySelector('#modal button[aria-label="Close"]').click();
-  await wait(350);
-  source('/alice/status/22/photo/1').click();
-  await wait(550);
-  window.testLazyLoad = true;
-  key('ArrowRight',true);
-  await wait(1450);
-  result('lazy load navigates only after tile exists', location.pathname.endsWith('/33/photo/1') && clicked.at(-1)==='/alice/status/33/photo/1');
+  const inputEvent=key('ArrowRight',false,input);
+  await wait(450);
+  result('focused input retains native keys',location.pathname.endsWith('/22/photo/1') && !inputEvent.defaultPrevented);
+  window.testLazyLoad=true;
+  key('ArrowRight');
+  await wait(1500);
+  result('lazy load navigates only after new POST exists',location.pathname.endsWith('/33/photo/1') && clicked.at(-1)==='/alice/status/33/photo/1');
   document.querySelector('#modal button[aria-label="Close"]').click();
   await wait(400);
-  show('/alice/status/11/photo/1',false);
+  show('/alice/status/22/photo/1',false);
   await wait(550);
-  key('ArrowRight',true);
+  key('ArrowRight');
   await wait(400);
-  result('no close button safely aborts', location.pathname.endsWith('/11/photo/1') && !!document.getElementById('modal'));
-  document.body.setAttribute('data-xmn-results', records.map(r=>r.label+':'+(r.pass?'PASS':'FAIL')).join('|'));
+  result('missing close button safely aborts',location.pathname.endsWith('/22/photo/1') && !!document.getElementById('modal'));
+  document.body.setAttribute('data-xmn-results',records.map(r=>r.label+':'+(r.pass?'PASS':'FAIL')).join('|'));
 }
+
 </script><script src="/extension/content_script.js"></script>
 <script>exercise().catch(e=>document.body.setAttribute('data-xmn-results','EXCEPTION:'+e.message));</script>
 </body></html>`;
@@ -109,7 +131,7 @@ function runChromium(url, userDataDir) {
     const args = [
       '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-background-networking', '--no-first-run',
-      '--user-data-dir=' + userDataDir, '--virtual-time-budget=12500', '--dump-dom', url,
+      '--user-data-dir=' + userDataDir, '--virtual-time-budget=19000', '--dump-dom', url,
     ];
     const child = spawn(browser, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
@@ -125,7 +147,7 @@ function runChromium(url, userDataDir) {
   });
 }
 
-test('Chromium synthetic-X DOM: gallery native arrow, post shortcut, reflow, lazy load, graceful fallback', {
+test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, reflow, lazy load, graceful fallback', {
   skip: process.env.XMN_RUN_CHROMIUM !== '1' ? 'Requires XMN_RUN_CHROMIUM=1 and functioning headless Chromium' : !existsSync(browser) ? 'Chromium not installed' : false,
 }, async () => {
   const server = createServer((req, res) => {
@@ -144,7 +166,7 @@ test('Chromium synthetic-X DOM: gallery native arrow, post shortcut, reflow, laz
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 7, report);
+    assert.equal(report.split('|').length, 6, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

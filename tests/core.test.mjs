@@ -72,12 +72,53 @@ test('direction lookup does not clamp back to the same tile at bounds', () => {
   assert.equal(XMN.adjacentIndex(-1, 3, 1), null);
 });
 
-test('bare arrow keys and other modifiers are never hijacked', () => {
-  const event = { key: 'ArrowRight', shiftKey: false, altKey: false, ctrlKey: false, metaKey: false };
-  assert.equal(XMN.postShortcutDirection(event), null);
-  assert.equal(XMN.postShortcutDirection({ ...event, shiftKey: true }), 1);
-  assert.equal(XMN.postShortcutDirection({ ...event, key: 'ArrowLeft', shiftKey: true }), -1);
-  assert.equal(XMN.postShortcutDirection({ ...event, shiftKey: true, ctrlKey: true }), null);
-  assert.equal(XMN.postShortcutDirection({ ...event, shiftKey: true, repeat: true }), null);
-  assert.equal(XMN.postShortcutDirection({ ...event, shiftKey: true, isComposing: true }), null);
+test('bare arrow keys are eligible, modifiers and repeats are not', () => {
+  const event = { key:'ArrowRight', shiftKey:false,altKey:false,ctrlKey:false,metaKey:false };
+  assert.equal(XMN.postShortcutDirection(event), 1);
+  assert.equal(XMN.postShortcutDirection({...event,key:'ArrowLeft'}), -1);
+  for (const variant of [{shiftKey:true},{ctrlKey:true},{altKey:true},{metaKey:true},{repeat:true},{isComposing:true}]) {
+    assert.equal(XMN.postShortcutDirection({...event,...variant}),null);
+  }
+});
+
+test('bare arrows change POSTS only at first/last photo; video remains native', () => {
+  const a=XMN.mediaRefFromHref('/alice/status/11/photo/1','alice');
+  const b=XMN.mediaRefFromHref('/alice/status/11/photo/2','alice');
+  const c=XMN.mediaRefFromHref('/alice/status/11/photo/3','alice');
+  const movie=XMN.mediaRefFromHref('/alice/status/44/video/1','alice');
+  const key=(key)=>({key,shiftKey:false,altKey:false,ctrlKey:false,metaKey:false});
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),a,3),null);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),b,3),null);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),c,3),1);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),c,3,true),null,'native X next button wins');
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),c,null),null,'unknown gallery size: safe fallback');
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),a,3),-1);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),a,3,false,true),null,'native X previous button wins');
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),b,3),null);
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),movie,1),null,'do not hijack video seek');
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),null,1),null);
+  assert.equal(XMN.galleryBoundaryDirection({...key('ArrowRight'),shiftKey:true},c,3),null);
+});
+
+test('post navigation skips the remaining image tiles of the same status', () => {
+  const refs=['/alice/status/11/photo/1','/alice/status/11/photo/2','/alice/status/22/photo/1',
+    '/alice/status/22/photo/2','/alice/status/33/photo/1'].map((p)=>XMN.mediaRefFromHref(p,'alice'));
+  assert.equal(XMN.adjacentPostIndex(refs,'11',1),2);
+  assert.equal(XMN.adjacentPostIndex(refs,'22',-1),1,'backwards returns previous post last photo');
+  assert.equal(XMN.adjacentPostIndex(refs,'22',1),4);
+  assert.equal(XMN.adjacentPostIndex(refs,'11',-1),null);
+  assert.equal(XMN.adjacentPostIndex(refs,'33',1),null);
+  assert.equal(XMN.adjacentPostIndex(refs,'other',1),null);
+});
+
+test('image preloader only uses X image CDN, never arbitrary third-party or videos', () => {
+  assert.equal(XMN.preloadImageUrl('https://pbs.twimg.com/media/ABCdef_01?format=jpg&name=small'),
+    'https://pbs.twimg.com/media/ABCdef_01?format=jpg&name=large');
+  for (const url of ['https://evil.example/media/ABC?format=jpg&name=small',
+    'http://pbs.twimg.com/media/ABC?format=jpg&name=small',
+    'https://pbs.twimg.com/profile_images/ABC?format=jpg&name=small',
+    'https://pbs.twimg.com/media/ABC?format=svg&name=small',
+    'https://pbs.twimg.com/media/ABC?format=jpg',
+    'https://video.twimg.com/video/ABC',
+    'data:image/png;base64,AAAA']) assert.equal(XMN.preloadImageUrl(url),null,url);
 });

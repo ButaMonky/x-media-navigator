@@ -69,9 +69,9 @@ var XMN;
         return null;
     }
     XMN.findCurrentIndex = findCurrentIndex;
-    /** Bare ArrowLeft / ArrowRight always belong to X's native image/video UI. */
+    /** A bare arrow may cross posts ONLY at a verified photo boundary. */
     function postShortcutDirection(event) {
-        if (!event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || event.repeat || event.isComposing)
+        if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || event.repeat || event.isComposing)
             return null;
         if (event.key === 'ArrowRight')
             return 1;
@@ -80,16 +80,65 @@ var XMN;
         return null;
     }
     XMN.postShortcutDirection = postShortcutDirection;
+    function galleryBoundaryDirection(event, current, photoCount, nativeNextAvailable = false, nativePreviousAvailable = false) {
+        const direction = postShortcutDirection(event);
+        if (!direction || current?.kind !== 'photo' || current.mediaIndex === null)
+            return null;
+        if (direction === -1)
+            return current.mediaIndex === 1 && !nativePreviousAvailable ? -1 : null;
+        if (nativeNextAvailable)
+            return null;
+        return photoCount !== null && photoCount >= 1 && current.mediaIndex === photoCount ? 1 : null;
+    }
+    XMN.galleryBoundaryDirection = galleryBoundaryDirection;
+    /** Move across STATUS groups, not between media items belonging to the same post. */
+    function adjacentPostIndex(items, currentStatusId, direction) {
+        const positions = items.map((item, index) => ({ item, index }))
+            .filter(({ item }) => item.statusId === currentStatusId);
+        if (positions.length === 0)
+            return null;
+        const start = direction === 1 ? positions[positions.length - 1].index : positions[0].index;
+        for (let i = start + direction; i >= 0 && i < items.length; i += direction) {
+            if (items[i].statusId !== currentStatusId) {
+                // For backtracking enter the previous post from its last recorded photo.
+                return i;
+            }
+        }
+        return null;
+    }
+    XMN.adjacentPostIndex = adjacentPostIndex;
+    /** Only rewrite genuine X image CDN thumbnails. No arbitrary URL/network access. */
+    function preloadImageUrl(src) {
+        let url;
+        try {
+            url = new URL(src);
+        }
+        catch {
+            return null;
+        }
+        if (url.protocol !== 'https:' || url.hostname !== 'pbs.twimg.com' ||
+            !/^\/media\/[A-Za-z0-9_-]+$/.test(url.pathname) ||
+            !/^(jpg|jpeg|png|webp)$/i.test(url.searchParams.get('format') ?? '') ||
+            !url.searchParams.has('name'))
+            return null;
+        url.searchParams.set('name', 'large');
+        url.hash = '';
+        return url.toString();
+    }
+    XMN.preloadImageUrl = preloadImageUrl;
 })(XMN || (XMN = {}));
 /// <reference path="./core.ts" />
 /**
  * MV3 content-script controller. No page-world monkeypatches or network requests.
- * Bare arrow keys intentionally remain under X's control.
+ * Bare arrow keys stay under X's control until a CONFIRMED gallery boundary.
+ * Only then is a post-to-post navigation attempted.
  */
 var XMN;
 (function (XMN) {
     const VIEWER_SELECTOR = '[data-testid="swipe-to-dismiss"]';
     const TILE_SELECTOR = 'li[role="listitem"]';
+    const NATIVE_NEXT = /^(next( (photo|image))?|次の(画像|写真)|次へ)$/i;
+    const NATIVE_PREVIOUS = /^(prev(ious)?( (photo|image))?|前の(画像|写真)|前へ)$/i;
     const CLOSE_SELECTOR = [
         'button[data-testid="app-bar-close"]',
         '[role="button"][data-testid="app-bar-close"]',
@@ -129,6 +178,10 @@ var XMN;
             this.originProfile = null;
             this.refs = [];
             this.indexes = new Map();
+            this.imageSources = new Map();
+            this.prefetched = new Map();
+            this.preloadTimer = null;
+            this.preloadForPath = '';
             this.viewer = null;
             this.viewObserver = null;
             this.listObserver = null;
@@ -147,6 +200,12 @@ var XMN;
             this.navigationBusy = false;
             this.refs = [];
             this.indexes.clear();
+            this.imageSources.clear();
+            this.prefetched.clear();
+            this.preloadForPath = '';
+            if (this.preloadTimer !== null)
+                window.clearTimeout(this.preloadTimer);
+            this.preloadTimer = null;
             this.removeViewerUI();
             this.stopListObserver();
             document.querySelectorAll('.xmn-tile-badge').forEach((element) => element.remove());
@@ -221,6 +280,11 @@ var XMN;
                 if (!found)
                     continue;
                 const { ref } = found;
+                // Capture only CDN image locations from the already-rendered media tiles.
+                const thumbnail = tile.querySelector('img[src]');
+                const imageUrl = thumbnail ? XMN.preloadImageUrl(thumbnail.currentSrc || thumbnail.src || '') : null;
+                if (imageUrl)
+                    this.imageSources.set(ref.key, imageUrl);
                 let index = this.indexes.get(ref.key);
                 if (index === undefined) {
                     index = this.refs.length;
@@ -270,8 +334,8 @@ var XMN;
             if (!viewer || !viewer.isConnected)
                 return;
             for (const [direction, className, text, label] of [
-                [-1, 'xmn-prev', '◀', '前のメディア一覧項目へ (Shift+←)'],
-                [1, 'xmn-next', '▶', '次のメディア一覧項目へ (Shift+→)'],
+                [-1, 'xmn-prev', '◀', '前の投稿へ（最初の画像では←でも移動）'],
+                [1, 'xmn-next', '▶', '次の投稿へ（最後の画像では→でも移動）'],
             ]) {
                 let button = viewer.querySelector(`.${className}`);
                 if (!button) {
@@ -297,9 +361,19 @@ var XMN;
                 viewer.appendChild(status);
             }
             this.updateViewerState();
+            this.schedulePreload();
         }
         activeIndex() {
-            return this.originProfile ? XMN.findCurrentIndex(this.refs, window.location.pathname, this.originProfile) : null;
+            if (!this.originProfile)
+                return null;
+            const exact = XMN.findCurrentIndex(this.refs, window.location.pathname, this.originProfile);
+            if (exact !== null)
+                return exact;
+            // A media tab may offer only one link for a post with several photos.
+            const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
+            const matches = current ? this.refs.map((ref, i) => ({ ref, i }))
+                .filter(({ ref }) => ref.statusId === current.statusId) : [];
+            return matches.length ? matches[0].i : null;
         }
         updateViewerState() {
             const viewer = this.viewer;
@@ -308,28 +382,138 @@ var XMN;
             const current = this.activeIndex();
             const prev = viewer.querySelector('.xmn-prev');
             const next = viewer.querySelector('.xmn-next');
+            const currentRef = current !== null ? this.refs[current] : null;
             if (prev)
-                prev.disabled = this.navigationBusy || current === null || current === 0;
-            // At the last known tile a click may attempt to load additional items.
+                prev.disabled = this.navigationBusy || !currentRef || XMN.adjacentPostIndex(this.refs, currentRef.statusId, -1) === null;
+            // At the last known post clicking the next button may load more media.
             if (next)
-                next.disabled = this.navigationBusy || current === null;
+                next.disabled = this.navigationBusy || !currentRef;
             const indicator = viewer.querySelector('.xmn-status');
             if (indicator) {
-                const label = current === null ? '一覧位置を確認中' : `${current + 1} / ${this.refs.length}`;
+                const statuses = Array.from(new Set(this.refs.map((ref) => ref.statusId)));
+                const index = currentRef ? statuses.indexOf(currentRef.statusId) : -1;
+                const label = index < 0 ? '投稿の位置を確認中' : `投稿 ${index + 1} / ${statuses.length}`;
                 if (indicator.textContent !== label)
                     indicator.textContent = label;
             }
         }
+        /**
+         * A positive gallery-size hint from the original post's media thumbnails.
+         * Do not count media from unrelated replies or quoted posts.
+         * If X changes its DOM or count is uncertain, do not take over ArrowRight.
+         */
+        photoCount(viewer, statusId) {
+            const root = viewer.closest('[role="dialog"]') ?? viewer.parentElement;
+            if (!root || !this.originProfile)
+                return null;
+            for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
+                const photos = Array.from(article.querySelectorAll('[data-testid="tweetPhoto"] a[href], a[href*="/photo/"]'));
+                const indexes = new Set();
+                for (const link of photos) {
+                    const ref = XMN.mediaRefFromHref(link.getAttribute('href') ?? '', this.originProfile);
+                    if (ref?.kind === 'photo' && ref.statusId === statusId && ref.mediaIndex !== null)
+                        indexes.add(ref.mediaIndex);
+                }
+                const max = Math.max(0, ...indexes);
+                if (max > 0 && indexes.size === max)
+                    return max;
+            }
+            // A full run of contiguous media-tab tiles is a useful fallback, but
+            // only if the next registered tile is a DIFFERENT post.
+            const group = this.refs.filter((ref) => ref.statusId === statusId && ref.kind === 'photo');
+            const indexes = new Set(group.map((ref) => ref.mediaIndex).filter((i) => i !== null));
+            const max = Math.max(0, ...indexes);
+            let groupEnd = -1;
+            for (let i = this.refs.length - 1; i >= 0; i--) {
+                if (this.refs[i].statusId === statusId) {
+                    groupEnd = i;
+                    break;
+                }
+            }
+            if (max > 0 && indexes.size === max && groupEnd >= 0 &&
+                groupEnd < this.refs.length - 1 && this.refs[groupEnd + 1].statusId !== statusId)
+                return max;
+            return null;
+        }
+        nativeGalleryArrowAvailable(viewer, direction) {
+            const root = viewer.closest('[role="dialog"]') ?? viewer;
+            const pattern = direction === 1 ? NATIVE_NEXT : NATIVE_PREVIOUS;
+            for (const button of root.querySelectorAll('[aria-label], [title]')) {
+                if (button.closest('.xmn-nav-button'))
+                    continue;
+                const label = (button.getAttribute('aria-label') || button.getAttribute('title') || '').trim();
+                if (pattern.test(label) && button.getAttribute('aria-disabled') !== 'true' &&
+                    !(button instanceof HTMLButtonElement && button.disabled))
+                    return true;
+            }
+            return false;
+        }
         onKeyDown(event) {
-            const direction = XMN.postShortcutDirection(event);
-            if (direction === null || !this.viewer?.isConnected || !this.originProfile ||
-                isEditingTarget(event.target) || this.navigationBusy)
+            if (!this.viewer?.isConnected || !this.originProfile ||
+                isEditingTarget(event.target) || this.navigationBusy ||
+                this.activeIndex() === null)
                 return;
-            if (this.activeIndex() === null)
+            const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
+            const direction = XMN.galleryBoundaryDirection(event, current, current ? this.photoCount(this.viewer, current.statusId) : null, this.nativeGalleryArrowAvailable(this.viewer, 1), this.nativeGalleryArrowAvailable(this.viewer, -1));
+            if (direction === null)
+                return; // Preserve the native X photo/video operation.
+            if (direction === -1 && current && XMN.adjacentPostIndex(this.refs, current.statusId, -1) === null)
                 return;
             event.preventDefault();
             event.stopImmediatePropagation();
             void this.navigate(direction);
+        }
+        schedulePreload() {
+            if (!this.originProfile || !this.viewer || document.hidden)
+                return;
+            if (window.location.pathname === this.preloadForPath)
+                return;
+            this.preloadForPath = window.location.pathname;
+            if (this.preloadTimer !== null)
+                window.clearTimeout(this.preloadTimer);
+            this.preloadTimer = window.setTimeout(() => {
+                this.preloadTimer = null;
+                this.preloadAdjacentImages();
+            }, 350);
+        }
+        preloadAdjacentImages() {
+            if (!this.viewer?.isConnected || !this.originProfile || document.hidden ||
+                (typeof navigator !== 'undefined' && navigator.onLine === false))
+                return;
+            const connection = navigator.connection;
+            if (connection?.saveData || /^(slow-2g|2g)$/.test(connection?.effectiveType ?? ''))
+                return;
+            const index = this.activeIndex();
+            const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
+            if (index === null || !current)
+                return;
+            const targets = [];
+            // Native next/previous photos are preheated first; otherwise adjacent posts.
+            for (const direction of [1, -1]) {
+                const neighbor = this.refs[index + direction];
+                const post = XMN.adjacentPostIndex(this.refs, current.statusId, direction);
+                const photoCandidate = neighbor?.statusId === current.statusId &&
+                    neighbor.kind === 'photo' && neighbor.mediaIndex !== null && current.mediaIndex !== null &&
+                    (neighbor.mediaIndex - current.mediaIndex) * direction > 0 ? neighbor : null;
+                const candidate = photoCandidate ?? (post !== null ? this.refs[post] : null);
+                if (candidate)
+                    targets.push(candidate);
+            }
+            const urls = targets.map((ref) => this.imageSources.get(ref.key)).filter((url) => !!url);
+            const unique = [...new Set(urls)].slice(0, 2);
+            for (const [url] of this.prefetched) {
+                if (!unique.includes(url))
+                    this.prefetched.delete(url);
+            }
+            for (const url of unique) {
+                if (this.prefetched.has(url))
+                    continue;
+                const image = new Image();
+                image.decoding = 'async';
+                image.fetchPriority = 'low';
+                image.src = url;
+                this.prefetched.set(url, image);
+            }
         }
         findCloseButton(viewer) {
             const dialog = viewer.closest('[role="dialog"]');
@@ -375,33 +559,35 @@ var XMN;
             }
             return !viewer.isConnected;
         }
-        /** Only called after closing viewer; load by observing new entries, never by a fixed 300ms guess. */
-        async loadNext(targetIndex, generation) {
+        /** Wait for a DIFFERENT post; new images of the current post are not enough. */
+        async loadNextPost(statusId, generation) {
             for (let attempt = 0; attempt < 20; attempt++) {
                 if (generation !== this.navGeneration)
                     return null;
                 this.scanTiles();
-                if (this.refs[targetIndex])
-                    return this.refs[targetIndex];
-                // The content column may be virtualized or the page may already be at its end.
+                const nextIndex = XMN.adjacentPostIndex(this.refs, statusId, 1);
+                if (nextIndex !== null)
+                    return this.refs[nextIndex];
+                // X owns infinite scrolling. Only scroll the already-open media timeline.
                 if (attempt % 3 === 0)
                     window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
                 await pause(200);
             }
             this.scanTiles();
-            return this.refs[targetIndex] ?? null;
+            const nextIndex = XMN.adjacentPostIndex(this.refs, statusId, 1);
+            return nextIndex === null ? null : this.refs[nextIndex];
         }
         async navigate(direction) {
             const currentIndex = this.activeIndex();
             const oldViewer = this.viewer;
             if (this.navigationBusy || currentIndex === null || !oldViewer || !this.originProfile)
                 return;
-            const nextIndex = currentIndex + direction;
-            if (nextIndex < 0)
+            const currentRef = this.refs[currentIndex];
+            const nextIndex = XMN.adjacentPostIndex(this.refs, currentRef.statusId, direction);
+            if (direction === -1 && nextIndex === null)
                 return;
             const generation = this.navGeneration;
             const profile = this.originProfile;
-            const currentRef = this.refs[currentIndex];
             const closeButton = this.findCloseButton(oldViewer);
             if (!closeButton) {
                 this.toast('Xの閉じるボタンが見つからず、移動を中止しました');
@@ -417,10 +603,14 @@ var XMN;
                 }
                 if (generation !== this.navGeneration || XMN.mediaProfileFromPath(window.location.pathname) !== profile)
                     return;
-                const destination = this.refs[nextIndex] ?? (direction === 1 ? await this.loadNext(nextIndex, generation) : null);
+                let destination = nextIndex === null ? null : this.refs[nextIndex];
+                // At the end, only click an observed, different post. Never guess a URL.
+                if (!destination && direction === 1) {
+                    destination = await this.loadNextPost(currentRef.statusId, generation);
+                }
                 if (generation !== this.navGeneration)
                     return;
-                const link = destination ? this.findLiveLink(destination) : null;
+                const link = destination && destination.statusId !== currentRef.statusId ? this.findLiveLink(destination) : null;
                 if (link) {
                     link.click();
                 }

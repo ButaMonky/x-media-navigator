@@ -80,11 +80,50 @@ namespace XMN {
     isComposing?: boolean;
   }
 
-  /** Bare ArrowLeft / ArrowRight always belong to X's native image/video UI. */
+  /** A bare arrow may cross posts ONLY at a verified photo boundary. */
   export function postShortcutDirection(event: KeyLike): Direction | null {
-    if (!event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || event.repeat || event.isComposing) return null;
+    if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || event.repeat || event.isComposing) return null;
     if (event.key === 'ArrowRight') return 1;
     if (event.key === 'ArrowLeft') return -1;
     return null;
+  }
+
+  export function galleryBoundaryDirection(
+    event: KeyLike, current: MediaRef | null, photoCount: number | null,
+    nativeNextAvailable = false, nativePreviousAvailable = false,
+  ): Direction | null {
+    const direction = postShortcutDirection(event);
+    if (!direction || current?.kind !== 'photo' || current.mediaIndex === null) return null;
+    if (direction === -1) return current.mediaIndex === 1 && !nativePreviousAvailable ? -1 : null;
+    if (nativeNextAvailable) return null;
+    return photoCount !== null && photoCount >= 1 && current.mediaIndex === photoCount ? 1 : null;
+  }
+
+  /** Move across STATUS groups, not between media items belonging to the same post. */
+  export function adjacentPostIndex(items: readonly MediaRef[], currentStatusId: string, direction: Direction): number | null {
+    const positions = items.map((item, index) => ({ item, index }))
+      .filter(({ item }) => item.statusId === currentStatusId);
+    if (positions.length === 0) return null;
+    const start = direction === 1 ? positions[positions.length - 1].index : positions[0].index;
+    for (let i = start + direction; i >= 0 && i < items.length; i += direction) {
+      if (items[i].statusId !== currentStatusId) {
+        // For backtracking enter the previous post from its last recorded photo.
+        return i;
+      }
+    }
+    return null;
+  }
+
+  /** Only rewrite genuine X image CDN thumbnails. No arbitrary URL/network access. */
+  export function preloadImageUrl(src: string): string | null {
+    let url: URL;
+    try { url = new URL(src); } catch { return null; }
+    if (url.protocol !== 'https:' || url.hostname !== 'pbs.twimg.com' ||
+        !/^\/media\/[A-Za-z0-9_-]+$/.test(url.pathname) ||
+        !/^(jpg|jpeg|png|webp)$/i.test(url.searchParams.get('format') ?? '') ||
+        !url.searchParams.has('name')) return null;
+    url.searchParams.set('name', 'large');
+    url.hash = '';
+    return url.toString();
   }
 }

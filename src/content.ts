@@ -2,11 +2,15 @@
 
 /**
  * MV3 content-script controller. No page-world monkeypatches or network requests.
- * Bare arrow keys intentionally remain under X's control.
+ * Bare arrow keys stay under X's control until a CONFIRMED gallery boundary.
+ * Only then is a post-to-post navigation attempted.
  */
 namespace XMN {
   const VIEWER_SELECTOR = '[data-testid="swipe-to-dismiss"]';
   const TILE_SELECTOR = 'li[role="listitem"]';
+  const NATIVE_NEXT = /^(next( (photo|image))?|次の(画像|写真)|次へ)$/i;
+  const NATIVE_PREVIOUS = /^(prev(ious)?( (photo|image))?|前の(画像|写真)|前へ)$/i;
+
   const CLOSE_SELECTOR = [
     'button[data-testid="app-bar-close"]',
     '[role="button"][data-testid="app-bar-close"]',
@@ -47,6 +51,11 @@ namespace XMN {
     private originProfile: string | null = null;
     private refs: MediaRef[] = [];
     private indexes = new Map<string, number>();
+    private imageSources = new Map<string, string>();
+    private prefetched = new Map<string, HTMLImageElement>();
+    private preloadTimer: number | null = null;
+    private preloadForPath = '';
+
     private viewer: HTMLElement | null = null;
     private viewObserver: MutationObserver | null = null;
     private listObserver: MutationObserver | null = null;
@@ -69,6 +78,11 @@ namespace XMN {
       this.navigationBusy = false;
       this.refs = [];
       this.indexes.clear();
+      this.imageSources.clear();
+      this.prefetched.clear();
+      this.preloadForPath = '';
+      if (this.preloadTimer !== null) window.clearTimeout(this.preloadTimer);
+      this.preloadTimer = null;
       this.removeViewerUI();
       this.stopListObserver();
       document.querySelectorAll('.xmn-tile-badge').forEach((element) => element.remove());
@@ -137,6 +151,10 @@ namespace XMN {
         const found = usableTileLink(tile, this.originProfile);
         if (!found) continue;
         const { ref } = found;
+        // Capture only CDN image locations from the already-rendered media tiles.
+        const thumbnail = tile.querySelector<HTMLImageElement>('img[src]');
+        const imageUrl = thumbnail ? preloadImageUrl(thumbnail.currentSrc || thumbnail.src || '') : null;
+        if (imageUrl) this.imageSources.set(ref.key, imageUrl);
         let index = this.indexes.get(ref.key);
         if (index === undefined) {
           index = this.refs.length;
@@ -185,8 +203,8 @@ namespace XMN {
       const viewer = this.viewer;
       if (!viewer || !viewer.isConnected) return;
       for (const [direction, className, text, label] of [
-        [-1, 'xmn-prev', '◀', '前のメディア一覧項目へ (Shift+←)'],
-        [1, 'xmn-next', '▶', '次のメディア一覧項目へ (Shift+→)'],
+        [-1, 'xmn-prev', '◀', '前の投稿へ（最初の画像では←でも移動）'],
+        [1, 'xmn-next', '▶', '次の投稿へ（最後の画像では→でも移動）'],
       ] as const) {
         let button = viewer.querySelector<HTMLButtonElement>(`.${className}`);
         if (!button) {
@@ -212,10 +230,18 @@ namespace XMN {
         viewer.appendChild(status);
       }
       this.updateViewerState();
+      this.schedulePreload();
     }
 
     private activeIndex(): number | null {
-      return this.originProfile ? findCurrentIndex(this.refs, window.location.pathname, this.originProfile) : null;
+      if (!this.originProfile) return null;
+      const exact = findCurrentIndex(this.refs, window.location.pathname, this.originProfile);
+      if (exact !== null) return exact;
+      // A media tab may offer only one link for a post with several photos.
+      const current = mediaRefFromHref(window.location.pathname, this.originProfile);
+      const matches = current ? this.refs.map((ref, i) => ({ ref, i }))
+        .filter(({ ref }) => ref.statusId === current.statusId) : [];
+      return matches.length ? matches[0].i : null;
     }
 
     private updateViewerState(): void {
@@ -224,24 +250,123 @@ namespace XMN {
       const current = this.activeIndex();
       const prev = viewer.querySelector<HTMLButtonElement>('.xmn-prev');
       const next = viewer.querySelector<HTMLButtonElement>('.xmn-next');
-      if (prev) prev.disabled = this.navigationBusy || current === null || current === 0;
-      // At the last known tile a click may attempt to load additional items.
-      if (next) next.disabled = this.navigationBusy || current === null;
+      const currentRef = current !== null ? this.refs[current] : null;
+      if (prev) prev.disabled = this.navigationBusy || !currentRef || adjacentPostIndex(this.refs, currentRef.statusId, -1) === null;
+      // At the last known post clicking the next button may load more media.
+      if (next) next.disabled = this.navigationBusy || !currentRef;
       const indicator = viewer.querySelector<HTMLElement>('.xmn-status');
       if (indicator) {
-        const label = current === null ? '一覧位置を確認中' : `${current + 1} / ${this.refs.length}`;
+        const statuses = Array.from(new Set(this.refs.map((ref) => ref.statusId)));
+        const index = currentRef ? statuses.indexOf(currentRef.statusId) : -1;
+        const label = index < 0 ? '投稿の位置を確認中' : `投稿 ${index + 1} / ${statuses.length}`;
         if (indicator.textContent !== label) indicator.textContent = label;
       }
     }
 
+    /**
+     * A positive gallery-size hint from the original post's media thumbnails.
+     * Do not count media from unrelated replies or quoted posts.
+     * If X changes its DOM or count is uncertain, do not take over ArrowRight.
+     */
+    private photoCount(viewer: HTMLElement, statusId: string): number | null {
+      const root = viewer.closest('[role="dialog"]') ?? viewer.parentElement;
+      if (!root || !this.originProfile) return null;
+      for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
+        const photos = Array.from(article.querySelectorAll('[data-testid="tweetPhoto"] a[href], a[href*="/photo/"]'));
+        const indexes = new Set<number>();
+        for (const link of photos) {
+          const ref = mediaRefFromHref(link.getAttribute('href') ?? '', this.originProfile);
+          if (ref?.kind === 'photo' && ref.statusId === statusId && ref.mediaIndex !== null) indexes.add(ref.mediaIndex);
+        }
+        const max = Math.max(0, ...indexes);
+        if (max > 0 && indexes.size === max) return max;
+      }
+      // A full run of contiguous media-tab tiles is a useful fallback, but
+      // only if the next registered tile is a DIFFERENT post.
+      const group = this.refs.filter((ref) => ref.statusId === statusId && ref.kind === 'photo');
+      const indexes = new Set(group.map((ref) => ref.mediaIndex).filter((i): i is number => i !== null));
+      const max = Math.max(0, ...indexes);
+      let groupEnd = -1;
+      for (let i = this.refs.length - 1; i >= 0; i--) {
+        if (this.refs[i].statusId === statusId) { groupEnd = i; break; }
+      }
+      if (max > 0 && indexes.size === max && groupEnd >= 0 &&
+          groupEnd < this.refs.length - 1 && this.refs[groupEnd + 1].statusId !== statusId) return max;
+      return null;
+    }
+
+    private nativeGalleryArrowAvailable(viewer: HTMLElement, direction: Direction): boolean {
+      const root = viewer.closest('[role="dialog"]') ?? viewer;
+      const pattern = direction === 1 ? NATIVE_NEXT : NATIVE_PREVIOUS;
+      for (const button of root.querySelectorAll<HTMLElement>('[aria-label], [title]')) {
+        if (button.closest('.xmn-nav-button')) continue;
+        const label = (button.getAttribute('aria-label') || button.getAttribute('title') || '').trim();
+        if (pattern.test(label) && button.getAttribute('aria-disabled') !== 'true' &&
+            !(button instanceof HTMLButtonElement && button.disabled)) return true;
+      }
+      return false;
+    }
+
     private onKeyDown(event: KeyboardEvent): void {
-      const direction = postShortcutDirection(event);
-      if (direction === null || !this.viewer?.isConnected || !this.originProfile ||
-          isEditingTarget(event.target) || this.navigationBusy) return;
-      if (this.activeIndex() === null) return;
+      if (!this.viewer?.isConnected || !this.originProfile ||
+          isEditingTarget(event.target) || this.navigationBusy ||
+          this.activeIndex() === null) return;
+      const current = mediaRefFromHref(window.location.pathname, this.originProfile);
+      const direction = galleryBoundaryDirection(
+        event, current, current ? this.photoCount(this.viewer, current.statusId) : null,
+        this.nativeGalleryArrowAvailable(this.viewer, 1),
+        this.nativeGalleryArrowAvailable(this.viewer, -1),
+      );
+      if (direction === null) return; // Preserve the native X photo/video operation.
+      if (direction === -1 && current && adjacentPostIndex(this.refs, current.statusId, -1) === null) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       void this.navigate(direction);
+    }
+
+    private schedulePreload(): void {
+      if (!this.originProfile || !this.viewer || document.hidden) return;
+      if (window.location.pathname === this.preloadForPath) return;
+      this.preloadForPath = window.location.pathname;
+      if (this.preloadTimer !== null) window.clearTimeout(this.preloadTimer);
+      this.preloadTimer = window.setTimeout(() => {
+        this.preloadTimer = null;
+        this.preloadAdjacentImages();
+      }, 350);
+    }
+
+    private preloadAdjacentImages(): void {
+      if (!this.viewer?.isConnected || !this.originProfile || document.hidden ||
+          (typeof navigator !== 'undefined' && navigator.onLine === false)) return;
+      const connection = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
+      if (connection?.saveData || /^(slow-2g|2g)$/.test(connection?.effectiveType ?? '')) return;
+      const index = this.activeIndex();
+      const current = mediaRefFromHref(window.location.pathname, this.originProfile);
+      if (index === null || !current) return;
+      const targets: MediaRef[] = [];
+      // Native next/previous photos are preheated first; otherwise adjacent posts.
+      for (const direction of [1, -1] as Direction[]) {
+        const neighbor = this.refs[index + direction];
+        const post = adjacentPostIndex(this.refs, current.statusId, direction);
+        const photoCandidate = neighbor?.statusId === current.statusId &&
+          neighbor.kind === 'photo' && neighbor.mediaIndex !== null && current.mediaIndex !== null &&
+          (neighbor.mediaIndex - current.mediaIndex) * direction > 0 ? neighbor : null;
+        const candidate = photoCandidate ?? (post !== null ? this.refs[post] : null);
+        if (candidate) targets.push(candidate);
+      }
+      const urls = targets.map((ref) => this.imageSources.get(ref.key)).filter((url): url is string => !!url);
+      const unique = [...new Set(urls)].slice(0, 2);
+      for (const [url] of this.prefetched) {
+        if (!unique.includes(url)) this.prefetched.delete(url);
+      }
+      for (const url of unique) {
+        if (this.prefetched.has(url)) continue;
+        const image = new Image();
+        image.decoding = 'async';
+        image.fetchPriority = 'low';
+        image.src = url;
+        this.prefetched.set(url, image);
+      }
     }
 
     private findCloseButton(viewer: Element): HTMLElement | null {
@@ -286,29 +411,31 @@ namespace XMN {
       return !viewer.isConnected;
     }
 
-    /** Only called after closing viewer; load by observing new entries, never by a fixed 300ms guess. */
-    private async loadNext(targetIndex: number, generation: number): Promise<MediaRef | null> {
+    /** Wait for a DIFFERENT post; new images of the current post are not enough. */
+    private async loadNextPost(statusId: string, generation: number): Promise<MediaRef | null> {
       for (let attempt = 0; attempt < 20; attempt++) {
         if (generation !== this.navGeneration) return null;
         this.scanTiles();
-        if (this.refs[targetIndex]) return this.refs[targetIndex];
-        // The content column may be virtualized or the page may already be at its end.
+        const nextIndex = adjacentPostIndex(this.refs, statusId, 1);
+        if (nextIndex !== null) return this.refs[nextIndex];
+        // X owns infinite scrolling. Only scroll the already-open media timeline.
         if (attempt % 3 === 0) window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
         await pause(200);
       }
       this.scanTiles();
-      return this.refs[targetIndex] ?? null;
+      const nextIndex = adjacentPostIndex(this.refs, statusId, 1);
+      return nextIndex === null ? null : this.refs[nextIndex];
     }
 
     private async navigate(direction: Direction): Promise<void> {
       const currentIndex = this.activeIndex();
       const oldViewer = this.viewer;
       if (this.navigationBusy || currentIndex === null || !oldViewer || !this.originProfile) return;
-      const nextIndex = currentIndex + direction;
-      if (nextIndex < 0) return;
+      const currentRef = this.refs[currentIndex];
+      const nextIndex = adjacentPostIndex(this.refs, currentRef.statusId, direction);
+      if (direction === -1 && nextIndex === null) return;
       const generation = this.navGeneration;
       const profile = this.originProfile;
-      const currentRef = this.refs[currentIndex];
       const closeButton = this.findCloseButton(oldViewer);
       if (!closeButton) {
         this.toast('Xの閉じるボタンが見つからず、移動を中止しました');
@@ -323,9 +450,13 @@ namespace XMN {
           return;
         }
         if (generation !== this.navGeneration || mediaProfileFromPath(window.location.pathname) !== profile) return;
-        const destination = this.refs[nextIndex] ?? (direction === 1 ? await this.loadNext(nextIndex, generation) : null);
+        let destination = nextIndex === null ? null : this.refs[nextIndex];
+        // At the end, only click an observed, different post. Never guess a URL.
+        if (!destination && direction === 1) {
+          destination = await this.loadNextPost(currentRef.statusId, generation);
+        }
         if (generation !== this.navGeneration) return;
-        const link = destination ? this.findLiveLink(destination) : null;
+        const link = destination && destination.statusId !== currentRef.statusId ? this.findLiveLink(destination) : null;
         if (link) {
           link.click();
         } else {

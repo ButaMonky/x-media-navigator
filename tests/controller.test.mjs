@@ -52,38 +52,41 @@ function keyEvent(key, extra={}) {
   };
 }
 
-test('real compiled controller handles Shift+Arrow but leaves unmodified arrow to X', () => {
+test('compiled controller crosses posts on first/last gallery image, but not in the middle', () => {
   const calls=[];
   const instance={ viewer:{isConnected:true}, originProfile:'alice', navigationBusy:false,
-    activeIndex(){return 0;}, navigate(dir){calls.push(dir);} };
-  for (const ev of [keyEvent('ArrowRight'),keyEvent('ArrowLeft'),keyEvent('ArrowRight',{ctrlKey:true,shiftKey:true}),keyEvent('ArrowRight',{shiftKey:true,repeat:true})]) {
-    proto.onKeyDown.call(instance,ev);
-    assert.equal(ev.prevented,false);
-  }
-  const right=keyEvent('ArrowRight',{shiftKey:true});
-  proto.onKeyDown.call(instance,right);
-  assert.equal(right.prevented,true);
-  assert.equal(right.stopped,true);
-  const left=keyEvent('ArrowLeft',{shiftKey:true});
-  proto.onKeyDown.call(instance,left);
-  assert.equal(left.prevented,true);
+    refs:['/alice/status/7/photo/1','/alice/status/11/photo/1','/alice/status/11/photo/2','/alice/status/22/photo/1'].map(ref),
+    activeIndex(){return 0;}, photoCount(){return 2;},
+    nativeGalleryArrowAvailable(){return false;}, navigate(dir){calls.push(dir);} };
+  const run=(path,key,extra={})=>{state.pathname=path;const ev=keyEvent(key,extra);proto.onKeyDown.call(instance,ev);return ev;};
+  assert.equal(run('/alice/status/11/photo/1','ArrowRight').prevented,false,'X should open image 2');
+  assert.equal(run('/alice/status/11/photo/2','ArrowLeft').prevented,false,'X should open image 1');
+  assert.equal(run('/alice/status/11/photo/2','ArrowRight').prevented,true,'last photo to next post');
+  assert.equal(run('/alice/status/11/photo/1','ArrowLeft').prevented,true,'first photo to previous post');
+  assert.equal(run('/alice/status/11/video/1','ArrowRight').prevented,false,'video seek stays native');
+  assert.equal(run('/alice/status/11/photo/2','ArrowRight',{shiftKey:true}).prevented,false,'Shift+Arrow no longer shortcut');
   assert.deepEqual(calls,[1,-1]);
 });
 
-test('shortcut is ignored if typing, viewer closed, or list mapping unavailable', () => {
+test('unknown right boundary, native gallery buttons, focus and blocked viewer preserve X operation', () => {
   const calls=[];
-  const instance={ viewer:{isConnected:true},originProfile:'alice',navigationBusy:false,
-    activeIndex(){return 0;},navigate(dir){calls.push(dir);} };
-  const focused=keyEvent('ArrowRight',{shiftKey:true, target:new FakeElement('input')});
-  focused.target.closestResult = focused.target;
-  proto.onKeyDown.call(instance,focused);
+  const instance={viewer:{isConnected:true},originProfile:'alice',navigationBusy:false,
+    activeIndex(){return 0;},photoCount(){return null;},nativeGalleryArrowAvailable(){return false;},navigate(dir){calls.push(dir);} };
+  state.pathname='/alice/status/11/photo/4';
+  assert.equal((()=>{const e=keyEvent('ArrowRight');proto.onKeyDown.call(instance,e);return e.prevented})(),false);
+  instance.photoCount=()=>4;
+  instance.nativeGalleryArrowAvailable=(v,dir)=>dir===1;
+  const enabled=keyEvent('ArrowRight');proto.onKeyDown.call(instance,enabled);
+  assert.equal(enabled.prevented,false,'enabled native next button wins');
+  instance.nativeGalleryArrowAvailable=()=>false;
+  const focused=keyEvent('ArrowRight',{target:new FakeElement('input')});
+  focused.target.closestResult=focused.target;proto.onKeyDown.call(instance,focused);
   assert.equal(focused.prevented,false);
-  instance.viewer=null;
-  proto.onKeyDown.call(instance,keyEvent('ArrowRight',{shiftKey:true}));
-  instance.viewer={isConnected:true};
-  instance.activeIndex=()=>null;
-  proto.onKeyDown.call(instance,keyEvent('ArrowRight',{shiftKey:true}));
-  assert.equal(calls.length,0);
+  instance.viewer=null;const closed=keyEvent('ArrowRight');proto.onKeyDown.call(instance,closed);
+  assert.equal(closed.prevented,false);
+  instance.viewer={isConnected:true};instance.activeIndex=()=>null;
+  const unknown=keyEvent('ArrowRight');proto.onKeyDown.call(instance,unknown);
+  assert.equal(unknown.prevented,false);assert.deepEqual(calls,[]);
 });
 
 test('tile scanning distinguishes photo positions, scopes profile, reuses numbering', () => {
@@ -145,4 +148,51 @@ test('missing close button aborts rather than navigating elsewhere', async () =>
   await proto.navigate.call(instance,1);
   assert.equal(errors,1);
   assert.equal(instance.navigationBusy,false);
+});
+
+test('preloading is bounded, prioritizes adjacent images, and respects save-data/offline', () => {
+  const calls=[];
+  context.Image = class { set src(v) { calls.push(v); } };
+  context.navigator = { onLine:true, connection: {saveData:false,effectiveType:'4g'} };
+  document.hidden=false;
+  state.pathname='/alice/status/11/photo/2';
+  const refs=['/alice/status/11/photo/1','/alice/status/11/photo/2','/alice/status/22/photo/1'].map(ref);
+  const sources = new Map([
+    [refs[0].key,'https://pbs.twimg.com/media/A?format=jpg&name=large'],
+    [refs[1].key,'https://pbs.twimg.com/media/B?format=jpg&name=large'],
+    [refs[2].key,'https://pbs.twimg.com/media/C?format=jpg&name=large']
+  ]);
+  const instance = {viewer:{isConnected:true},originProfile:'alice',refs,imageSources:sources,
+    prefetched:new Map(),activeIndex(){return 1;}};
+  proto.preloadAdjacentImages.call(instance);
+  assert.equal(calls.length,2);
+  assert.deepEqual(calls,[sources.get(refs[2].key),sources.get(refs[0].key)]);
+  proto.preloadAdjacentImages.call(instance);
+  assert.equal(calls.length,2,'same images should not be requested again');
+  context.navigator.connection.saveData=true;
+  instance.prefetched.clear();
+  proto.preloadAdjacentImages.call(instance);
+  assert.equal(calls.length,2,'save-data disables preloading');
+  context.navigator.connection.saveData=false;
+  context.navigator.onLine=false;
+  proto.preloadAdjacentImages.call(instance);
+  assert.equal(calls.length,2,'offline disables preloading');
+});
+
+test('lazy-loader keeps waiting when only more images from the SAME post arrive', async () => {
+  context.window.setTimeout=(callback)=>setTimeout(callback,1);
+  context.window.scrollTo=()=>{};
+  document.documentElement={scrollHeight:200};
+  const refs=['/alice/status/11/photo/1','/alice/status/11/photo/2'].map(ref);
+  let scans=0;
+  const instance={navGeneration:5,refs,
+    scanTiles(){
+      scans++;
+      if (scans===2) this.refs.push(ref('/alice/status/11/photo/3'));
+      if (scans===4) this.refs.push(ref('/alice/status/22/photo/1'));
+    }
+  };
+  const result=await proto.loadNextPost.call(instance,'11',5);
+  assert.equal(result.statusId,'22');
+  assert.equal(scans,4);
 });
