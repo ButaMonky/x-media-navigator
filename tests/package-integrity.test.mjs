@@ -34,10 +34,10 @@ test('manifest content scripts, CSS and referenced icons exist', () => {
   for (const filename of Object.values(m.icons)) assert.ok(existsSync(resolve(dev, filename)), filename);
 });
 
-test('reference source script matches the original Chrome 1.3 snapshot', (t) => {
+test('Git-managed LF-normalized v1.3 baseline matches its recorded hash', (t) => {
   if (!existsSync(resolve(upstream, 'content_script.js'))) { t.skip('Snapshot is retained in private GitHub repo, not scratch build'); return; }
   const hash = createHash('sha256').update(get(upstream, 'content_script.js')).digest('hex').toUpperCase();
-  assert.equal(hash, 'B3185DC554E2B981C65970192D750AC82ADAE5BAC0A043E2084D4BB85D153CB0');
+  assert.equal(hash, 'BC67D0F31B7482B3FB06EB686E7CE944B4014746375696D8CDD9D915117190BE');
 });
 
 test('source-of-truth is TypeScript and no browser secret is embedded', () => {
