@@ -30,20 +30,27 @@ namespace XMN {
 
   function isEditingTarget(target: EventTarget | null): boolean {
     if (!(target instanceof Element)) return false;
-    return !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="slider"], video');
+    return !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="slider"], [role="spinbutton"], video');
   }
 
   function usableTileLink(tile: Element, profile: string): { link: HTMLAnchorElement; ref: MediaRef } | null {
     const links = Array.from(tile.querySelectorAll<HTMLAnchorElement>('a[href]'));
-    // An explicit photo/video position is less ambiguous than a generic status link.
-    const possibilities = links.map((link) => ({ link, ref: mediaRefFromHref(link.getAttribute('href') ?? '', profile) }))
+    const possibilities = links
+      // A quoted post can contain its own media links. They are not the
+      // originating profile's media tile, even if the handle matches.
+      .filter((link) => !link.closest('[data-testid="quoteTweet"]'))
+      .map((link) => ({ link, ref: mediaRefFromHref(link.getAttribute('href') ?? '', profile) }))
       .filter((candidate): candidate is { link: HTMLAnchorElement; ref: MediaRef } => candidate.ref !== null);
-    const specific = possibilities.find(({ ref }) => ref.kind !== null);
-    if (specific) return specific;
-    // X sometimes uses a plain status URL in an image/video tile.
-    const generic = possibilities[0];
-    if (generic && tile.querySelector('img, video')) return generic;
-    return null;
+    if (!tile.querySelector('img, video')) return null;
+    // Prefer the link actually wrapping the thumbnail, not an unrelated
+    // reply/permalink. Ambiguous owners are safer to leave unnumbered.
+    const owned = possibilities.filter(({ link }) => !!link.querySelector('img, video'));
+    if (owned.length === 1) return owned[0];
+    if (owned.length > 1) return null;
+    if (new Set(possibilities.map(({ ref }) => ref.statusId)).size > 1) return null;
+    // Some X grid versions place the image outside its link. In that case
+    // a single proven owner is enough; an explicit media position is preferred.
+    return possibilities.find(({ ref }) => ref.kind !== null) ?? possibilities[0] ?? null;
   }
 
   /** Maintain a stable ordered list of media refs, never cached DOM nodes. */
@@ -225,7 +232,9 @@ namespace XMN {
         if (!found) continue;
         const { ref } = found;
         // Capture only CDN image locations from the already-rendered media tiles.
-        const thumbnail = tile.querySelector<HTMLImageElement>('img[src]');
+        const ownedImage = found.link.querySelector<HTMLImageElement>('img[src]');
+        const allImages = tile.querySelectorAll<HTMLImageElement>('img[src]');
+        const thumbnail = ownedImage ?? (allImages.length === 1 ? allImages[0] : null);
         const imageUrl = thumbnail ? preloadImageUrl(thumbnail.currentSrc || thumbnail.src || '') : null;
         if (imageUrl) {
           // Keep only nearby/recent thumbnail URLs in memory during long timelines.
@@ -336,7 +345,7 @@ namespace XMN {
       const prev = viewer.querySelector<HTMLButtonElement>('.xmn-prev');
       const next = viewer.querySelector<HTMLButtonElement>('.xmn-next');
       const currentRef = current !== null ? this.refs[current] : null;
-      if (prev) prev.disabled = this.navigationBusy || !currentRef || adjacentPostIndex(this.refs, currentRef.statusId, -1) === null;
+      if (prev) prev.disabled = this.navigationBusy || !currentRef || adjacentPostIndex(this.refs, currentRef.statusId, -1, current ?? undefined) === null;
       // At the last known post clicking the next button may load more media.
       if (next) next.disabled = this.navigationBusy || !currentRef;
       const indicator = viewer.querySelector<HTMLElement>('.xmn-status');
@@ -427,8 +436,9 @@ namespace XMN {
 
     private onKeyDown(event: KeyboardEvent): void {
       if (!this.viewer?.isConnected || !this.originProfile ||
-          isEditingTarget(event.target) || this.navigationBusy ||
-          this.activeIndex() === null) return;
+          isEditingTarget(event.target) || this.navigationBusy) return;
+      const currentIndex = this.activeIndex();
+      if (currentIndex === null) return;
       const current = mediaRefFromHref(window.location.pathname, this.originProfile);
       const photoCount = current ? this.photoCount(this.viewer, current.statusId) : null;
       const nativeNext = this.nativeGalleryArrowAvailable(this.viewer, 1);
@@ -446,7 +456,7 @@ namespace XMN {
         }
         return;
       }
-      if (direction === -1 && current && adjacentPostIndex(this.refs, current.statusId, -1) === null) return;
+      if (direction === -1 && current && adjacentPostIndex(this.refs, current.statusId, -1, currentIndex) === null) return;
       this.pendingRightConfirmation = null;
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -533,7 +543,7 @@ namespace XMN {
       // Native next/previous photos are preheated first; otherwise adjacent posts.
       for (const direction of [1, -1] as Direction[]) {
         const neighbor = this.refs[index + direction];
-        const post = adjacentPostIndex(this.refs, current.statusId, direction);
+        const post = adjacentPostIndex(this.refs, current.statusId, direction, index);
         const photoCandidate = neighbor?.statusId === current.statusId &&
           neighbor.kind === 'photo' && neighbor.mediaIndex !== null && current.mediaIndex !== null &&
           (neighbor.mediaIndex - current.mediaIndex) * direction > 0 ? neighbor : null;
@@ -604,11 +614,11 @@ namespace XMN {
     }
 
     /** Wait for a DIFFERENT post; new images of the current post are not enough. */
-    private async loadNextPost(statusId: string, generation: number): Promise<MediaRef | null> {
+    private async loadNextPost(statusId: string, generation: number, fromIndex?: number): Promise<MediaRef | null> {
       for (let attempt = 0; attempt < 20; attempt++) {
         if (generation !== this.navGeneration) return null;
         this.scanTiles();
-        const nextIndex = adjacentPostIndex(this.refs, statusId, 1);
+        const nextIndex = adjacentPostIndex(this.refs, statusId, 1, fromIndex);
         if (nextIndex !== null) return this.refs[nextIndex];
         // Prefer scrolling the final *visible media tile*. scrollIntoView also
         // reaches nested scroll containers, unlike window.scrollTo alone.
@@ -625,7 +635,7 @@ namespace XMN {
         await pause(200);
       }
       this.scanTiles();
-      const nextIndex = adjacentPostIndex(this.refs, statusId, 1);
+      const nextIndex = adjacentPostIndex(this.refs, statusId, 1, fromIndex);
       return nextIndex === null ? null : this.refs[nextIndex];
     }
 
@@ -634,7 +644,7 @@ namespace XMN {
       const oldViewer = this.viewer;
       if (this.navigationBusy || currentIndex === null || !oldViewer || !this.originProfile) return;
       const currentRef = this.refs[currentIndex];
-      const nextIndex = adjacentPostIndex(this.refs, currentRef.statusId, direction);
+      const nextIndex = adjacentPostIndex(this.refs, currentRef.statusId, direction, currentIndex);
       if (direction === -1 && nextIndex === null) return;
       const generation = this.navGeneration;
       const profile = this.originProfile;
@@ -683,7 +693,7 @@ namespace XMN {
         let destination = nextIndex === null ? null : this.refs[nextIndex];
         // At the end, only click an observed, different post. Never guess a URL.
         if (!destination && direction === 1) {
-          destination = await this.loadNextPost(currentRef.statusId, generation);
+          destination = await this.loadNextPost(currentRef.statusId, generation, currentIndex);
         }
         if (generation !== this.navGeneration) return;
         const link = destination && destination.statusId !== currentRef.statusId ? this.findLiveLink(destination) : null;

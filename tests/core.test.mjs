@@ -166,3 +166,20 @@ test('Japanese photo counters preserve total/current ordering and full-width dig
     assert.equal(XMN.parseGalleryCounter(label), null, label);
   }
 });
+test('repeated noncontiguous status IDs never skip intervening posts', () => {
+  const refs = [
+    '/alice/status/11/photo/1',
+    '/alice/status/22/photo/1',
+    '/alice/status/11/photo/2',
+    '/alice/status/33/photo/1',
+    '/alice/status/33/photo/2',
+  ].map((p) => XMN.mediaRefFromHref(p, 'alice'));
+  assert.equal(XMN.adjacentPostIndex(refs, '11', 1, 0), 1, 'first 11 advances to 22, not 33');
+  assert.equal(XMN.adjacentPostIndex(refs, '11', 1, 2), 3, 'later 11 advances to 33');
+  assert.equal(XMN.adjacentPostIndex(refs, '11', -1, 2), 1, 'later 11 returns to 22');
+  assert.equal(XMN.adjacentPostIndex(refs, '33', -1, 4), 2, 'backwards skips contiguous 33 photos only');
+  assert.equal(XMN.adjacentPostIndex(refs, '22', -1, 1), 0);
+  assert.equal(XMN.adjacentPostIndex(refs, '22', 1, 1), 2);
+  assert.equal(XMN.adjacentPostIndex(refs, 'other', 1, 2), null);
+  assert.equal(XMN.adjacentPostIndex(refs, '11', 1, 99), 1, 'invalid anchor uses conservative fallback');
+});

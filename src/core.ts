@@ -130,17 +130,28 @@ namespace XMN {
     return photoCount !== null && photoCount >= 1 && current.mediaIndex === photoCount ? 1 : null;
   }
 
-  /** Move across STATUS groups, not between media items belonging to the same post. */
-  export function adjacentPostIndex(items: readonly MediaRef[], currentStatusId: string, direction: Direction): number | null {
-    const positions = items.map((item, index) => ({ item, index }))
-      .filter(({ item }) => item.statusId === currentStatusId);
-    if (positions.length === 0) return null;
-    const start = direction === 1 ? positions[positions.length - 1].index : positions[0].index;
-    for (let i = start + direction; i >= 0 && i < items.length; i += direction) {
-      if (items[i].statusId !== currentStatusId) {
-        // For backtracking enter the previous post from its last recorded photo.
-        return i;
+  /**
+   * Move across the CONTIGUOUS status group at the active position, not the last
+   * occurrence of that ID anywhere in the timeline. A repeated status can appear
+   * again after another post; skipping every occurrence would skip entire posts.
+   */
+  export function adjacentPostIndex(
+    items: readonly MediaRef[], currentStatusId: string, direction: Direction, activePosition?: number,
+  ): number | null {
+    const anchored = activePosition !== undefined && Number.isSafeInteger(activePosition) &&
+      activePosition >= 0 && activePosition < items.length &&
+      items[activePosition].statusId === currentStatusId;
+    let start = anchored ? activePosition! : -1;
+    if (!anchored) {
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].statusId !== currentStatusId) continue;
+        start = i;
+        if (direction === 1) break;
       }
+    }
+    if (start < 0) return null;
+    for (let i = start + direction; i >= 0 && i < items.length; i += direction) {
+      if (items[i].statusId !== currentStatusId) return i;
     }
     return null;
   }

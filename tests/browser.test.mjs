@@ -30,6 +30,15 @@ function tile(href) {
 }
 ['/alice/status/11/photo/1','/alice/status/11/photo/2','/alice/status/22/photo/1','/bob/status/999/photo/1'].forEach(href => ul.appendChild(tile(href)));
 const source = href => Array.from(ul.querySelectorAll('a')).find(a => a.getAttribute('href') === href);
+// Synthetic quote-link pollution and an ambiguous, unanchored thumbnail tile.
+const firstTile = source('/alice/status/11/photo/1').closest('li');
+const quote = document.createElement('div');quote.dataset.testid='quoteTweet';
+const quoteLink = document.createElement('a');quoteLink.href='/alice/status/999/photo/1';
+quote.appendChild(quoteLink);firstTile.prepend(quote);
+const ambiguousTile = tile('/alice/status/888/photo/1');
+ambiguousTile.appendChild(ambiguousTile.querySelector('img'));
+const otherLink = document.createElement('a');otherLink.href='/alice/status/889/photo/1';
+ambiguousTile.prepend(otherLink);ul.appendChild(ambiguousTile);
 function show(href, withClose=true) {
   document.getElementById('modal')?.remove();
   history.pushState({},'',href);
@@ -90,6 +99,9 @@ async function exercise() {
   await wait(750);
   const badges = Array.from(document.querySelectorAll('.xmn-tile-badge')).map(n=>n.textContent);
   result('profile scope 3 badges', badges.length===3 && badges.join(',')==='1,2,3');
+  result('quoted and ambiguous grid links never generate extra media entries',
+    firstTile.querySelector('.xmn-tile-badge')?.textContent==='1' &&
+    !ambiguousTile.querySelector('.xmn-tile-badge'));
   source('/alice/status/11/photo/1').click();
   await wait(620);
   const nativeRight=key('ArrowRight');
@@ -242,7 +254,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 16, report);
+    assert.equal(report.split('|').length, 17, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

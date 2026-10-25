@@ -124,18 +124,30 @@ var XMN;
         return photoCount !== null && photoCount >= 1 && current.mediaIndex === photoCount ? 1 : null;
     }
     XMN.galleryBoundaryDirection = galleryBoundaryDirection;
-    /** Move across STATUS groups, not between media items belonging to the same post. */
-    function adjacentPostIndex(items, currentStatusId, direction) {
-        const positions = items.map((item, index) => ({ item, index }))
-            .filter(({ item }) => item.statusId === currentStatusId);
-        if (positions.length === 0)
-            return null;
-        const start = direction === 1 ? positions[positions.length - 1].index : positions[0].index;
-        for (let i = start + direction; i >= 0 && i < items.length; i += direction) {
-            if (items[i].statusId !== currentStatusId) {
-                // For backtracking enter the previous post from its last recorded photo.
-                return i;
+    /**
+     * Move across the CONTIGUOUS status group at the active position, not the last
+     * occurrence of that ID anywhere in the timeline. A repeated status can appear
+     * again after another post; skipping every occurrence would skip entire posts.
+     */
+    function adjacentPostIndex(items, currentStatusId, direction, activePosition) {
+        const anchored = activePosition !== undefined && Number.isSafeInteger(activePosition) &&
+            activePosition >= 0 && activePosition < items.length &&
+            items[activePosition].statusId === currentStatusId;
+        let start = anchored ? activePosition : -1;
+        if (!anchored) {
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].statusId !== currentStatusId)
+                    continue;
+                start = i;
+                if (direction === 1)
+                    break;
             }
+        }
+        if (start < 0)
+            return null;
+        for (let i = start + direction; i >= 0 && i < items.length; i += direction) {
+            if (items[i].statusId !== currentStatusId)
+                return i;
         }
         return null;
     }
@@ -189,21 +201,30 @@ var XMN;
     function isEditingTarget(target) {
         if (!(target instanceof Element))
             return false;
-        return !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], [role="textbox"], [role="slider"], video');
+        return !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="slider"], [role="spinbutton"], video');
     }
     function usableTileLink(tile, profile) {
         const links = Array.from(tile.querySelectorAll('a[href]'));
-        // An explicit photo/video position is less ambiguous than a generic status link.
-        const possibilities = links.map((link) => ({ link, ref: XMN.mediaRefFromHref(link.getAttribute('href') ?? '', profile) }))
+        const possibilities = links
+            // A quoted post can contain its own media links. They are not the
+            // originating profile's media tile, even if the handle matches.
+            .filter((link) => !link.closest('[data-testid="quoteTweet"]'))
+            .map((link) => ({ link, ref: XMN.mediaRefFromHref(link.getAttribute('href') ?? '', profile) }))
             .filter((candidate) => candidate.ref !== null);
-        const specific = possibilities.find(({ ref }) => ref.kind !== null);
-        if (specific)
-            return specific;
-        // X sometimes uses a plain status URL in an image/video tile.
-        const generic = possibilities[0];
-        if (generic && tile.querySelector('img, video'))
-            return generic;
-        return null;
+        if (!tile.querySelector('img, video'))
+            return null;
+        // Prefer the link actually wrapping the thumbnail, not an unrelated
+        // reply/permalink. Ambiguous owners are safer to leave unnumbered.
+        const owned = possibilities.filter(({ link }) => !!link.querySelector('img, video'));
+        if (owned.length === 1)
+            return owned[0];
+        if (owned.length > 1)
+            return null;
+        if (new Set(possibilities.map(({ ref }) => ref.statusId)).size > 1)
+            return null;
+        // Some X grid versions place the image outside its link. In that case
+        // a single proven owner is enough; an explicit media position is preferred.
+        return possibilities.find(({ ref }) => ref.kind !== null) ?? possibilities[0] ?? null;
     }
     /** Maintain a stable ordered list of media refs, never cached DOM nodes. */
     class Controller {
@@ -391,7 +412,9 @@ var XMN;
                     continue;
                 const { ref } = found;
                 // Capture only CDN image locations from the already-rendered media tiles.
-                const thumbnail = tile.querySelector('img[src]');
+                const ownedImage = found.link.querySelector('img[src]');
+                const allImages = tile.querySelectorAll('img[src]');
+                const thumbnail = ownedImage ?? (allImages.length === 1 ? allImages[0] : null);
                 const imageUrl = thumbnail ? XMN.preloadImageUrl(thumbnail.currentSrc || thumbnail.src || '') : null;
                 if (imageUrl) {
                     // Keep only nearby/recent thumbnail URLs in memory during long timelines.
@@ -507,7 +530,7 @@ var XMN;
             const next = viewer.querySelector('.xmn-next');
             const currentRef = current !== null ? this.refs[current] : null;
             if (prev)
-                prev.disabled = this.navigationBusy || !currentRef || XMN.adjacentPostIndex(this.refs, currentRef.statusId, -1) === null;
+                prev.disabled = this.navigationBusy || !currentRef || XMN.adjacentPostIndex(this.refs, currentRef.statusId, -1, current ?? undefined) === null;
             // At the last known post clicking the next button may load more media.
             if (next)
                 next.disabled = this.navigationBusy || !currentRef;
@@ -605,8 +628,10 @@ var XMN;
         }
         onKeyDown(event) {
             if (!this.viewer?.isConnected || !this.originProfile ||
-                isEditingTarget(event.target) || this.navigationBusy ||
-                this.activeIndex() === null)
+                isEditingTarget(event.target) || this.navigationBusy)
+                return;
+            const currentIndex = this.activeIndex();
+            if (currentIndex === null)
                 return;
             const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
             const photoCount = current ? this.photoCount(this.viewer, current.statusId) : null;
@@ -621,7 +646,7 @@ var XMN;
                 }
                 return;
             }
-            if (direction === -1 && current && XMN.adjacentPostIndex(this.refs, current.statusId, -1) === null)
+            if (direction === -1 && current && XMN.adjacentPostIndex(this.refs, current.statusId, -1, currentIndex) === null)
                 return;
             this.pendingRightConfirmation = null;
             event.preventDefault();
@@ -719,7 +744,7 @@ var XMN;
             // Native next/previous photos are preheated first; otherwise adjacent posts.
             for (const direction of [1, -1]) {
                 const neighbor = this.refs[index + direction];
-                const post = XMN.adjacentPostIndex(this.refs, current.statusId, direction);
+                const post = XMN.adjacentPostIndex(this.refs, current.statusId, direction, index);
                 const photoCandidate = neighbor?.statusId === current.statusId &&
                     neighbor.kind === 'photo' && neighbor.mediaIndex !== null && current.mediaIndex !== null &&
                     (neighbor.mediaIndex - current.mediaIndex) * direction > 0 ? neighbor : null;
@@ -795,12 +820,12 @@ var XMN;
             return !viewer.isConnected;
         }
         /** Wait for a DIFFERENT post; new images of the current post are not enough. */
-        async loadNextPost(statusId, generation) {
+        async loadNextPost(statusId, generation, fromIndex) {
             for (let attempt = 0; attempt < 20; attempt++) {
                 if (generation !== this.navGeneration)
                     return null;
                 this.scanTiles();
-                const nextIndex = XMN.adjacentPostIndex(this.refs, statusId, 1);
+                const nextIndex = XMN.adjacentPostIndex(this.refs, statusId, 1, fromIndex);
                 if (nextIndex !== null)
                     return this.refs[nextIndex];
                 // Prefer scrolling the final *visible media tile*. scrollIntoView also
@@ -818,7 +843,7 @@ var XMN;
                 await pause(200);
             }
             this.scanTiles();
-            const nextIndex = XMN.adjacentPostIndex(this.refs, statusId, 1);
+            const nextIndex = XMN.adjacentPostIndex(this.refs, statusId, 1, fromIndex);
             return nextIndex === null ? null : this.refs[nextIndex];
         }
         async navigate(direction) {
@@ -827,7 +852,7 @@ var XMN;
             if (this.navigationBusy || currentIndex === null || !oldViewer || !this.originProfile)
                 return;
             const currentRef = this.refs[currentIndex];
-            const nextIndex = XMN.adjacentPostIndex(this.refs, currentRef.statusId, direction);
+            const nextIndex = XMN.adjacentPostIndex(this.refs, currentRef.statusId, direction, currentIndex);
             if (direction === -1 && nextIndex === null)
                 return;
             const generation = this.navGeneration;
@@ -877,7 +902,7 @@ var XMN;
                 let destination = nextIndex === null ? null : this.refs[nextIndex];
                 // At the end, only click an observed, different post. Never guess a URL.
                 if (!destination && direction === 1) {
-                    destination = await this.loadNextPost(currentRef.statusId, generation);
+                    destination = await this.loadNextPost(currentRef.statusId, generation, currentIndex);
                 }
                 if (generation !== this.navGeneration)
                     return;

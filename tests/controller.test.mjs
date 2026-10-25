@@ -275,9 +275,10 @@ test('thumbnail URL cache stays bounded over a long media timeline', () => {
   const tiles=Array.from({length:145},(_,i)=>{
     const {tile}=makeTile('/alice/status/'+(300+i)+'/photo/1');
     const old=tile.querySelector.bind(tile);
-    tile.querySelector=(selector)=>selector==='img[src]'
-      ? { currentSrc:'https://pbs.twimg.com/media/T'+i+'?format=jpg&name=small' }
-      : old(selector);
+    const oldAll=tile.querySelectorAll.bind(tile);
+    const thumbnail={ currentSrc:'https://pbs.twimg.com/media/T'+i+'?format=jpg&name=small' };
+    tile.querySelector=(selector)=>selector==='img[src]' ? thumbnail : old(selector);
+    tile.querySelectorAll=(selector)=>selector==='img[src]' ? [thumbnail] : oldAll(selector);
     return tile;
   });
   state.root=new FakeElement('div');state.root.tiles=tiles;
@@ -536,4 +537,51 @@ test('lazy loading scrolls the visible final tile, including nested media lists'
   assert.equal(next.statusId, '102');
   assert.deepEqual(calls, ['end', 'window', 'end', 'window']);
   state.pathname = '/alice/media';
+});
+test('quoted and ambiguous media links are not indexed as the parent media tile', () => {
+  state.pathname='/alice/media';
+  state.search='';
+  const main=makeTile('/alice/status/100/photo/1');
+  const quote=new FakeElement('a', {href:'/alice/status/999/photo/1'});
+  quote.closest=(selector)=>selector==='[data-testid="quoteTweet"]' ? new FakeElement('div') : null;
+  main.tile.links=[quote,main.link];
+  const ambiguous=makeTile('/alice/status/200/photo/1');
+  ambiguous.tile.links.push(new FakeElement('a', {href:'/alice/status/300/photo/1'}));
+  state.root=new FakeElement('div');
+  state.root.tiles=[main.tile,ambiguous.tile];
+  const instance={originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()};
+  proto.scanTiles.call(instance);
+  assert.deepEqual(instance.refs.map((item)=>item.statusId),['100']);
+  assert.equal(main.tile.children[0].textContent,'1');
+  assert.equal(ambiguous.tile.children.length,0,'ambiguous owners must not gain a navigation badge');
+  assert.equal(proto.findLiveLink.call(instance,ref('/alice/status/100/photo/1')),main.link);
+  assert.equal(proto.findLiveLink.call(instance,ref('/alice/status/999/photo/1')),null);
+
+  const ownership=new FakeElement('a', {href:'/alice/status/400/photo/1'});
+  ownership.image=new FakeElement('img');
+  const other=new FakeElement('a', {href:'/alice/status/500/photo/1'});
+  const resolved=makeTile('/alice/status/400/photo/1');
+  resolved.tile.links=[other,ownership];
+  state.root.tiles=[resolved.tile];
+  proto.scanTiles.call(instance);
+  assert.equal(instance.refs.at(-1).statusId,'400','link containing actual media wins over another same-profile permalink');
+  state.root=null;
+});
+
+test('arrow shortcuts never run while a plaintext editor or combobox has focus', () => {
+  state.pathname='/alice/status/11/photo/1';
+  const instance={
+    viewer:{isConnected:true},originProfile:'alice',navigationBusy:false,
+    activeIndex(){return 0;}, photoCount(){return 1;},
+    nativeGalleryArrowAvailable(){return false;},
+    navigate(){throw new Error('the editor must own the arrow');},
+  };
+  for(const name of ['[contenteditable]:not([contenteditable="false"])','[role="combobox"]','[role="spinbutton"]']){
+    const target=new FakeElement('div');
+    target.closest=(selector)=>selector.includes(name) ? target : null;
+    const event=keyEvent('ArrowRight',{target});
+    proto.onKeyDown.call(instance,event);
+    assert.equal(event.prevented,false,name);
+  }
+  state.pathname='/alice/media';
 });
