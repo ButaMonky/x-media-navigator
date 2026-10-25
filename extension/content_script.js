@@ -214,6 +214,9 @@ var XMN;
             this.prefetched = new Map();
             this.preloadTimer = null;
             this.preloadForPath = '';
+            this.pendingRightConfirmation = null;
+            this.nativeAdvancedPost = null;
+            this.rightProbeTimer = null;
             this.viewer = null;
             this.viewObserver = null;
             this.listObserver = null;
@@ -236,6 +239,11 @@ var XMN;
             this.imageSources.clear();
             this.prefetched.clear();
             this.preloadForPath = '';
+            this.pendingRightConfirmation = null;
+            this.nativeAdvancedPost = null;
+            if (this.rightProbeTimer !== null)
+                window.clearTimeout(this.rightProbeTimer);
+            this.rightProbeTimer = null;
             if (this.preloadTimer !== null)
                 window.clearTimeout(this.preloadTimer);
             this.preloadTimer = null;
@@ -265,6 +273,11 @@ var XMN;
                     scanRequired = true;
                 }
                 else if (this.originTimeline !== timeline) {
+                    // A modal close initiated by this extension can temporarily drop
+                    // ?filter=photo. Keep the original session until navigate() checks
+                    // the actual target. Do not clear refs midway through the operation.
+                    if (this.navigationBusy)
+                        return;
                     // The URL can change before X paints the new filter results. Never collect
                     // stale photos into the new video timeline (or vice versa).
                     const snapshot = this.captureGrid();
@@ -295,8 +308,21 @@ var XMN;
                 // status-page recommendations as though they were the originating media tab.
                 this.stopListObserver();
             }
-            if (path !== this.lastPath)
+            if (path !== this.lastPath) {
+                // Track proven native photo changes even if the next key is pressed
+                // before the delayed fallback probe completes.
+                if (this.originProfile) {
+                    const previous = XMN.mediaRefFromHref(this.lastPath, this.originProfile);
+                    const displayed = XMN.mediaRefFromHref(path, this.originProfile);
+                    if (previous?.kind === 'photo' && displayed?.kind === 'photo' &&
+                        previous.statusId === displayed.statusId &&
+                        previous.mediaIndex !== displayed.mediaIndex) {
+                        this.nativeAdvancedPost = displayed.statusId;
+                    }
+                }
+                this.pendingRightConfirmation = null;
                 this.lastPath = path;
+            }
             const viewer = this.originProfile && XMN.profileStatusFromPath(path, this.originProfile)
                 ? document.querySelector(VIEWER_SELECTOR) : null;
             if (viewer && this.originProfile) {
@@ -401,6 +427,10 @@ var XMN;
         removeViewerUI() {
             this.viewObserver?.disconnect();
             this.viewObserver = null;
+            this.pendingRightConfirmation = null;
+            if (this.rightProbeTimer !== null)
+                window.clearTimeout(this.rightProbeTimer);
+            this.rightProbeTimer = null;
             if (this.viewer) {
                 this.viewer.querySelectorAll('.xmn-nav-button, .xmn-status').forEach((element) => element.remove());
                 this.viewer = null;
@@ -494,9 +524,10 @@ var XMN;
          */
         photoCount(viewer, statusId) {
             const root = viewer.closest('[role="dialog"]') ?? viewer.parentElement;
-            if (!root || !this.originProfile)
+            const profile = this.originProfile;
+            if (!root || !profile)
                 return null;
-            const displayed = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
+            const displayed = XMN.mediaRefFromHref(window.location.pathname, profile);
             // X can render a gallery counter. Confirm it belongs to the displayed photo,
             // rather than matching a number in an unrelated reply or recommended post.
             if (displayed?.kind === 'photo' && displayed.statusId === statusId) {
@@ -516,12 +547,45 @@ var XMN;
             const indexes = new Set();
             for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
                 for (const link of article.querySelectorAll('a[href*="/photo/"]')) {
-                    const ref = XMN.mediaRefFromHref(link.getAttribute('href') ?? '', this.originProfile);
+                    const ref = XMN.mediaRefFromHref(link.getAttribute('href') ?? '', profile);
                     if (ref?.statusId === statusId && ref.kind === 'photo' && ref.mediaIndex !== null)
                         indexes.add(ref.mediaIndex);
                 }
             }
-            return XMN.completeFourPhotoSet(indexes) ? 4 : null;
+            if (XMN.completeFourPhotoSet(indexes))
+                return 4;
+            // X may render the COMPLETE original post's photo grid with 1–3 photos,
+            // without providing an explicit gallery counter in the fullscreen modal.
+            // Require one uniquely indexed link per owned tweetPhoto tile. Do not
+            // infer a count from arbitrary links or from one visible gallery image.
+            for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
+                if (article.closest('[data-testid="quoteTweet"]'))
+                    continue;
+                const photoTiles = Array.from(article.querySelectorAll('[data-testid="tweetPhoto"]'))
+                    .filter((tile) => !tile.closest('[data-testid="quoteTweet"]'));
+                if (photoTiles.length < 1 || photoTiles.length > 3)
+                    continue;
+                const ownedIndexes = [];
+                let valid = true;
+                for (const tile of photoTiles) {
+                    const found = Array.from(tile.querySelectorAll('a[href*="/photo/"]'))
+                        .map((link) => XMN.mediaRefFromHref(link.getAttribute('href') ?? '', profile))
+                        .filter((ref) => ref !== null && ref.kind === 'photo' && ref.statusId === statusId);
+                    if (found.length !== 1 || found[0].mediaIndex === null) {
+                        valid = false;
+                        break;
+                    }
+                    ownedIndexes.push(found[0].mediaIndex);
+                }
+                const seen = new Set(ownedIndexes);
+                if (valid && seen.size === photoTiles.length &&
+                    Array.from({ length: photoTiles.length }, (_, index) => index + 1).every((index) => seen.has(index)) &&
+                    displayed?.statusId === statusId && displayed?.kind === 'photo' &&
+                    displayed.mediaIndex !== null && displayed.mediaIndex <= photoTiles.length) {
+                    return photoTiles.length;
+                }
+            }
+            return null;
         }
         nativeGalleryArrowAvailable(viewer, direction) {
             const root = viewer.closest('[role="dialog"]') ?? viewer;
@@ -542,14 +606,87 @@ var XMN;
                 this.activeIndex() === null)
                 return;
             const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
-            const direction = XMN.galleryBoundaryDirection(event, current, current ? this.photoCount(this.viewer, current.statusId) : null, this.nativeGalleryArrowAvailable(this.viewer, 1), this.nativeGalleryArrowAvailable(this.viewer, -1));
-            if (direction === null)
-                return; // Preserve the native X photo/video operation.
+            const photoCount = current ? this.photoCount(this.viewer, current.statusId) : null;
+            const nativeNext = this.nativeGalleryArrowAvailable(this.viewer, 1);
+            const direction = XMN.galleryBoundaryDirection(event, current, photoCount, nativeNext, this.nativeGalleryArrowAvailable(this.viewer, -1));
+            if (direction === null) {
+                // X may not expose a gallery counter. Give its own ArrowRight handler
+                // first chance to change photos, then offer a non-skipping fallback.
+                if (current && current.kind === 'photo' && event.key === 'ArrowRight' &&
+                    XMN.postShortcutDirection(event) === 1 && !nativeNext) {
+                    this.handleUnknownRightBoundary(event, current);
+                }
+                return;
+            }
             if (direction === -1 && current && XMN.adjacentPostIndex(this.refs, current.statusId, -1) === null)
                 return;
+            this.pendingRightConfirmation = null;
             event.preventDefault();
             event.stopImmediatePropagation();
             void this.navigate(direction);
+        }
+        /** Snapshot only the displayed photo, never an unrelated reply image. */
+        currentPhotoSignature() {
+            const viewer = this.viewer;
+            if (!viewer)
+                return null;
+            const image = viewer.querySelector('img[src]');
+            return image?.currentSrc || image?.src || null;
+        }
+        /**
+         * Last-photo fallback when X provides no total count / reliable arrow label.
+         * A native transition is always allowed first. A known working native gallery
+         * can advance on its first stalled press; otherwise require explicit repeat
+         * confirmation to avoid skipping an unseen image in an unknown-length post.
+         */
+        handleUnknownRightBoundary(event, current) {
+            if (!this.viewer || this.navigationBusy)
+                return;
+            const path = window.location.pathname;
+            const signature = this.currentPhotoSignature();
+            const pending = this.pendingRightConfirmation;
+            if (pending && pending.path === path && pending.signature === signature &&
+                Date.now() < pending.expiresAt) {
+                this.pendingRightConfirmation = null;
+                if (this.rightProbeTimer !== null)
+                    window.clearTimeout(this.rightProbeTimer);
+                this.rightProbeTimer = null;
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                void this.navigate(1);
+                return;
+            }
+            this.pendingRightConfirmation = null;
+            if (this.rightProbeTimer !== null)
+                window.clearTimeout(this.rightProbeTimer);
+            const generation = this.navGeneration;
+            const viewer = this.viewer;
+            this.rightProbeTimer = window.setTimeout(() => {
+                this.rightProbeTimer = null;
+                if (generation !== this.navGeneration || viewer !== this.viewer ||
+                    !viewer.isConnected || this.navigationBusy)
+                    return;
+                const after = this.originProfile ? XMN.mediaRefFromHref(window.location.pathname, this.originProfile) : null;
+                if (!after || after.statusId !== current.statusId)
+                    return;
+                if (window.location.pathname !== path || this.currentPhotoSignature() !== signature) {
+                    if (after.mediaIndex !== null && current.mediaIndex !== null &&
+                        after.mediaIndex !== current.mediaIndex)
+                        this.nativeAdvancedPost = current.statusId;
+                    return;
+                }
+                if (this.nativeGalleryArrowAvailable(viewer, 1))
+                    return;
+                if (current.mediaIndex !== null && current.mediaIndex > 1 &&
+                    this.nativeAdvancedPost === current.statusId) {
+                    void this.navigate(1);
+                    return;
+                }
+                this.pendingRightConfirmation = {
+                    path, signature, expiresAt: Date.now() + 2600,
+                };
+                this.toast('画像枚数を確認できません。もう一度→で次の投稿へ');
+            }, 850);
         }
         schedulePreload() {
             if (!this.originProfile || !this.viewer || document.hidden)
@@ -683,9 +820,11 @@ var XMN;
                 return;
             const generation = this.navGeneration;
             const profile = this.originProfile;
+            const initialDestination = nextIndex === null ? null : this.findLiveLink(this.refs[nextIndex]);
+            const startingGrid = nextIndex === null && this.originTimeline ? this.captureGrid() : null;
             // An old media-timeline entry may have been evicted from X's virtualized DOM.
             // Do not close the active viewer when the known destination is no longer clickable.
-            if (nextIndex !== null && !this.findLiveLink(this.refs[nextIndex])) {
+            if (nextIndex !== null && !initialDestination) {
                 this.toast('移動先が一覧から消えています。ビューアは閉じません');
                 return;
             }
@@ -706,9 +845,22 @@ var XMN;
                     return;
                 // SPA navigation may return to a different Photos/Videos filter than the
                 // timeline that supplied these refs. Never open a ref from the wrong grid.
-                if (this.originTimeline && XMN.mediaTimelineKey(window.location.pathname, window.location.search) !== this.originTimeline) {
-                    this.toast('一覧の種類が切り替わったため、移動を中止しました');
-                    return;
+                const returnedTimeline = XMN.mediaTimelineKey(window.location.pathname, window.location.search);
+                if (this.originTimeline && returnedTimeline !== this.originTimeline) {
+                    // Some X routes drop ?filter=photo on modal close. Accept that
+                    // normalization only when the EXACT same observed destination link
+                    // remains connected; an explicit switch to video is never accepted.
+                    const droppedFilter = returnedTimeline === `${profile}|default` &&
+                        this.originTimeline !== `${profile}|default`;
+                    const unchangedTarget = initialDestination && nextIndex !== null &&
+                        this.findLiveLink(this.refs[nextIndex]) === initialDestination &&
+                        initialDestination.isConnected;
+                    const retainedGrid = startingGrid !== null && startingGrid.firstTiles.length > 0 &&
+                        !this.hasGridTurnedOver(startingGrid);
+                    if (!droppedFilter || !(unchangedTarget || retainedGrid)) {
+                        this.toast('一覧の種類が切り替わったため、移動を中止しました');
+                        return;
+                    }
                 }
                 let destination = nextIndex === null ? null : this.refs[nextIndex];
                 // At the end, only click an observed, different post. Never guess a URL.

@@ -42,7 +42,7 @@ jobs:
         if: github.event_name == 'push' && github.ref == 'refs/heads/research/media-filter-boundary-v22'
         uses: actions/upload-artifact@v4
         with:
-          name: X-Media-Navigator-v2.2.1-beta1
+          name: X-Media-Navigator-v2.2.2-beta2
           path: |
             extension/manifest.json
             extension/content_script.js

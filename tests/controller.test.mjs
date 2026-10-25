@@ -57,7 +57,7 @@ test('compiled controller crosses posts on first/last gallery image, but not in 
   const instance={ viewer:{isConnected:true}, originProfile:'alice', navigationBusy:false,
     refs:['/alice/status/7/photo/1','/alice/status/11/photo/1','/alice/status/11/photo/2','/alice/status/22/photo/1'].map(ref),
     activeIndex(){return 0;}, photoCount(){return 2;},
-    nativeGalleryArrowAvailable(){return false;}, navigate(dir){calls.push(dir);} };
+    nativeGalleryArrowAvailable(){return false;},handleUnknownRightBoundary(){},navigate(dir){calls.push(dir);} };
   const run=(path,key,extra={})=>{state.pathname=path;const ev=keyEvent(key,extra);proto.onKeyDown.call(instance,ev);return ev;};
   assert.equal(run('/alice/status/11/photo/1','ArrowRight').prevented,false,'X should open image 2');
   assert.equal(run('/alice/status/11/photo/2','ArrowLeft').prevented,false,'X should open image 1');
@@ -71,7 +71,7 @@ test('compiled controller crosses posts on first/last gallery image, but not in 
 test('unknown right boundary, native gallery buttons, focus and blocked viewer preserve X operation', () => {
   const calls=[];
   const instance={viewer:{isConnected:true},originProfile:'alice',navigationBusy:false,
-    activeIndex(){return 0;},photoCount(){return null;},nativeGalleryArrowAvailable(){return false;},navigate(dir){calls.push(dir);} };
+    activeIndex(){return 0;},photoCount(){return null;},nativeGalleryArrowAvailable(){return false;},handleUnknownRightBoundary(){},navigate(dir){calls.push(dir);} };
   state.pathname='/alice/status/11/photo/4';
   assert.equal((()=>{const e=keyEvent('ArrowRight');proto.onKeyDown.call(instance,e);return e.prevented})(),false);
   instance.photoCount=()=>4;
@@ -344,4 +344,162 @@ test('SPA filter mismatch after modal close never opens a stale timeline ref', a
   assert.equal(instance.navigationBusy,false);
   assert.match(messages[0],/切り替わった/);
   state.pathname='/alice/media'; state.search='';
+});
+
+
+test('complete original-post photo tile grid proves 2/3 photos without counter, but partial/quoted tiles do not', () => {
+  const controller=Object.create(proto);
+  controller.originProfile='alice';controller.refs=[];
+  const root=new FakeElement('div');
+  const viewer=new FakeElement('div');viewer.parentElement=root;viewer.querySelectorAll=()=>[];
+  const article=new FakeElement('article');
+  const entries=(count,owner='alice',status='100')=>Array.from({length:count},(_,i)=>{
+    const tile=new FakeElement('div');const link=new FakeElement('a',{href:`/${owner}/status/${status}/photo/${i+1}`});
+    tile.querySelectorAll=(selector)=>selector==='a[href*="/photo/"]'?[link]:[];
+    return tile;
+  });
+  let tiles=entries(2);
+  article.querySelectorAll=(selector)=>selector==='[data-testid="tweetPhoto"]'?tiles:[];
+  root.querySelectorAll=(selector)=>selector==='article[data-testid="tweet"]'?[article]:[];
+  state.pathname='/alice/status/100/photo/2';
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),2,'two fully represented photo tiles');
+  tiles=entries(3);
+  state.pathname='/alice/status/100/photo/3';
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),3,'three fully represented photo tiles');
+  tiles=entries(3);tiles[2].querySelectorAll=()=>[];
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'incomplete grid cannot prove count');
+  tiles=entries(2,'bob');
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'foreign owner is ignored');
+  tiles=entries(2);article.closest=()=>article;
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'quoted article is ignored');
+  state.pathname='/alice/media';
+});
+
+test('unknown gallery boundary never skips first photo; repeated unchanged right confirms next post', () => {
+  const controller=Object.create(proto);
+  let delayed=null;let directions=[];let notices=[];
+  context.window.setTimeout=(fn)=>{delayed=fn;return 91;};
+  context.window.clearTimeout=()=>{};
+  controller.viewer={isConnected:true};controller.originProfile='alice';controller.navGeneration=2;
+  controller.navigationBusy=false;controller.rightProbeTimer=null;
+  controller.refs=[ref('/alice/status/100/photo/1'),ref('/alice/status/101/photo/1')];
+  controller.activeIndex=()=>0;controller.photoCount=()=>null;
+  controller.nativeGalleryArrowAvailable=()=>false;
+  controller.currentPhotoSignature=()=> 'stable-image';
+  controller.toast=(message)=>notices.push(message);
+  controller.navigate=(dir)=>directions.push(dir);
+  state.pathname='/alice/status/100/photo/1';
+  const first=keyEvent('ArrowRight');proto.onKeyDown.call(controller,first);
+  assert.equal(first.prevented,false,'first press goes to native X gallery');
+  assert.equal(directions.length,0);
+  delayed();
+  assert.match(notices[0],/もう一度/);
+  assert.equal(directions.length,0,'no navigation on unverified first photo');
+  const second=keyEvent('ArrowRight');proto.onKeyDown.call(controller,second);
+  assert.equal(second.prevented,true);
+  assert.deepEqual(directions,[1],'second press can navigate, no silent no-op');
+  state.pathname='/alice/media';
+});
+
+test('observed native photo transition permits delayed single-press next-post fallback', () => {
+  const controller=Object.create(proto);
+  let delayed=null;const navigations=[];
+  context.window.setTimeout=(fn)=>{delayed=fn;return 92;};
+  context.window.clearTimeout=()=>{};
+  controller.viewer={isConnected:true};controller.originProfile='alice';controller.navGeneration=5;
+  controller.navigationBusy=false;controller.rightProbeTimer=null;
+  controller.nativeAdvancedPost='100';
+  controller.refs=[ref('/alice/status/100/photo/1'),ref('/alice/status/100/photo/2'),ref('/alice/status/101/photo/1')];
+  controller.activeIndex=()=>1;controller.photoCount=()=>null;
+  controller.nativeGalleryArrowAvailable=()=>false;
+  controller.currentPhotoSignature=()=> 'same-photo-2';
+  controller.toast=()=>{throw new Error('Native progress should avoid confirmation toast');};
+  controller.navigate=(dir)=>navigations.push(dir);
+  state.pathname='/alice/status/100/photo/2';
+  const event=keyEvent('ArrowRight');proto.onKeyDown.call(controller,event);
+  assert.equal(event.prevented,false);
+  delayed();
+  assert.deepEqual(navigations,[1]);
+  state.pathname='/alice/media';
+});
+
+test('unknown boundary native X photo advancement prevents cross-post navigation', () => {
+  const controller=Object.create(proto);
+  let delayed=null;const navigations=[];const notes=[];
+  context.window.setTimeout=(fn)=>{delayed=fn;return 93;};
+  context.window.clearTimeout=()=>{};
+  controller.viewer={isConnected:true};controller.originProfile='alice';controller.navGeneration=8;
+  controller.navigationBusy=false;controller.rightProbeTimer=null;
+  controller.refs=[ref('/alice/status/100/photo/1'),ref('/alice/status/100/photo/2'),ref('/alice/status/101/photo/1')];
+  controller.activeIndex=()=>0;controller.photoCount=()=>null;
+  controller.nativeGalleryArrowAvailable=()=>false;
+  controller.currentPhotoSignature=()=> 'new-image';
+  controller.navigate=(dir)=>navigations.push(dir);
+  controller.toast=(note)=>notes.push(note);
+  state.pathname='/alice/status/100/photo/1';
+  const first=keyEvent('ArrowRight');proto.onKeyDown.call(controller,first);
+  state.pathname='/alice/status/100/photo/2';
+  delayed();
+  assert.deepEqual(navigations,[],'the native photo change is never treated as end of post');
+  assert.deepEqual(notes,[]);
+  assert.equal(controller.nativeAdvancedPost,'100');
+  state.pathname='/alice/media';
+});
+
+test('when X strips only the filter on close, an unchanged live target permits post navigation', async () => {
+  state.pathname='/alice/status/100/photo/1';state.search='?filter=photo';
+  const viewer={isConnected:true};const clicked=[];
+  const link={isConnected:true,click(){clicked.push('target');}};
+  const controller=Object.create(proto);
+  controller.navigationBusy=false;controller.navGeneration=1;controller.originProfile='alice';
+  controller.originTimeline='alice|photo';controller.viewer=viewer;
+  controller.refs=[ref('/alice/status/100/photo/1'),ref('/alice/status/101/photo/1')];
+  controller.activeIndex=()=>0;controller.updateViewerState=()=>{};
+  controller.findLiveLink=()=>link;
+  controller.findCloseButton=()=>({click(){viewer.isConnected=false;state.pathname='/alice/media';state.search='';}});
+  controller.waitForViewerToClose=async()=>true;
+  controller.toast=(m)=>{throw new Error(m);};
+  await proto.navigate.call(controller,1);
+  assert.deepEqual(clicked,['target']);
+  assert.equal(controller.navigationBusy,false);
+  state.pathname='/alice/media';state.search='';
+});
+
+test('SPA route poll retains current photo timeline during navigator-controlled close', () => {
+  state.pathname='/alice/media'; state.search='';
+  const controller=Object.create(proto);
+  controller.originProfile='alice'; controller.originTimeline='alice|photo';
+  controller.navigationBusy=true; controller.lastPath='/alice/status/100/photo/2';
+  let resets=0,scans=0;
+  controller.resetSession=()=>{resets++;};
+  controller.ensureListObserver=()=>true;
+  controller.scanTiles=()=>{scans++;};
+  proto.tick.call(controller);
+  assert.equal(resets,0,'closing the modal must not lose the session');
+  assert.equal(scans,0,'filter-stripped intermediate route must not mix old/new tiles');
+  assert.equal(controller.originTimeline,'alice|photo');
+  state.search='';state.pathname='/alice/media';
+});
+
+test('filter normalization preserves lazy-loaded next post only when media grid remains intact', async () => {
+  state.pathname='/alice/status/100/photo/1';state.search='?filter=photo';
+  const viewer={isConnected:true}; const clicked=[];
+  const source={isConnected:true,click(){clicked.push('next');}};
+  const originalGrid={column:{},firstTiles:[{}],firstKeys:['100:photo:1']};
+  const controller=Object.create(proto);
+  controller.navigationBusy=false;controller.navGeneration=3;controller.originProfile='alice';
+  controller.originTimeline='alice|photo';controller.viewer=viewer;
+  controller.refs=[ref('/alice/status/100/photo/1')];
+  controller.activeIndex=()=>0;controller.updateViewerState=()=>{};
+  controller.captureGrid=()=>originalGrid;
+  controller.hasGridTurnedOver=()=>false;
+  controller.findLiveLink=(item)=>item.statusId==='101'?source:null;
+  controller.findCloseButton=()=>({click(){viewer.isConnected=false;state.pathname='/alice/media';state.search='';}});
+  controller.waitForViewerToClose=async()=>true;
+  controller.loadNextPost=async()=>ref('/alice/status/101/photo/1');
+  controller.toast=(message)=>{throw new Error(message);};
+  await proto.navigate.call(controller,1);
+  assert.deepEqual(clicked,['next']);
+  assert.equal(controller.navigationBusy,false);
+  state.pathname='/alice/media';state.search='';
 });

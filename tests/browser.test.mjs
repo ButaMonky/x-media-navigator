@@ -43,7 +43,11 @@ function show(href, withClose=true) {
   const article = document.createElement('article'); article.dataset.testid='tweet';
   const status = /status\\/(\\d+)/.exec(href)?.[1];
   const links = Array.from(ul.querySelectorAll('a[href]')).filter(a=>a.getAttribute('href').includes('/status/'+status+'/photo/'));
-  for (const source of links) { const a = document.createElement('a'); a.href = source.getAttribute('href');article.appendChild(a); }
+  for (const source of links) {
+    const tile = document.createElement('div');tile.dataset.testid='tweetPhoto';
+    const a = document.createElement('a'); a.href = source.getAttribute('href');
+    tile.appendChild(a);article.appendChild(tile);
+  }
   // The synthetic native gallery supplies an explicit current/total counter.
   const index = href.includes('/photo/2') ? 2 : 1;
   const counter = document.createElement('span');counter.id='gallery-counter';
@@ -152,6 +156,40 @@ async function exercise() {
   result('filter DOM replacement discards old list',
     document.querySelectorAll('.xmn-tile-badge').length===1 &&
     ul.firstElementChild.querySelector('.xmn-tile-badge')?.textContent==='1');
+
+  // No fullscreen counter: the complete original tweetPhoto thumbnail grid
+  // should still prove that photo/2 is the last photo in a two-image post.
+  ul.appendChild(tile('/alice/status/55/photo/2'));
+  ul.appendChild(tile('/alice/status/66/photo/1'));
+  await wait(650);
+  source('/alice/status/55/photo/2').click();
+  await wait(650);
+  document.getElementById('gallery-counter')?.remove();
+  const withoutCounter=key('ArrowRight');
+  await wait(900);
+  result('two-photo grid without gallery counter navigates with one ArrowRight',
+    withoutCounter.defaultPrevented &&
+    location.pathname.endsWith('/66/photo/1') && clicked.at(-1)==='/alice/status/66/photo/1');
+
+  // With neither counter nor complete grid, a native ArrowRight is not stolen.
+  // If X did not change photo after 850ms, offer a confirmed second-arrow fallback.
+  document.querySelector('#modal button[aria-label="Close"]')?.click();
+  await wait(450);
+  ul.appendChild(tile('/alice/status/77/photo/1'));
+  await wait(550);
+  source('/alice/status/66/photo/1').click();
+  await wait(600);
+  document.getElementById('gallery-counter')?.remove();
+  document.querySelectorAll('#modal [data-testid="tweetPhoto"]').forEach(n=>n.remove());
+  const unknownFirst=key('ArrowRight');
+  await wait(1050);
+  const offeredConfirmation=document.querySelector('.xmn-toast')?.textContent.includes('もう一度') &&
+    location.pathname.endsWith('/66/photo/1') && !unknownFirst.defaultPrevented;
+  const unknownSecond=key('ArrowRight');
+  await wait(900);
+  result('unknown gallery length requires explicit second-arrow confirmation',
+    offeredConfirmation && unknownSecond.defaultPrevented &&
+    location.pathname.endsWith('/77/photo/1') && clicked.at(-1)==='/alice/status/77/photo/1');
   document.body.setAttribute('data-xmn-results',records.map(r=>r.label+':'+(r.pass?'PASS':'FAIL')).join('|'));
 }
 
@@ -204,7 +242,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 14, report);
+    assert.equal(report.split('|').length, 16, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
