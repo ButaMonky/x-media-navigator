@@ -144,7 +144,8 @@ test('missing close button aborts rather than navigating elsewhere', async () =>
   let errors=0;
   const instance={navigationBusy:false, navGeneration:1,originProfile:'alice',viewer:{isConnected:true},
     refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
-    activeIndex(){return 0;},findCloseButton(){return null;},toast(){errors++;},updateViewerState(){} };
+    activeIndex(){return 0;},findLiveLink(){return {isConnected:true};},
+    findCloseButton(){return null;},toast(){errors++;},updateViewerState(){} };
   await proto.navigate.call(instance,1);
   assert.equal(errors,1);
   assert.equal(instance.navigationBusy,false);
