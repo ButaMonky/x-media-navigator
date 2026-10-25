@@ -105,10 +105,12 @@ namespace XMN {
       const atMedia = mediaProfileFromPath(path);
       const timeline = mediaTimelineKey(path, window.location.search);
       if (atMedia && timeline) {
+        let scanRequired = false;
         if (this.originProfile !== atMedia) {
           this.resetSession();
           this.originProfile = atMedia;
           this.originTimeline = timeline;
+          scanRequired = true;
         } else if (this.originTimeline !== timeline) {
           // The URL can change before X paints the new filter results. Never collect
           // stale photos into the new video timeline (or vice versa).
@@ -118,9 +120,14 @@ namespace XMN {
           this.originTimeline = timeline;
           this.pendingGrid = snapshot;
         }
-        this.ensureListObserver();
-        if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid)) this.pendingGrid = null;
-        if (!this.pendingGrid) this.scanTiles();
+        const observerAdded = this.ensureListObserver();
+        if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid)) {
+          this.pendingGrid = null;
+          scanRequired = true;
+        }
+        // The observer handles subsequent DOM changes. Avoid O(N) scanning of a
+        // long media timeline every 450ms when nothing has changed.
+        if (!this.pendingGrid && (scanRequired || observerAdded)) this.scanTiles();
       } else if (!this.originProfile || !profileStatusFromPath(path, this.originProfile)) {
         if (this.originProfile !== null) {
           this.resetSession();
@@ -164,9 +171,9 @@ namespace XMN {
       return replaced || keysChanged;
     }
 
-    private ensureListObserver(): void {
+    private ensureListObserver(): boolean {
       const column = mediaColumn();
-      if (!column || column === this.observedColumn) return;
+      if (!column || column === this.observedColumn) return false;
       this.stopListObserver();
       this.observedColumn = column;
       this.listObserver = new MutationObserver(() => {
@@ -180,6 +187,7 @@ namespace XMN {
         }, 100);
       });
       this.listObserver.observe(column, { childList: true, subtree: true });
+      return true;
     }
 
     private scanTiles(): void {

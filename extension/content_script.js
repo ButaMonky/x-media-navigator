@@ -257,10 +257,12 @@ var XMN;
             const atMedia = XMN.mediaProfileFromPath(path);
             const timeline = XMN.mediaTimelineKey(path, window.location.search);
             if (atMedia && timeline) {
+                let scanRequired = false;
                 if (this.originProfile !== atMedia) {
                     this.resetSession();
                     this.originProfile = atMedia;
                     this.originTimeline = timeline;
+                    scanRequired = true;
                 }
                 else if (this.originTimeline !== timeline) {
                     // The URL can change before X paints the new filter results. Never collect
@@ -271,10 +273,14 @@ var XMN;
                     this.originTimeline = timeline;
                     this.pendingGrid = snapshot;
                 }
-                this.ensureListObserver();
-                if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid))
+                const observerAdded = this.ensureListObserver();
+                if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid)) {
                     this.pendingGrid = null;
-                if (!this.pendingGrid)
+                    scanRequired = true;
+                }
+                // The observer handles subsequent DOM changes. Avoid O(N) scanning of a
+                // long media timeline every 450ms when nothing has changed.
+                if (!this.pendingGrid && (scanRequired || observerAdded))
                     this.scanTiles();
             }
             else if (!this.originProfile || !XMN.profileStatusFromPath(path, this.originProfile)) {
@@ -324,7 +330,7 @@ var XMN;
         ensureListObserver() {
             const column = mediaColumn();
             if (!column || column === this.observedColumn)
-                return;
+                return false;
             this.stopListObserver();
             this.observedColumn = column;
             this.listObserver = new MutationObserver(() => {
@@ -341,6 +347,7 @@ var XMN;
                 }, 100);
             });
             this.listObserver.observe(column, { childList: true, subtree: true });
+            return true;
         }
         scanTiles() {
             if (!this.originProfile || this.pendingGrid ||

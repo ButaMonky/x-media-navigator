@@ -208,7 +208,8 @@ test('changing the media filter holds old tiles until X replaces the visible gri
   controller.pendingGrid=null;controller.lastPath='/alice/media';
   let scans=0, resets=0;
   controller.resetSession=function(){resets++;this.refs=[];this.pendingGrid=null;};
-  controller.ensureListObserver=function(){};
+  let firstObserver=true;
+  controller.ensureListObserver=function() { const added=firstObserver;firstObserver=false;return added; };
   controller.stopListObserver=function(){};
   controller.scanTiles=function(){scans++;this.refs=[ref(state.root.tiles[0].links[0].getAttribute('href'))];};
   controller.removeViewerUI=function(){};
@@ -230,6 +231,16 @@ test('changing the media filter holds old tiles until X replaces the visible gri
   assert.equal(scans,2,'new list finally accepted');
   assert.equal(controller.refs[0].statusId,'20');
   assert.equal(controller.pendingGrid,null);
+  // X may also update anchor URLs IN PLACE without replacing tile nodes.
+  state.search='?filter=photo';
+  proto.tick.call(controller);
+  assert.ok(controller.pendingGrid);
+  assert.equal(scans,2);
+  state.root.tiles[0].links[0].attrs.href='/alice/status/30/photo/1';
+  proto.tick.call(controller);
+  assert.equal(controller.pendingGrid,null);
+  assert.equal(scans,3);
+  assert.equal(controller.refs[0].statusId,'30');
   state.search='';state.pathname='/alice/media';
 });
 
@@ -275,4 +286,19 @@ test('thumbnail URL cache stays bounded over a long media timeline', () => {
   assert.equal(instance.imageSources.size,128);
   assert.ok(!instance.imageSources.has(ref('/alice/status/300/photo/1').key));
   assert.ok(instance.imageSources.has(ref('/alice/status/444/photo/1').key));
+});
+
+
+test('unchanged media DOM is not rescanned on every route poll', () => {
+  state.pathname='/alice/media';state.search='?filter=photo';
+  state.root=new FakeElement('div');state.root.tiles=[makeTile('/alice/status/11/photo/1').tile];
+  const ctrl=Object.create(proto);ctrl.originProfile='alice';ctrl.originTimeline='alice|photo';
+  ctrl.pendingGrid=null;ctrl.lastPath='/alice/media';
+  let scans=0, observerAdded=true;
+  ctrl.ensureListObserver=()=>{const result=observerAdded;observerAdded=false;return result;};
+  ctrl.scanTiles=()=>{scans++;};
+  ctrl.removeViewerUI=()=>{};
+  proto.tick.call(ctrl); proto.tick.call(ctrl); proto.tick.call(ctrl);
+  assert.equal(scans,1,'initial observer attachment scans once, then waits for DOM changes');
+  state.pathname='/alice/media';state.search='';
 });
