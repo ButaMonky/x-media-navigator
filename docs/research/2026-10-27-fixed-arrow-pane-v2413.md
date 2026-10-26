@@ -60,3 +60,18 @@ This compares a deliberately simulated moving inner viewer. It confirms the prev
 - `XMN_RUN_CHROMIUM=1` with local Microsoft Edge `CHROMIUM_PATH` and `npm run test:browser`: **2 PASS, 0 FAIL, 0 SKIP** (synthetic X in a genuine Chromium engine; the fixture checks 30 labeled behaviors).
 - Both native left/right post transitions with temporary swipe transforms preserve the same portal node, fixed rect, native gallery controls and retained reply-panel DOM in the fixture. The click-through and modal-close cleanup checks continue passing.
 - Git worktree validated with `git diff --check` and branch HEAD confirmed equal to origin before committing. Main remained unchanged.
+
+## Verified CI and private deployment (2026-10-27 JST)
+
+- Code implementation commit `9a51d6e01535b863608761846bd4aa177fcd4789` was pushed to `fix/prefetch-startup-v241`. Both GitHub `TypeScript check / verify` jobs for push and Draft PR #17 concluded **SUCCESS on this exact implementation SHA** prior to installation.
+- The installed unpacked extension was confirmed at v2.4.12 before updating, with a clean Git source tree matching the CI implementation SHA.
+- Six old installed files were copied into `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v2413-20261027_025333`, independently SHA256-verified before any overwrite; the backup contains `SHA256-OLD.txt`.
+- Exactly six files were updated under `C:\Users\Saito\Downloads\X-Media-Navigator-Current`; SHA256 matches the compiled `extension/` sources:
+  - `content_script.js`: `14EBC7F3F9AC6D439413016579F5B5EF58FE9A2E23ED9FA164E844AF8A4CC3C5`
+  - `manifest.json`: `FB671BFA17867997370405BC010F919BA213FEA74B0B2577B36905AECCD5BD98`
+  - `style.css`: `C0EB781242DD69F40F0F7A474A3D6D497E6290B60CA9F153ED8E4DB96D2E4543`
+  - `icon16.png`: `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png`: `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png`: `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Installed manifest version `2.4.13` verified after copy. No new ZIP, scheduler, updater, service, extension permissions, browser profile modification, main merge, public release or forced Chrome restart.
+- **NOT YET DONE:** Browser's unpacked extension Reload and X tab refresh, followed by user real-X 10+ cross-post arrow-position QA (both directions, changing image aspect, 1–4-photo albums and fullscreen). Screenshot issue remains an open real-site acceptance item until that verification.
