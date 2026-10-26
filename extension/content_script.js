@@ -997,7 +997,9 @@ var XMN;
                         }
                     }
                     this.trimPrefetched();
-                    this.drainPrefetchQueue(allowMediaGrid);
+                    // A pre-open click may launch the first two requests. Do not drain
+                    // the remaining queue until the actual gallery is visible.
+                    this.drainPrefetchQueue();
                 };
                 image.decoding = 'async';
                 image.fetchPriority = 'low';

@@ -1065,3 +1065,43 @@ test('late-loaded thumbnail image URL can join bounded prefetch sources', () => 
     state.root=null;state.pathname='/alice/media';
   }
 });
+test('pre-open click downloads only two photos until the native viewer exists', async () => {
+  const oldImage=context.Image, oldNav=context.navigator;
+  document.hidden=false;
+  context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'},deviceMemory:8};
+  const started=[],resolveDecode=[];
+  context.Image=class {
+    naturalWidth=1200;naturalHeight=800;
+    set src(url){started.push(url);this.url=url;}
+    decode(){return new Promise(resolve=>resolveDecode.push(resolve));}
+  };
+  const refs=Array.from({length:7},(_,i)=>ref('/alice/status/'+(100+i)+'/photo/1'));
+  const urls=refs.map((r,i)=>'https://pbs.twimg.com/media/P'+i+'?format=jpg&name=large');
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',viewer:null,refs,
+    activeIndex(){return 0;},
+    imageSources:new Map(refs.map((r,i)=>[r.key,urls[i]])),
+    prefetched:new Map(),prefetchQueue:[],prefetchWanted:new Set(),prefetchFailed:new Set(),
+    prefetchTooLarge:new Set(),prefetchInFlight:0,navGeneration:12,navigationBusy:false,
+  });
+  try {
+    state.pathname='/alice/media';
+    proto.preloadAdjacentImages.call(ctrl,{index:0,current:refs[0]});
+    assert.equal(started.length,2);
+    assert.equal(ctrl.prefetchQueue.length,3);
+    resolveDecode[0]();resolveDecode[1]();
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    assert.equal(started.length,2,'do not download all five while no X modal exists');
+    assert.equal(ctrl.prefetchQueue.length,3);
+    ctrl.viewer={isConnected:true};
+    state.pathname='/alice/status/100/photo/1';
+    proto.preloadAdjacentImages.call(ctrl);
+    assert.equal(started.length,4,'native viewer can resume the queued future photos');
+    resolveDecode[2]();resolveDecode[3]();
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    assert.equal(started.length,5);
+  } finally {
+    context.Image=oldImage;context.navigator=oldNav;
+    state.pathname='/alice/media';
+  }
+});
