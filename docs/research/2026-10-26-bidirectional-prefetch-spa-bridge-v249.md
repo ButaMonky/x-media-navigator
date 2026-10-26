@@ -30,3 +30,8 @@ Continue the user's satisfactory v2.4.8 behavior without forcing React-router, c
 - Regular Node suite after this fix: **108 tests / 101 passed / 0 failed / 1 skipped / 6 LIVE-X TODO**.
 - Final CI and file deployment must verify this new test and its compiled JavaScript before installation.
 - Technical limitations: X may display `name=orig` even when prefetch stores `name=large`; identical CDN media identity is *not* proof of an HTTP cache hit. Actual X media timing and DOM-driven right-panel persistence are not measured. Do not overclaim faster real-X navigation.
+
+## CI timing difference (do not ignore)
+- Initial commit `f9d8407` had 1/2 GitHub checks FAIL (Linux Chrome) despite local Edge PASS. The failing assertion demanded that the optional fallback photo bridge disappear within **950ms after the key**, but the existing runtime contract permits a full **1800ms after X closes its modal and the preview becomes visible**. The native link probe itself can take up to 300ms, and Linux painting/decode timing differs from Windows.
+- Browser fixture now waits in short 100ms checks until the preview is removed, bounded by an additional 1500ms after the original 950ms; it still fails if the overlay persists. The Chromium virtual-time budget increased from 19s to 22s to accommodate the bounded verification. No runtime timeout or SPA navigation logic was weakened.
+- GitHub CI rerun on the new commit must pass before any update to the fixed unpacked-extension directory.

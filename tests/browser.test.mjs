@@ -205,6 +205,12 @@ async function exercise() {
   result('unhandled in-modal SPA attempt falls back through one safe close',
     fallback.defaultPrevented && location.pathname.endsWith('/22/photo/1') &&
     window.nativeModalCloses===beforeFallbackCloses+1);
+  // A pre-decoded bridge is allowed to remain briefly while X loads the
+  // final photo. Wait for the bounded 1.8s visible-window cleanup rather
+  // than assuming every Chrome build paints within the first 950ms.
+  for (let i=0;i<15 && document.querySelector('.xmn-visual-handoff');i++) {
+    await wait(100);
+  }
   result('fallback handoff never blackens or blocks the native UI',
     nonBlockingHandoff && noBlackBackdrop && hiddenUntilClose &&
     !document.querySelector('.xmn-visual-handoff'));
@@ -313,7 +319,7 @@ function runChromium(url, userDataDir) {
     const args = [
       '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-background-networking', '--no-first-run',
-      '--user-data-dir=' + userDataDir, '--virtual-time-budget=19000', '--dump-dom', url,
+      '--user-data-dir=' + userDataDir, '--virtual-time-budget=22000', '--dump-dom', url,
     ];
     const child = spawn(browser, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
