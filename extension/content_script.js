@@ -807,6 +807,7 @@ var XMN;
             if (typeof viewer.closest !== 'function' || typeof viewer.querySelectorAll !== 'function')
                 return false;
             const root = viewer.closest('[role="dialog"]') ?? viewer;
+            let disabledPhotoNextSeen = false;
             for (const button of root.querySelectorAll('[aria-label], [title]')) {
                 if (button.closest('.xmn-nav-button'))
                     continue;
@@ -814,11 +815,14 @@ var XMN;
                 // A generic disabled "Next" could belong to the sidebar, not photos.
                 if (!/next\s*(?:photo|image)|次の(?:画像|写真)/i.test(label))
                     continue;
-                if (button.getAttribute('aria-disabled') === 'true' ||
-                    (button instanceof HTMLButtonElement && button.disabled))
-                    return true;
+                const disabled = button.getAttribute('aria-disabled') === 'true' ||
+                    (button instanceof HTMLButtonElement && button.disabled);
+                // Mixed native controls are ambiguous, never proof of gallery end.
+                if (!disabled)
+                    return false;
+                disabledPhotoNextSeen = true;
             }
-            return false;
+            return disabledPhotoNextSeen;
         }
         onKeyDown(event) {
             if (!this.viewer?.isConnected || !this.originProfile ||

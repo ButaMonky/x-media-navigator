@@ -1723,6 +1723,18 @@ test('no post jump if native X changes photo source or is still loading', () => 
   }
 });
 
+test('disabled next-photo control cannot prove gallery end when another next-photo control is enabled', () => {
+  context.HTMLButtonElement=FakeElement;
+  const disabled=new FakeElement('button',{'aria-label':'Next photo','aria-disabled':'true'});
+  const enabled=new FakeElement('button',{'aria-label':'Next photo'});
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='[aria-label], [title]'?[disabled,enabled]:[];
+  const ctrl=Object.create(proto);
+  assert.equal(proto.nativeGalleryArrowDisabled.call(ctrl,viewer),false,'an enabled native arrow vetoes terminal evidence');
+  enabled.attrs['aria-disabled']='true';
+  assert.equal(proto.nativeGalleryArrowDisabled.call(ctrl,viewer),true,'all observed photo arrows are disabled');
+});
+
 test('generic Previous and Next controls are not photo-specific arrows', () => {
   context.HTMLButtonElement=FakeElement;
   const previous=new FakeElement('button',{'aria-label':'Previous'});
