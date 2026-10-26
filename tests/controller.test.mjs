@@ -969,3 +969,99 @@ test('single oversized decoded photo does not churn repeated prefetch requests',
     context.Image=previousImage;context.navigator=previousNavigator;
   }
 });
+test('clicking a media tile begins bounded future-photo prefetch before modal opens', () => {
+  const previousSetTimeout=context.window.setTimeout,previousClearTimeout=context.window.clearTimeout;
+  const oldNavigator=context.navigator;
+  context.navigator={onLine:true,connection:{effectiveType:'4g',saveData:false},deviceMemory:8};
+  state.pathname='/alice/media';state.search='?filter=photo';
+  const tile=makeTile('/alice/status/41/photo/1');
+  const next=ref('/alice/status/42/photo/1');
+  const first=ref('/alice/status/41/photo/1');
+  tile.link.closest=(selector)=>selector==='li[role="listitem"]'?tile.tile:
+    selector==='a[href]'?tile.link:null;
+  const ctrl=Object.create(proto);
+  ctrl.originProfile='alice'; ctrl.originTimeline='alice|photo';
+  ctrl.navigationBusy=false; ctrl.pendingGrid=null;
+  ctrl.refs=[first,next];ctrl.indexes=new Map([[first.key,0],[next.key,1]]);
+  ctrl.preopenExpireTimer=null;ctrl.viewer=null;
+  ctrl.prefetchQueue=[];ctrl.prefetchWanted=new Set();
+  const launches=[],timers=[];
+  ctrl.preloadAdjacentImages=(arg)=>launches.push(arg);
+  context.window.setTimeout=(fn,delay)=>{timers.push({fn,delay});return 1;};
+  context.window.clearTimeout=()=>{};
+  try {
+    const event={button:0,target:tile.link,ctrlKey:false,altKey:false,
+      shiftKey:false,metaKey:false,preventDefault(){throw new Error('Do not cancel user click');}};
+    proto.onMediaTileClick.call(ctrl,event);
+    assert.equal(launches.length,1,'image prefetch is scheduled synchronously before X modal opens');
+    assert.equal(launches[0].index,0);
+    assert.equal(launches[0].current.statusId,'41');
+    assert.equal(timers.at(-1).delay,2000);
+    timers.at(-1).fn();
+    assert.equal(ctrl.preopenExpireTimer,null);
+    for(const key of ['ctrlKey','shiftKey','altKey','metaKey']) {
+      proto.onMediaTileClick.call(ctrl,{...event,[key]:true});
+    }
+    proto.onMediaTileClick.call(ctrl,{...event,button:1});
+    assert.equal(launches.length,1,'modified and middle clicks never prefetch');
+    context.navigator.connection.effectiveType='3g';
+    proto.onMediaTileClick.call(ctrl,event);
+    assert.equal(launches.length,1,'slower network avoids competing with initial native modal photo');
+  } finally {
+    context.window.setTimeout=previousSetTimeout;
+    context.window.clearTimeout=previousClearTimeout;
+    context.navigator=oldNavigator;
+    state.pathname='/alice/media';state.search='';
+  }
+});
+
+test('media timeline listens for src swaps after thumbnails are inserted', () => {
+  const oldObserver=context.MutationObserver;
+  let observer=null;
+  class Observer {
+    constructor(callback){this.callback=callback;observer=this;}
+    observe(column,options){this.column=column;this.options=options;}
+    disconnect(){}
+  }
+  context.MutationObserver=Observer;
+  state.pathname='/alice/media';
+  state.root=new FakeElement('div');
+  const ctrl=Object.create(proto);
+  ctrl.originProfile='alice';
+  ctrl.observedColumn=null;ctrl.scanTimer=null;
+  ctrl.stopListObserver=()=>{ctrl.observedColumn=null;ctrl.listObserver=null;};
+  try {
+    assert.equal(proto.ensureListObserver.call(ctrl),true);
+    assert.equal(observer.column,state.root);
+    assert.equal(observer.options.subtree,true);
+    assert.equal(observer.options.attributes,true);
+    assert.equal(observer.options.attributeFilter.join(','),'src,srcset');
+  } finally {
+    context.MutationObserver=oldObserver;
+    state.root=null;state.pathname='/alice/media';
+  }
+});
+
+test('late-loaded thumbnail image URL can join bounded prefetch sources', () => {
+  state.pathname='/alice/media';
+  const {tile}=makeTile('/alice/status/77/photo/1');
+  const img={currentSrc:'',src:'data:image/gif;base64,AAAA'};
+  const oldQuery=tile.querySelector.bind(tile);
+  const oldQueryAll=tile.querySelectorAll.bind(tile);
+  tile.querySelector=(sel)=>sel==='img[src]'?img:oldQuery(sel);
+  tile.querySelectorAll=(sel)=>sel==='img[src]'?[img]:oldQueryAll(sel);
+  state.root=new FakeElement('div');state.root.tiles=[tile];
+  const ctrl=Object.create(proto);
+  ctrl.originProfile='alice';ctrl.pendingGrid=null;
+  ctrl.refs=[];ctrl.indexes=new Map();ctrl.imageSources=new Map();
+  try {
+    proto.scanTiles.call(ctrl);
+    assert.equal(ctrl.imageSources.size,0,'placeholder data URI is not preheated');
+    img.currentSrc='https://pbs.twimg.com/media/LATER?format=jpg&name=small';
+    proto.scanTiles.call(ctrl);
+    assert.equal(ctrl.imageSources.get(ref('/alice/status/77/photo/1').key),
+      'https://pbs.twimg.com/media/LATER?format=jpg&name=large');
+  } finally {
+    state.root=null;state.pathname='/alice/media';
+  }
+});

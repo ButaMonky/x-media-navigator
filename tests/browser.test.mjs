@@ -134,7 +134,10 @@ async function exercise() {
   result('quoted and ambiguous grid links never generate extra media entries',
     firstTile.querySelector('.xmn-tile-badge')?.textContent==='1' &&
     !ambiguousTile.querySelector('.xmn-tile-badge'));
+  const beforeClickPreload=window.prefetchLoads.length;
   source('/alice/status/11/photo/1').click();
+  result('media tile click starts prefetch synchronously before X opens the viewer',
+    window.prefetchLoads.length > beforeClickPreload);
   await wait(90);
   result('adjacent prefetch starts before 350ms debounce',window.prefetchLoads.length>0);
   await wait(530);
@@ -296,7 +299,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 19, report);
+    assert.equal(report.split('|').length, 20, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

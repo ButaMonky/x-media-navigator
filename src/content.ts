@@ -97,6 +97,7 @@ namespace XMN {
     private prefetchFailed = new Set<string>();
     private prefetchTooLarge = new Set<string>();
     private prefetchFailurePath = '';
+    private preopenExpireTimer: number | null = null;
     private handoff: VisualHandoff | null = null;
     private preloadTimer: number | null = null;
     private preloadForPath = '';
@@ -118,6 +119,9 @@ namespace XMN {
     constructor() {
       // Observe actual user keyboard input only when the viewer belongs to a media-tab session.
       document.addEventListener('keydown', (event) => this.onKeyDown(event), true);
+      // Preheat adjacent images when a user opens media from the grid, before
+      // X has constructed its React modal. This never consumes the click.
+      document.addEventListener('click', (event) => this.onMediaTileClick(event), true);
       this.refreshId = window.setInterval(() => this.tick(), 450);
       this.tick();
     }
@@ -138,6 +142,8 @@ namespace XMN {
       this.prefetchTooLarge.clear();
       this.prefetchFailurePath = '';
       this.prefetchInFlight = 0;
+      if (this.preopenExpireTimer !== null) window.clearTimeout(this.preopenExpireTimer);
+      this.preopenExpireTimer = null;
       this.preloadForPath = '';
       this.pendingRightConfirmation = null;
       this.nativeAdvancedPost = null;
@@ -282,8 +288,12 @@ namespace XMN {
       if (!column || column === this.observedColumn) return false;
       this.stopListObserver();
       this.observedColumn = column;
-      this.listObserver = new MutationObserver(() => {
-        if (this.scanTimer !== null) return;
+      this.listObserver = new MutationObserver((records) => {
+        // Ignore src/srcset swaps outside the media tiles (avatars, sidebar).
+        // A genuine child-list change can introduce a new tile at any level.
+        const relevant = records.some((record) => record.type !== 'attributes' ||
+          (record.target instanceof Element && !!record.target.closest(TILE_SELECTOR)));
+        if (!relevant || this.scanTimer !== null) return;
         this.scanTimer = window.setTimeout(() => {
           this.scanTimer = null;
           if (mediaProfileFromPath(window.location.pathname) === this.originProfile) {
@@ -292,7 +302,12 @@ namespace XMN {
           }
         }, 100);
       });
-      this.listObserver.observe(column, { childList: true, subtree: true });
+      // X frequently sets the img src AFTER inserting the tile. Capture those
+      // lazy-loaded URLs without observing unrelated class/style changes.
+      this.listObserver.observe(column, {
+        childList: true, subtree: true,
+        attributes: true, attributeFilter: ['src', 'srcset'],
+      });
       return true;
     }
 
@@ -640,20 +655,54 @@ namespace XMN {
       }, 0);
     }
 
-    private preloadAdjacentImages(): void {
-      if (!this.viewer?.isConnected || !this.originProfile || document.hidden ||
+    /** Prefetch before X opens the modal, but only after a real media-tile click. */
+    private onMediaTileClick(event: MouseEvent): void {
+      if (!this.originProfile || this.pendingGrid || this.navigationBusy ||
+          event.button !== 0 || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey ||
+          mediaProfileFromPath(window.location.pathname) !== this.originProfile ||
+          !(event.target instanceof Element)) return;
+      // On slower connections let X load the *current* photo first. Early
+      // background transfers must not compete with its initial modal render.
+      const connection = (navigator as Navigator & { connection?: { effectiveType?: string; saveData?: boolean };
+        deviceMemory?: number }).connection;
+      const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+      if (connection?.saveData || /^(slow-2g|2g|3g)$/.test(connection?.effectiveType ?? '') ||
+          (memory !== undefined && memory <= 4)) return;
+      const tile = event.target.closest(TILE_SELECTOR);
+      const clickedLink = event.target.closest('a[href]');
+      if (!tile || !clickedLink) return;
+      const found = usableTileLink(tile, this.originProfile);
+      if (!found || found.link !== clickedLink || !found.link.isConnected) return;
+      const index = this.indexes.get(found.ref.key);
+      if (index === undefined || this.refs[index]?.key !== found.ref.key) return;
+      this.preloadAdjacentImages({ index, current: found.ref });
+      if (this.preopenExpireTimer !== null) window.clearTimeout(this.preopenExpireTimer);
+      this.preopenExpireTimer = window.setTimeout(() => {
+        this.preopenExpireTimer = null;
+        // If the browser never opened a viewer, do not continue loading five
+        // future photos just because someone clicked a media link.
+        if (!this.viewer?.isConnected) {
+          this.prefetchQueue = [];
+          this.prefetchWanted.clear();
+        }
+      }, 2000);
+    }
+
+    private preloadAdjacentImages(preopen?: { index: number; current: MediaRef }): void {
+      if ((!this.viewer?.isConnected && !preopen) || !this.originProfile || document.hidden ||
           (typeof navigator !== 'undefined' && navigator.onLine === false)) return;
       const connection = (navigator as Navigator & { connection?: { saveData?: boolean; effectiveType?: string } }).connection;
       if (connection?.saveData || /^(slow-2g|2g)$/.test(connection?.effectiveType ?? '')) return;
-      const index = this.activeIndex();
-      const current = mediaRefFromHref(window.location.pathname, this.originProfile);
-      if (index === null || !current) return;
+      const index = preopen?.index ?? this.activeIndex();
+      const current = preopen?.current ?? mediaRefFromHref(window.location.pathname, this.originProfile);
+      if (index === null || !current || this.refs[index]?.statusId !== current.statusId) return;
       this.prefetchTooLarge ??= new Set(); // Supports lightweight test controllers.
-      if (this.prefetchFailurePath !== window.location.pathname) {
+      const failureScope = preopen?.current.href ?? window.location.pathname;
+      if (this.prefetchFailurePath !== failureScope) {
         // Retry transient CDN errors once the user actually navigates away.
         // Never spin on the same missing image while a modal stays open.
         this.prefetchFailed.clear();
-        this.prefetchFailurePath = window.location.pathname;
+        this.prefetchFailurePath = failureScope;
       }
       const targets: MediaRef[] = [];
       // 1. All already indexed later photos of this very post.
@@ -692,7 +741,7 @@ namespace XMN {
       }
       this.prefetchQueue = unique.filter((url) => !this.prefetched.has(url) &&
         !this.prefetchFailed.has(url) && !this.prefetchTooLarge.has(url));
-      this.drainPrefetchQueue();
+      this.drainPrefetchQueue(!!preopen);
     }
 
     private trimPrefetched(): void {
@@ -707,8 +756,11 @@ namespace XMN {
       }
     }
 
-    private drainPrefetchQueue(): void {
-      if (document.hidden || !this.viewer?.isConnected || this.navigationBusy) return;
+    private drainPrefetchQueue(allowMediaGrid = false): void {
+      const activeModal = !!this.viewer?.isConnected;
+      const openedFromGrid = allowMediaGrid &&
+        mediaProfileFromPath(window.location.pathname) === this.originProfile;
+      if (document.hidden || (!activeModal && !openedFromGrid) || this.navigationBusy) return;
       while (this.prefetchInFlight < PREFETCH_MAX_CONCURRENT && this.prefetchQueue.length) {
         const url = this.prefetchQueue.shift()!;
         if (!this.prefetchWanted.has(url) || this.prefetched.has(url) ||
@@ -744,7 +796,7 @@ namespace XMN {
             }
           }
           this.trimPrefetched();
-          this.drainPrefetchQueue();
+          this.drainPrefetchQueue(allowMediaGrid);
         };
         image.decoding = 'async';
         image.fetchPriority = 'low';
