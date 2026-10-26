@@ -1192,3 +1192,133 @@ test('identical thumbnail URL does not churn cache; a new URL advances source re
     assert.equal(ctrl.imageSources.size,1);
   }finally{state.root=null;state.pathname='/alice/media';}
 });
+test('rapid post change cancels obsolete images and frees both transfer slots', () => {
+  const oldImage=context.Image, oldNavigator=context.navigator;
+  document.hidden=false;
+  context.navigator={onLine:true,connection:{effectiveType:'4g',saveData:false},deviceMemory:8};
+  const requests=[],canceled=[];
+  context.Image=class {
+    naturalWidth=1000;naturalHeight=800;
+    set src(url){if(url.startsWith('https:'))requests.push(url);this.value=url;}
+    get src(){return this.value;}
+    removeAttribute(name){if(name==='src'){canceled.push(this.value);this.value='';}}
+    decode(){return new Promise(()=>{});}
+  };
+  const refs=Array.from({length:12},(_,i)=>ref('/alice/status/'+(100+i)+'/photo/1'));
+  const urlFor=i=>'https://pbs.twimg.com/media/F'+i+'?format=jpg&name=large';
+  const instance=Object.assign(Object.create(proto),{
+    viewer:{isConnected:true},originProfile:'alice',refs,navGeneration:5,navigationBusy:false,
+    activeIndex(){return 0;},
+    imageSources:new Map(refs.map((r,i)=>[r.key,urlFor(i)])),
+    prefetched:new Map(),prefetchWanted:new Set(),prefetchQueue:[],prefetchInFlight:0,
+    prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+  });
+  try {
+    state.pathname='/alice/status/100/photo/1';
+    proto.preloadAdjacentImages.call(instance);
+    assert.deepEqual(requests,[urlFor(1),urlFor(2)]);
+    assert.equal(instance.prefetchInFlight,2);
+    instance.activeIndex=()=>5;
+    state.pathname='/alice/status/105/photo/1';
+    proto.preloadAdjacentImages.call(instance);
+    assert.deepEqual(canceled,[urlFor(1),urlFor(2)]);
+    assert.ok(requests.includes(urlFor(6)) && requests.includes(urlFor(7)),
+      'new nearest-post requests start without waiting for abandoned loads');
+    assert.equal(instance.prefetchInFlight,2,'two-slot concurrency is maintained');
+    assert.ok(!instance.prefetchFailed.has(urlFor(1)) &&
+      !instance.prefetchFailed.has(urlFor(2)),'intentional cancellation is not CDN failure');
+    for(const record of instance.prefetched.values())record.cancel?.();
+  } finally {
+    context.Image=oldImage;context.navigator=oldNavigator;state.pathname='/alice/media';
+  }
+});
+
+test('stalled decode watchdog releases a slot and advances the queued future photo', () => {
+  const oldImage=context.Image, oldNavigator=context.navigator;
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  document.hidden=false;
+  context.navigator={onLine:true,connection:{effectiveType:'4g',saveData:false},deviceMemory:8};
+  const timers=new Map(),requests=[];
+  let seq=0;
+  context.window.setTimeout=(cb,ms)=>{const id=++seq;timers.set(id,{cb,ms});return id;};
+  context.window.clearTimeout=(id)=>timers.delete(id);
+  context.Image=class {
+    naturalWidth=100;naturalHeight=100;
+    set src(url){if(url.startsWith('https:'))requests.push(url);this.url=url;}
+    removeAttribute(){}
+    decode(){return new Promise(()=>{});}
+  };
+  const refs=Array.from({length:6},(_,i)=>ref('/alice/status/'+(200+i)+'/photo/1'));
+  const urls=refs.map((r,i)=>'https://pbs.twimg.com/media/S'+i+'?format=jpg&name=large');
+  const instance=Object.assign(Object.create(proto),{
+    viewer:{isConnected:true},originProfile:'alice',refs,navGeneration:4,navigationBusy:false,
+    activeIndex(){return 0;},imageSources:new Map(refs.map((r,i)=>[r.key,urls[i]])),
+    prefetched:new Map(),prefetchWanted:new Set(),prefetchQueue:[],
+    prefetchInFlight:0,prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+  });
+  try {
+    state.pathname='/alice/status/200/photo/1';
+    proto.preloadAdjacentImages.call(instance);
+    assert.equal(requests.length,2);
+    assert.equal(timers.get(1).ms,12000);
+    timers.get(1).cb();
+    assert.equal(instance.prefetchFailed.has(urls[1]),true);
+    assert.equal(instance.prefetchInFlight,2);
+    assert.deepEqual(requests.slice(0,3),urls.slice(1,4));
+    for(const record of instance.prefetched.values())record.cancel?.();
+  } finally {
+    context.Image=oldImage;context.navigator=oldNavigator;
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+
+test('a lazy currentSrc placeholder falls back to the validated live img.src URL', () => {
+  state.pathname='/alice/media';
+  const {tile}=makeTile('/alice/status/777/photo/1');
+  const image={
+    currentSrc:'data:image/gif;base64,AAA',
+    src:'https://pbs.twimg.com/media/VALID?format=webp&name=small',
+  };
+  const q=tile.querySelector.bind(tile),qa=tile.querySelectorAll.bind(tile);
+  tile.querySelector=selector=>selector==='img[src]'?image:q(selector);
+  tile.querySelectorAll=selector=>selector==='img[src]'?[image]:qa(selector);
+  state.root=new FakeElement('div');state.root.tiles=[tile];
+  const instance=Object.assign(Object.create(proto),{
+    originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),
+    imageSources:new Map(),imageSourcesRevision:0,
+  });
+  try {
+    proto.scanTiles.call(instance);
+    assert.equal(instance.imageSources.get(ref('/alice/status/777/photo/1').key),
+      'https://pbs.twimg.com/media/VALID?format=webp&name=large');
+  } finally {state.root=null;}
+});
+
+test('leaving a media session cancels unfinished CDN prefetches and clears its queue', () => {
+  const oldQueryAll=document.querySelectorAll;
+  document.querySelectorAll=()=>[];
+  let aborted=0;
+  const ctrl=Object.assign(Object.create(proto),{
+    navGeneration:7,navigationBusy:false,pendingGrid:null,
+    originProfile:'alice',originTimeline:'alice|photo',refs:[ref('/alice/status/11/photo/1')],
+    indexes:new Map(),imageSources:new Map(),knownPhotoTotals:new Map(),
+    prefetched:new Map([['old',{loading:true,cancel(){aborted++;}}]]),
+    prefetchQueue:['next'],prefetchWanted:new Set(['next']),
+    prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+    prefetchInFlight:1,preloadForPath:'old',pendingRightConfirmation:null,
+    rightProbeTimer:null,preloadTimer:null,preopenExpireTimer:null,
+    clearVisualHandoff(){},removeViewerUI(){},stopListObserver(){},
+  });
+  try {
+    proto.resetSession.call(ctrl);
+    assert.equal(aborted,1,'unfinished image request is canceled');
+    assert.equal(ctrl.prefetched.size,0);
+    assert.equal(ctrl.prefetchQueue.length,0);
+    assert.equal(ctrl.prefetchWanted.size,0);
+    assert.equal(ctrl.prefetchInFlight,0);
+    assert.equal(ctrl.navGeneration,8,'late callbacks are isolated from the new session');
+  } finally {
+    document.querySelectorAll=oldQueryAll;
+  }
+});

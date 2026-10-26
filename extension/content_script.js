@@ -288,9 +288,12 @@ var XMN;
             this.imageSourcesRevision++;
             this.knownPhotoTotals.clear();
             this.clearVisualHandoff();
-            this.prefetched.clear();
+            // A removed media session must not leave background CDN transfers alive.
             this.prefetchQueue = [];
             this.prefetchWanted.clear();
+            for (const entry of this.prefetched.values())
+                entry.cancel?.();
+            this.prefetched.clear();
             this.prefetchFailed.clear();
             this.prefetchTooLarge.clear();
             this.prefetchFailurePath = '';
@@ -513,7 +516,11 @@ var XMN;
             const ownedImage = found.link.querySelector('img[src]');
             const allImages = tile.querySelectorAll('img[src]');
             const thumbnail = ownedImage ?? (allImages.length === 1 ? allImages[0] : null);
-            const url = thumbnail ? XMN.preloadImageUrl(thumbnail.currentSrc || thumbnail.src || '') : null;
+            // currentSrc may still be a data: placeholder immediately after a
+            // lazy src update. Try the actual src as a second, validated candidate.
+            const url = thumbnail
+                ? XMN.preloadImageUrl(thumbnail.currentSrc || '') ?? XMN.preloadImageUrl(thumbnail.src || '')
+                : null;
             if (!url || !this.imageSources || this.imageSources.get(found.ref.key) === url)
                 return;
             this.imageSources.delete(found.ref.key);
@@ -986,6 +993,13 @@ var XMN;
             }
             this.prefetchQueue = unique.filter((url) => !this.prefetched.has(url) &&
                 !this.prefetchFailed.has(url) && !this.prefetchTooLarge.has(url));
+            // In-flight photos from a previous post may occupy both slots after
+            // fast navigation. Free only obsolete requests, never a visible handoff.
+            for (const [url, entry] of [...this.prefetched]) {
+                if (entry.loading && !this.prefetchWanted.has(url) &&
+                    !this.handoff?.host.contains(entry.image))
+                    entry.cancel?.();
+            }
             this.drainPrefetchQueue(!!preopen);
         }
         trimPrefetched() {
@@ -1014,7 +1028,13 @@ var XMN;
                 const record = { image, ready: false, loading: true, bytes: 0 };
                 const generation = this.navGeneration;
                 let settled = false;
+                let cancelled = false;
+                let watchdog = null;
                 const finish = (success) => {
+                    if (watchdog !== null && typeof window.clearTimeout === 'function') {
+                        window.clearTimeout(watchdog);
+                        watchdog = null;
+                    }
                     if (settled)
                         return;
                     settled = true;
@@ -1026,7 +1046,8 @@ var XMN;
                         record.ready = success && image.naturalWidth > 0;
                         if (!record.ready) {
                             this.prefetched.delete(url);
-                            this.prefetchFailed.add(url);
+                            if (!cancelled)
+                                this.prefetchFailed.add(url);
                             if (this.prefetchFailed.size > 64)
                                 this.prefetchFailed.delete(this.prefetchFailed.values().next().value);
                         }
@@ -1049,6 +1070,29 @@ var XMN;
                     // the remaining queue until the actual gallery is visible.
                     this.drainPrefetchQueue();
                 };
+                record.cancel = () => {
+                    if (settled)
+                        return;
+                    cancelled = true;
+                    image.onload = null;
+                    image.onerror = null;
+                    try {
+                        // Never reset to an empty URL, which could request the page itself.
+                        if (typeof image.removeAttribute === 'function')
+                            image.removeAttribute('src');
+                        else
+                            image.src = 'data:,';
+                    }
+                    catch { /* The record and slot must still be released. */ }
+                    finish(false);
+                };
+                if (typeof window.setTimeout === 'function' && typeof window.clearTimeout === 'function') {
+                    // Failed/never-resolving image loads must not block the next post.
+                    watchdog = window.setTimeout(() => {
+                        this.prefetchFailed.add(url);
+                        record.cancel?.();
+                    }, 12000);
+                }
                 image.decoding = 'async';
                 image.fetchPriority = 'low';
                 image.onerror = () => finish(false);
