@@ -74,7 +74,9 @@ function show(href, withClose=true) {
     close.addEventListener('click', () => { modal.remove(); history.pushState({},'', '/alice/media'); });
     modal.appendChild(close);
   }
-  const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';modal.appendChild(viewer);
+  const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';
+  viewer.style.cssText='width:65vw; height:85vh; position:relative;';
+  modal.appendChild(viewer);
   const activePhoto = document.createElement('img');
   activePhoto.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
   activePhoto.alt='Current X media photo';
@@ -133,7 +135,9 @@ async function exercise() {
     firstTile.querySelector('.xmn-tile-badge')?.textContent==='1' &&
     !ambiguousTile.querySelector('.xmn-tile-badge'));
   source('/alice/status/11/photo/1').click();
-  await wait(620);
+  await wait(90);
+  result('adjacent prefetch starts before 350ms debounce',window.prefetchLoads.length>0);
+  await wait(530);
   const nativeRight=key('ArrowRight');
   await wait(500);
   result('gallery first image native ArrowRight',!nativeRight.defaultPrevented && nativeMoves===1 && location.pathname.endsWith('/11/photo/2'));
@@ -292,7 +296,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 18, report);
+    assert.equal(report.split('|').length, 19, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

@@ -249,6 +249,7 @@ var XMN;
             this.prefetchWanted = new Set();
             this.prefetchInFlight = 0;
             this.prefetchFailed = new Set();
+            this.prefetchTooLarge = new Set();
             this.prefetchFailurePath = '';
             this.handoff = null;
             this.preloadTimer = null;
@@ -258,6 +259,7 @@ var XMN;
             this.rightProbeTimer = null;
             this.viewer = null;
             this.viewObserver = null;
+            this.modalObserver = null;
             this.listObserver = null;
             this.observedColumn = null;
             this.lastPath = '';
@@ -282,6 +284,7 @@ var XMN;
             this.prefetchQueue = [];
             this.prefetchWanted.clear();
             this.prefetchFailed.clear();
+            this.prefetchTooLarge.clear();
             this.prefetchFailurePath = '';
             this.prefetchInFlight = 0;
             this.preloadForPath = '';
@@ -305,6 +308,36 @@ var XMN;
             if (this.scanTimer !== null)
                 window.clearTimeout(this.scanTimer);
             this.scanTimer = null;
+        }
+        /**
+         * React's history.pushState does not fire popstate. Detect X's modal
+         * insertion/removal through DOM changes instead of waiting up to 450ms.
+         * Only inspect nodes added or removed, never rescan the entire page on
+         * unrelated feed mutations. The interval remains a route-change fallback.
+         */
+        syncModalObserver() {
+            if (!this.originProfile || !document.body) {
+                this.modalObserver?.disconnect();
+                this.modalObserver = null;
+                return;
+            }
+            if (this.modalObserver || typeof MutationObserver === 'undefined')
+                return;
+            this.modalObserver = new MutationObserver((records) => {
+                if (!this.originProfile)
+                    return;
+                for (const record of records) {
+                    for (const node of [...record.addedNodes, ...record.removedNodes]) {
+                        if (!(node instanceof Element))
+                            continue;
+                        if (node.matches(VIEWER_SELECTOR) || node.querySelector(VIEWER_SELECTOR)) {
+                            this.tick();
+                            return;
+                        }
+                    }
+                }
+            });
+            this.modalObserver.observe(document.body, { childList: true, subtree: true });
         }
         tick() {
             const path = window.location.pathname;
@@ -354,6 +387,7 @@ var XMN;
                 // status-page recommendations as though they were the originating media tab.
                 this.stopListObserver();
             }
+            this.syncModalObserver();
             if (path !== this.lastPath) {
                 // Track proven native photo changes even if the next key is pressed
                 // before the delayed fallback probe completes.
@@ -782,10 +816,13 @@ var XMN;
             this.preloadForPath = key;
             if (this.preloadTimer !== null)
                 window.clearTimeout(this.preloadTimer);
+            // Start immediately after X mounts the viewer; a 350ms debounce used
+            // to miss the entire next-post transition on fast arrow navigation.
+            // The timeline/path key above already deduplicates repeated DOM updates.
             this.preloadTimer = window.setTimeout(() => {
                 this.preloadTimer = null;
                 this.preloadAdjacentImages();
-            }, 350);
+            }, 0);
         }
         preloadAdjacentImages() {
             if (!this.viewer?.isConnected || !this.originProfile || document.hidden ||
@@ -798,6 +835,7 @@ var XMN;
             const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
             if (index === null || !current)
                 return;
+            this.prefetchTooLarge ?? (this.prefetchTooLarge = new Set()); // Supports lightweight test controllers.
             if (this.prefetchFailurePath !== window.location.pathname) {
                 // Retry transient CDN errors once the user actually navigates away.
                 // Never spin on the same missing image while a modal stays open.
@@ -844,7 +882,8 @@ var XMN;
                     this.prefetched.set(url, cached);
                 }
             }
-            this.prefetchQueue = unique.filter((url) => !this.prefetched.has(url) && !this.prefetchFailed.has(url));
+            this.prefetchQueue = unique.filter((url) => !this.prefetched.has(url) &&
+                !this.prefetchFailed.has(url) && !this.prefetchTooLarge.has(url));
             this.drainPrefetchQueue();
         }
         trimPrefetched() {
@@ -863,7 +902,8 @@ var XMN;
                 return;
             while (this.prefetchInFlight < PREFETCH_MAX_CONCURRENT && this.prefetchQueue.length) {
                 const url = this.prefetchQueue.shift();
-                if (!this.prefetchWanted.has(url) || this.prefetched.has(url) || this.prefetchFailed.has(url))
+                if (!this.prefetchWanted.has(url) || this.prefetched.has(url) ||
+                    this.prefetchFailed.has(url) || this.prefetchTooLarge.has(url))
                     continue;
                 const image = new Image();
                 const record = { image, ready: false, loading: true, bytes: 0 };
@@ -886,7 +926,17 @@ var XMN;
                                 this.prefetchFailed.delete(this.prefetchFailed.values().next().value);
                         }
                         else {
-                            record.bytes = (image.naturalWidth || 0) * (image.naturalHeight || 0) * 4;
+                            const estimate = (image.naturalWidth || 0) * (image.naturalHeight || 0) * 4;
+                            record.bytes = Number.isFinite(estimate) ? estimate : 0;
+                            if (record.bytes > PREFETCH_MAX_DECODED_BYTES) {
+                                // A single giant decoded photo cannot fit in the memory budget.
+                                // Do not evict it and then download it again on every scan.
+                                this.prefetched.delete(url);
+                                this.prefetchTooLarge.add(url);
+                                if (this.prefetchTooLarge.size > 64) {
+                                    this.prefetchTooLarge.delete(this.prefetchTooLarge.values().next().value);
+                                }
+                            }
                         }
                     }
                     this.trimPrefetched();
@@ -928,17 +978,27 @@ var XMN;
                 host = document.createElement('div');
                 host.className = 'xmn-visual-handoff';
                 host.setAttribute('aria-hidden', 'true');
-                // Avoid hiding X's right-side tweet/reply panel. Only keep the
-                // media viewport painted while the native modal is replaced.
-                const bounds = this.viewer?.getBoundingClientRect?.();
-                if (bounds && bounds.width > 100 && bounds.height > 100 &&
-                    typeof window.innerWidth === 'number' && bounds.width < window.innerWidth - 100) {
-                    host.style?.setProperty('inset', 'auto');
-                    host.style?.setProperty('left', `${bounds.left}px`);
-                    host.style?.setProperty('top', `${bounds.top}px`);
-                    host.style?.setProperty('width', `${bounds.width}px`);
-                    host.style?.setProperty('height', `${bounds.height}px`);
-                }
+                // X's right-hand conversation panel must never be blacked out.
+                // If swipe-to-dismiss spans the entire modal, fall back to its photo.
+                // Without trustworthy geometry, skip the optional overlay entirely.
+                const viewportWidth = window.innerWidth;
+                const maxRight = typeof viewportWidth === 'number' && viewportWidth >= 900
+                    ? viewportWidth - Math.min(250, viewportWidth * 0.2) : viewportWidth;
+                const candidates = [
+                    this.viewer?.getBoundingClientRect?.(),
+                    this.viewer?.querySelector('img[src]')?.getBoundingClientRect?.(),
+                ];
+                const bounds = candidates.find((b) => b &&
+                    b.width > 100 && b.height > 100 &&
+                    Number.isFinite(b.left) && Number.isFinite(b.top) &&
+                    (typeof maxRight !== 'number' || b.right <= maxRight + 5));
+                if (!bounds)
+                    return false;
+                host.style.setProperty('inset', 'auto');
+                host.style.setProperty('left', `${bounds.left}px`);
+                host.style.setProperty('top', `${bounds.top}px`);
+                host.style.setProperty('width', `${bounds.width}px`);
+                host.style.setProperty('height', `${bounds.height}px`);
                 record.image.classList.add('xmn-handoff-image');
                 host.appendChild(record.image);
                 document.body.appendChild(host);

@@ -649,6 +649,7 @@ test('decoded next-photo handoff is non-interactive and expires or reveals safel
     document.body=body;
     document.createElement=(tag)=>{
       const node=new FakeElement(tag);
+      node.style={ properties:new Map(),setProperty(k,v){this.properties.set(k,v);} };
       node.remove=()=>{body.children=body.children.filter(item=>item!==node);};
       return node;
     };
@@ -660,6 +661,10 @@ test('decoded next-photo handoff is non-interactive and expires or reveals safel
     ctrl.handoff=null;
     ctrl.navGeneration=3;
     ctrl.originProfile='alice';
+    const viewerBounds={left:0,top:0,right:700,width:700,height:600};
+    const oldInnerWidth=context.window.innerWidth;
+    context.window.innerWidth=1200;
+    ctrl.viewer={getBoundingClientRect(){return viewerBounds;},querySelector(){return null;} };
     ctrl.imageSources=new Map([[target.key,url]]);
     ctrl.prefetched=new Map([[url,{image:img,ready:false}]]);
     assert.equal(proto.beginVisualHandoff.call(ctrl,target),false,'not decoded means no overlay');
@@ -674,6 +679,7 @@ test('decoded next-photo handoff is non-interactive and expires or reveals safel
     assert.equal(host.attrs['aria-hidden'],'true');
     assert.equal(host.children[0],img,'reuses decoded HTMLImageElement without another request');
     assert.equal(ctrl.handoff.targetStatus,'22');
+    assert.equal(host.style.properties.get('width'),'700px','handoff is bounded to the left image area');
     state.pathname='/alice/status/22/photo/1';
     proto.finishVisualHandoff.call(ctrl,{isConnected:true,querySelector:()=>({complete:true,naturalWidth:1})});
     assert.notEqual(ctrl.handoff.revealTimer,null);
@@ -681,7 +687,10 @@ test('decoded next-photo handoff is non-interactive and expires or reveals safel
     reveal();
     assert.equal(ctrl.handoff,null);
     assert.equal(body.children.length,0,'overlay is removed after destination viewer is ready');
+    viewerBounds.right=1180;viewerBounds.width=1180;
     state.pathname='/alice/status/11/photo/1';
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),false,'full-width modal must not obscure the conversation pane');
+    viewerBounds.right=700;viewerBounds.width=700;
     assert.equal(proto.beginVisualHandoff.call(ctrl,target),true);
     const expires=timers.get(ctrl.handoff.timeout);
     expires();
@@ -691,6 +700,7 @@ test('decoded next-photo handoff is non-interactive and expires or reveals safel
     document.body=oldBody;document.createElement=oldCreate;
     context.window.setTimeout=oldSetTimeout;context.window.clearTimeout=oldClearTimeout;
     context.window.matchMedia=oldMatchMedia;
+    delete context.window.innerWidth;
     state.pathname='/alice/media';
   }
 });
@@ -857,5 +867,105 @@ test('a failed prefetch does not enter an infinite retry loop', async () => {
   } finally {
     state.pathname='/alice/media';
     context.Image=prior;context.navigator=priorNav;
+  }
+});
+test('prefetch begins in the next task without the old 350ms delay', () => {
+  const prior=context.window.setTimeout;
+  const scheduled=[];
+  const ctrl=Object.create(proto);
+  ctrl.originProfile='alice';
+  ctrl.originTimeline='alice|default';
+  ctrl.viewer={isConnected:true};
+  ctrl.refs=[ref('/alice/status/11/photo/1'),ref('/alice/status/12/photo/1')];
+  ctrl.imageSources=new Map();
+  ctrl.preloadForPath='';
+  ctrl.preloadTimer=null;
+  let fired=0;
+  ctrl.preloadAdjacentImages=()=>fired++;
+  state.pathname='/alice/status/11/photo/1';
+  context.window.setTimeout=(fn,delay)=>{scheduled.push({fn,delay});return scheduled.length};
+  try {
+    proto.schedulePreload.call(ctrl);
+    assert.equal(scheduled[0].delay,0,'initial CDN requests must not wait 350ms');
+    proto.schedulePreload.call(ctrl);
+    assert.equal(scheduled.length,1,'same viewer does not duplicate preload');
+    scheduled[0].fn();
+    assert.equal(fired,1);
+  } finally {
+    context.window.setTimeout=prior;
+    state.pathname='/alice/media';
+  }
+});
+
+test('modal DOM observer handles SPA insertion immediately without polling unrelated mutations', () => {
+  const prevBody=document.body, prevObserver=context.MutationObserver;
+  let onChanges=null, observer=null, ticks=0;
+  class MockObserver {
+    constructor(callback){onChanges=callback;observer=this;}
+    observe(root,settings){this.root=root;this.settings=settings;}
+    disconnect(){this.disconnected=true;}
+  }
+  context.MutationObserver=MockObserver;
+  document.body=new FakeElement('body');
+  const ctrl=Object.create(proto);
+  ctrl.originProfile='alice';ctrl.modalObserver=null;
+  ctrl.tick=()=>ticks++;
+  try {
+    proto.syncModalObserver.call(ctrl);
+    assert.equal(observer.root,document.body);
+    assert.equal(observer.settings.subtree,true);
+    const unrelated=new FakeElement('span');
+    unrelated.matches=()=>false;
+    unrelated.querySelector=()=>null;
+    onChanges([{addedNodes:[unrelated],removedNodes:[]}]);
+    assert.equal(ticks,0,'ordinary X feed mutation is ignored');
+
+    const modal=new FakeElement('div');
+    modal.matches=()=>false;
+    modal.querySelector=(selector)=>selector==='[data-testid="swipe-to-dismiss"]'
+      ? new FakeElement('div'):null;
+    onChanges([{addedNodes:[modal],removedNodes:[]}]);
+    assert.equal(ticks,1,'new X viewer synchronizes in MutationObserver callback');
+    onChanges([{addedNodes:[],removedNodes:[modal]}]);
+    assert.equal(ticks,2,'closing the viewer also synchronizes');
+    ctrl.originProfile=null;
+    proto.syncModalObserver.call(ctrl);
+    assert.equal(observer.disconnected,true);
+  } finally {
+    document.body=prevBody;
+    context.MutationObserver=prevObserver;
+  }
+});
+
+test('single oversized decoded photo does not churn repeated prefetch requests', async () => {
+  const previousImage=context.Image, previousNavigator=context.navigator;
+  document.hidden=false;
+  context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'}};
+  const requests=[];
+  context.Image=class {
+    naturalWidth=10000;naturalHeight=10000;
+    set src(value){this.value=value;requests.push(value);}
+    decode(){return Promise.resolve();}
+  };
+  try {
+    const refs=['/alice/status/11/photo/1','/alice/status/12/photo/1'].map(ref);
+    const next='https://pbs.twimg.com/media/huge?format=jpg&name=large';
+    const ctrl=Object.assign(Object.create(proto),{
+      viewer:{isConnected:true},originProfile:'alice',refs,
+      activeIndex(){return 0;},imageSources:new Map([[refs[1].key,next]]),
+      prefetched:new Map(),prefetchQueue:[],prefetchWanted:new Set(),
+      prefetchInFlight:0,prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+      navGeneration:5,navigationBusy:false,
+    });
+    state.pathname='/alice/status/11/photo/1';
+    proto.preloadAdjacentImages.call(ctrl);
+    await Promise.resolve();await Promise.resolve();
+    assert.equal(ctrl.prefetched.size,0,'oversized image not retained');
+    assert.equal(ctrl.prefetchTooLarge.has(next),true,'large URL is marked as too expensive');
+    proto.preloadAdjacentImages.call(ctrl);
+    assert.deepEqual(requests,[next],'does not immediately re-download the same oversized image');
+  } finally {
+    state.pathname='/alice/media';
+    context.Image=previousImage;context.navigator=previousNavigator;
   }
 });
