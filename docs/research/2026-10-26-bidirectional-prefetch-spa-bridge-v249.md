@@ -35,3 +35,18 @@ Continue the user's satisfactory v2.4.8 behavior without forcing React-router, c
 - Initial commit `f9d8407` had 1/2 GitHub checks FAIL (Linux Chrome) despite local Edge PASS. The failing assertion demanded that the optional fallback photo bridge disappear within **950ms after the key**, but the existing runtime contract permits a full **1800ms after X closes its modal and the preview becomes visible**. The native link probe itself can take up to 300ms, and Linux painting/decode timing differs from Windows.
 - Browser fixture now waits in short 100ms checks until the preview is removed, bounded by an additional 1500ms after the original 950ms; it still fails if the overlay persists. The Chromium virtual-time budget increased from 19s to 22s to accommodate the bounded verification. No runtime timeout or SPA navigation logic was weakened.
 - GitHub CI rerun on the new commit must pass before any update to the fixed unpacked-extension directory.
+
+## CI verification and private unpacked-extension deployment
+
+- Code commit `f9d8407d95d94db97a7c323514c262240632991b`; Linux Chrome CI initially failed on the too-early cleanup assertion, while the other CI check succeeded. Follow-up test-only/docs commit `4bf90371bdc6f021d507194a3eb0f6bc39a452d3` confirmed **both push and PR verify check runs SUCCESS** for its SHA.
+- Final local `npm ci` completed with 0 npm-reported vulnerabilities; `npm test` 108 total / 101 PASS / 0 FAIL / 1 SKIP / 6 LIVE-X TODO; `npm run typecheck` PASS; headless Microsoft Edge (Chromium engine) synthetic browser suite 2 PASS / 0 FAIL / 0 SKIP.
+- Private fixed destination `C:\Users\Saito\Downloads\X-Media-Navigator-Current`: verified prior manifest 2.4.8, copied and SHA256-verified exactly the six previous installed files to `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v249-20261026_205940` (plus `SHA256-OLD.txt`).
+- Updated exactly the same six fixed-folder files from `extension/`; all source/installed SHA256 hashes match:
+  - `content_script.js`: `13F780D38367A02942179D3EA5BC105F5D8F19C6AF4FCF1278601BF63CFFA1A9`
+  - `manifest.json`: `65BA23BBEC08774E9286A05661B5EA0DD6A5A83E7451E0877CEF43E5B77AB7D3`
+  - `style.css`: `5C96ED2A77B8BB3F972550FE7F5453C26F4CBF352A1E51A1D878FA585D47A32F`
+  - `icon16.png`: `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png`: `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png`: `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Installed manifest verified 2.4.9. **LIVE X STILL NOT VERIFIED:** Chat's attached browser reports that its originating browser context is unavailable; do not claim production speed, prefetch cache-hit improvement, X pane permanence, or loaded Chrome extension reload.
+- No public release, main merge, forced Chrome restart, new updater/scheduler/service, or repeated ZIP.
