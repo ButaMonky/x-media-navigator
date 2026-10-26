@@ -124,6 +124,13 @@ namespace XMN {
     private rightProbeTimer: number | null = null;
 
     private viewer: HTMLElement | null = null;
+    // Portaled controls live outside X's React-owned photo carousel. X may
+    // unmount or hide a slide's children on photo 2 without closing the modal.
+    private controlsHost: HTMLDivElement | null = null;
+    private controlsViewer: HTMLElement | null = null;
+    private controlsGeometryKey = '';
+    private controlsLayoutPath = '';
+    private activeViewerPath = '';
     // Ignore unchanged 450ms polling cycles instead of walking the full
     // media timeline to rebuild identical button state and position labels.
     private viewerStateSnapshot: { viewer: HTMLElement; key: string } | null = null;
@@ -145,6 +152,14 @@ namespace XMN {
       // Preheat adjacent images when a user opens media from the grid, before
       // X has constructed its React modal. This never consumes the click.
       document.addEventListener('click', (event) => this.onMediaTileClick(event), true);
+      window.addEventListener('resize', () => {
+        this.controlsLayoutPath = '';
+        if (this.viewer?.isConnected) this.positionControls(this.viewer);
+      }, { passive: true });
+      document.addEventListener('fullscreenchange', () => {
+        this.controlsLayoutPath = '';
+        if (this.viewer?.isConnected) this.controlContainer(this.viewer);
+      });
       this.refreshId = window.setInterval(() => this.tick(), 450);
       this.tick();
     }
@@ -192,6 +207,49 @@ namespace XMN {
       this.pendingSourceTiles.clear();
     }
 
+    /** The first swipe-to-dismiss node can be an offscreen carousel slide. */
+    private findActiveViewer(): HTMLElement | null {
+      if (typeof document.querySelectorAll !== 'function')
+        return document.querySelector<HTMLElement>(VIEWER_SELECTOR);
+      const candidates = document.querySelectorAll<HTMLElement>(VIEWER_SELECTOR);
+      let best: HTMLElement | null = null;
+      let bestArea = -1;
+      for (const viewer of candidates) {
+        if (!viewer.isConnected || viewer.getAttribute('aria-hidden') === 'true' ||
+            viewer.getAttribute('hidden') !== null || viewer.getAttribute('inert') !== null ||
+            viewer.closest('[aria-hidden="true"], [hidden], [inert]')) continue;
+        // X can fade the previous slide to opacity:0 while keeping it
+        // connected and geometrically overlapping the new photo.
+        const style = typeof window.getComputedStyle === 'function'
+          ? window.getComputedStyle(viewer) : null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' ||
+            style.opacity === '0')) continue;
+        let area = 1;
+        if (typeof viewer.getBoundingClientRect === 'function') {
+          const rect = viewer.getBoundingClientRect();
+          const vw = typeof window.innerWidth === 'number' ? window.innerWidth : Infinity;
+          const vh = typeof window.innerHeight === 'number' ? window.innerHeight : Infinity;
+          area = Math.max(0, Math.min(vw, rect.right) - Math.max(0, rect.left)) *
+            Math.max(0, Math.min(vh, rect.bottom) - Math.max(0, rect.top));
+        }
+        if (area > bestArea && area > 0) { best = viewer; bestArea = area; }
+      }
+      return best;
+    }
+
+    /** Keep the chosen X slide across idle polls, without querying layouts. */
+    private activeViewerForRoute(): HTMLElement | null {
+      const route = window.location.pathname;
+      const current = this.viewer;
+      if (current?.isConnected && this.activeViewerPath === route &&
+          current.getAttribute?.('aria-hidden') !== 'true' &&
+          current.getAttribute?.('hidden') === null &&
+          current.getAttribute?.('inert') === null &&
+          !current.closest?.('[aria-hidden="true"], [hidden], [inert]')) return current;
+      this.activeViewerPath = route;
+      return this.findActiveViewer();
+    }
+
     /**
      * React's history.pushState does not fire popstate. Detect X's modal
      * insertion/removal through DOM changes instead of waiting up to 450ms.
@@ -211,6 +269,7 @@ namespace XMN {
           for (const node of [...record.addedNodes, ...record.removedNodes]) {
             if (!(node instanceof Element)) continue;
             if (node.matches(VIEWER_SELECTOR) || node.querySelector(VIEWER_SELECTOR)) {
+              this.activeViewerPath = '';
               this.tick();
               return;
             }
@@ -280,7 +339,7 @@ namespace XMN {
         this.lastPath = path;
       }
       const viewer = this.originProfile && profileStatusFromPath(path, this.originProfile)
-        ? document.querySelector<HTMLElement>(VIEWER_SELECTOR) : null;
+        ? this.activeViewerForRoute() : null;
       if (viewer && this.originProfile) {
         this.syncViewer(viewer);
       } else {
@@ -427,8 +486,77 @@ namespace XMN {
       }
     }
 
-    private removeViewerUI(): void {
+    /** Position the persistent controls over the photo pane, not the replies. */
+    private positionControls(viewer: HTMLElement): void {
+      const host = this.controlsHost;
+      if (!host || typeof viewer.getBoundingClientRect !== 'function') return;
+      const rect = viewer.getBoundingClientRect();
+      const vw = typeof window.innerWidth === 'number' ? window.innerWidth : rect.right;
+      const vh = typeof window.innerHeight === 'number' ? window.innerHeight : rect.bottom;
+      const maxRight = vw >= 900 ? vw - Math.min(250, vw * 0.2) : vw;
+      const left = Math.max(0, rect.left);
+      const top = Math.max(0, rect.top);
+      const right = Math.min(rect.right, maxRight);
+      const bottom = Math.min(rect.bottom, vh);
+      const width = right - left, height = bottom - top;
+      if (width < 150 || height < 120) {
+        host.style.display = 'none';
+        this.controlsLayoutPath = '';
+        return;
+      }
+      const geometry = [left, top, width, height].map(Math.round).join(',');
+      if (geometry !== this.controlsGeometryKey) {
+        host.style.left = left + 'px';
+        host.style.top = top + 'px';
+        host.style.width = width + 'px';
+        host.style.height = height + 'px';
+        this.controlsGeometryKey = geometry;
+      }
+      host.style.display = '';
+      this.controlsLayoutPath = window.location.pathname;
+    }
+
+    /** Place post arrows outside X's React-owned carousel descendants. */
+    private controlContainer(viewer: HTMLElement): HTMLElement {
+      if (typeof viewer.getBoundingClientRect !== 'function' || !document.body)
+        return viewer; // Older DOM / lightweight test harness fallback.
+      const parent = (document.fullscreenElement || document.body) as HTMLElement;
+      let host = this.controlsHost;
+      if (!host || !host.isConnected) {
+        host = document.createElement('div');
+        host.className = 'xmn-controls-layer';
+        host.setAttribute('role', 'group');
+        host.setAttribute('aria-label', '投稿間ナビゲーション');
+        parent.appendChild(host);
+        this.controlsHost = host;
+        this.controlsGeometryKey = '';
+        this.controlsLayoutPath = '';
+        this.viewerStateSnapshot = null;
+        // Remove controls left by an earlier/legacy content-script version.
+        viewer.querySelectorAll('.xmn-nav-button, .xmn-status').forEach(el => el.remove());
+      } else if (host.parentElement !== parent) {
+        parent.appendChild(host);
+        this.controlsGeometryKey = '';
+        this.controlsLayoutPath = '';
+      }
+      if (this.controlsViewer !== viewer ||
+          this.controlsLayoutPath !== window.location.pathname) {
+        this.controlsViewer = viewer;
+        this.positionControls(viewer);
+      }
+      return host;
+    }
+
+    private removeViewerUI(preserveControls = false): void {
       this.viewerStateSnapshot = null;
+      this.activeViewerPath = '';
+      if (!preserveControls) {
+        this.controlsHost?.remove();
+        this.controlsHost = null;
+      }
+      this.controlsViewer = null;
+      this.controlsGeometryKey = '';
+      this.controlsLayoutPath = '';
       this.viewObserver?.disconnect();
       this.viewObserver = null;
       if (this.rightProbeTimer !== null) window.clearTimeout(this.rightProbeTimer);
@@ -441,7 +569,13 @@ namespace XMN {
 
     private syncViewer(viewer: HTMLElement): void {
       if (viewer !== this.viewer) {
-        this.removeViewerUI();
+        // On photo 2/3 X may replace just the active slide inside the same
+        // dialog. Preserve the outside-React control layer without flicker.
+        const oldDialog = this.viewer?.closest('[role="dialog"]');
+        const newDialog = viewer.closest('[role="dialog"]');
+        const preserve = !!this.controlsHost?.isConnected &&
+          !!oldDialog && oldDialog === newDialog;
+        this.removeViewerUI(preserve);
         this.viewer = viewer;
         this.viewObserver = new MutationObserver((changes) => {
           if (!this.viewer?.isConnected) return;
@@ -458,7 +592,10 @@ namespace XMN {
               node instanceof Element &&
               (node.matches('img, picture, video') ||
                 !!node.querySelector('img, picture, video'))));
-          if (structuralChange) this.ensureViewerButtons();
+          if (structuralChange) {
+            this.controlsLayoutPath = '';
+            this.ensureViewerButtons();
+          }
           if (structuralChange || photoAttributeChange) this.finishVisualHandoff(this.viewer);
         });
         this.viewObserver.observe(viewer, {
@@ -473,11 +610,12 @@ namespace XMN {
     private ensureViewerButtons(): void {
       const viewer = this.viewer;
       if (!viewer || !viewer.isConnected) return;
+      const container = this.controlContainer(viewer);
       for (const [direction, className, text, label] of [
         [-1, 'xmn-prev', '◀', '前の投稿へ（最初の画像では←でも移動）'],
         [1, 'xmn-next', '▶', '次の投稿へ（最後の画像では→でも移動）'],
       ] as const) {
-        let button = viewer.querySelector<HTMLButtonElement>(`.${className}`);
+        let button = container.querySelector<HTMLButtonElement>(`.${className}`);
         if (!button) {
           button = document.createElement('button');
           button.type = 'button';
@@ -490,17 +628,17 @@ namespace XMN {
             event.stopPropagation();
             void this.navigate(direction);
           });
-          viewer.appendChild(button);
+          container.appendChild(button);
           // X may recreate DOM controls while leaving the route unchanged.
           this.viewerStateSnapshot = null;
         }
       }
-      let status = viewer.querySelector<HTMLElement>('.xmn-status');
+      let status = container.querySelector<HTMLElement>('.xmn-status');
       if (!status) {
         status = document.createElement('div');
         status.className = 'xmn-status';
         status.setAttribute('aria-live', 'polite');
-        viewer.appendChild(status);
+        container.appendChild(status);
         this.viewerStateSnapshot = null;
       }
       this.updateViewerState();
@@ -527,13 +665,14 @@ namespace XMN {
       const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}`;
       if (this.viewerStateSnapshot?.viewer === viewer && this.viewerStateSnapshot.key === key) return;
       const current = this.activeIndex();
-      const prev = viewer.querySelector<HTMLButtonElement>('.xmn-prev');
-      const next = viewer.querySelector<HTMLButtonElement>('.xmn-next');
+      const controls = this.controlsHost?.isConnected ? this.controlsHost : viewer;
+      const prev = controls.querySelector<HTMLButtonElement>('.xmn-prev');
+      const next = controls.querySelector<HTMLButtonElement>('.xmn-next');
       const currentRef = current !== null ? this.refs[current] : null;
       if (prev) prev.disabled = this.navigationBusy || !currentRef || adjacentPostIndex(this.refs, currentRef.statusId, -1, current ?? undefined) === null;
       // At the last known post clicking the next button may load more media.
       if (next) next.disabled = this.navigationBusy || !currentRef;
-      const indicator = viewer.querySelector<HTMLElement>('.xmn-status');
+      const indicator = controls.querySelector<HTMLElement>('.xmn-status');
       if (indicator) {
         const statuses = Array.from(new Set(this.refs.map((ref) => ref.statusId)));
         const index = currentRef ? statuses.indexOf(currentRef.statusId) : -1;
@@ -1120,7 +1259,7 @@ namespace XMN {
         if (typeof MutationObserver !== 'undefined') {
           const observer = new MutationObserver(() => {
             if (this.handoff !== handoff) return;
-            const opened = document.querySelector<HTMLElement>(VIEWER_SELECTOR);
+            const opened = this.findActiveViewer();
             if (opened && opened !== handoff.sourceViewer && this.originProfile &&
                 profileStatusFromPath(window.location.pathname, this.originProfile)) {
               this.syncViewer(opened);
@@ -1381,7 +1520,8 @@ namespace XMN {
         if (generation !== this.navGeneration || this.originProfile !== profile) return 'abort';
         const route = mediaRefFromHref(window.location.pathname, profile);
         if (route?.key === target.key) {
-          const activeViewer = document.querySelector<HTMLElement>(VIEWER_SELECTOR);
+          const activeViewer = typeof this.findActiveViewer === 'function'
+            ? this.findActiveViewer() : document.querySelector<HTMLElement>(VIEWER_SELECTOR);
           const dialogRetained = oldDialog && oldDialog.isConnected &&
             activeViewer?.closest?.('[role="dialog"]') === oldDialog;
           return (activeViewer === viewer && viewer.isConnected) || dialogRetained
@@ -1457,7 +1597,7 @@ namespace XMN {
             destinationOpened = true;
             if (this.handoff && !this.nativeSpaTargetRendered()) {
               this.showVisualHandoff();
-              const activeViewer = document.querySelector<HTMLElement>(VIEWER_SELECTOR);
+              const activeViewer = this.findActiveViewer();
               if (activeViewer?.isConnected) this.finishVisualHandoff(activeViewer);
             } else {
               this.clearVisualHandoff();

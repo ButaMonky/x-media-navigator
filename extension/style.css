@@ -1,3 +1,13 @@
+/* React must not remove our navigation UI when it remounts photo slides.
+   The hit-test surface remains transparent; only the arrows receive clicks. */
+.xmn-controls-layer {
+  position: fixed;
+  z-index: 2147483645;
+  pointer-events: none !important;
+  overflow: visible;
+}
+.xmn-controls-layer .xmn-nav-button { pointer-events: auto; }
+
 /* The media-gallery's own arrow controls retain their semantics. Our buttons move between posts. */
 .xmn-nav-button {
   position: absolute;

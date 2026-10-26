@@ -30,6 +30,15 @@ test('handoff overlay reveals immediately after modal close instead of fading fr
   assert.match(rule, /transition:\s*none\s*;/,'fade-in after native modal close causes a blank flash');
 });
 
+test('persistent post-arrow portal is click-through except on its buttons', () => {
+  const css = get(dev, 'style.css').toString('utf8');
+  const portalRule = css.match(/\.xmn-controls-layer\s*\{([^}]+)\}/)?.[1] ?? '';
+  assert.match(portalRule, /pointer-events:\s*none\s*!important\s*;/,
+    'do not block native X media and reply-panel interactions');
+  assert.match(css, /\.xmn-controls-layer\s+\.xmn-nav-button\s*\{\s*pointer-events:\s*auto\s*;/,
+    'only post arrows receive pointer interaction');
+});
+
 test('manifest content scripts, CSS and referenced icons exist', () => {
   const m = JSON.parse(get(dev, 'manifest.json').toString('utf8'));
   for (const item of m.content_scripts ?? []) {

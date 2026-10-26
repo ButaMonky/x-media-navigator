@@ -75,7 +75,7 @@ function show(href, withClose=true) {
   const existing = document.getElementById('modal');
   const retain = !!existing && window.testSpaKeepModal;
   if (retain) {
-    existing.querySelector('[data-testid="swipe-to-dismiss"]')?.remove();
+    existing.querySelectorAll('[data-testid="swipe-to-dismiss"]').forEach(node=>node.remove());
     existing.querySelector('article[data-testid="tweet"]')?.remove();
     existing.querySelector('#test-input')?.remove();
     existing.querySelector('button[aria-label="Close"]')?.remove();
@@ -176,6 +176,25 @@ async function exercise() {
   const nativeRight=key('ArrowRight');
   await wait(500);
   result('gallery first image native ArrowRight',!nativeRight.defaultPrevented && nativeMoves===1 && location.pathname.endsWith('/11/photo/2'));
+  // React may discard extension-owned descendants on a native photo rerender.
+  // Post navigation controls must instead belong to a separate durable layer.
+  const galleryViewer=document.querySelector('#modal [data-testid="swipe-to-dismiss"]');
+  galleryViewer.querySelectorAll('.xmn-nav-button').forEach(el=>el.remove());
+  const controlLayer=document.querySelector('.xmn-controls-layer');
+  const durableButtons=controlLayer && [...controlLayer.querySelectorAll('.xmn-nav-button')];
+  result('both post arrows persist after X rerenders photo 2',
+    durableButtons?.length===2 &&
+    durableButtons.every(el=>el.isConnected && getComputedStyle(el).pointerEvents!=='none') &&
+    !galleryViewer.contains(controlLayer) &&
+    getComputedStyle(controlLayer).pointerEvents==='none');
+  const beforeWidth=controlLayer?.getBoundingClientRect().width||0;
+  galleryViewer.style.width='55vw';
+  window.dispatchEvent(new Event('resize'));
+  const afterWidth=controlLayer?.getBoundingClientRect().width||0;
+  result('window resize reanchors the post arrow layer to the photo pane',
+    beforeWidth>afterWidth && afterWidth>150);
+  galleryViewer.style.width='65vw';
+  window.dispatchEvent(new Event('resize'));
   result('adjacent CDN image preload initiated',window.prefetchLoads.length>0 && window.prefetchLoads[0].startsWith('https://pbs.twimg.com/media/') && window.prefetchLoads[0].includes('name=large'));
   const originalModal=document.getElementById('modal');
   const originalReplies=document.getElementById('replies');
@@ -327,6 +346,51 @@ async function exercise() {
     !delayedKey.defaultPrevented && notSkippedWhileUnready &&
     location.pathname.endsWith('/88/photo/1') &&
     clicked.at(-1)==='/alice/status/88/photo/1');
+
+  // X sometimes leaves photo/1's carousel pane in the DOM but hides it,
+  // then mounts photo/2 in a second pane under the same modal.
+  document.querySelector('#modal button[aria-label="Close"]')?.click();
+  ul.appendChild(tile('/alice/status/11/photo/1'));
+  ul.appendChild(tile('/alice/status/11/photo/2'));
+  ul.appendChild(tile('/alice/status/22/photo/1'));
+  await wait(650);
+  source('/alice/status/11/photo/1').click();
+  await wait(500);
+  key('ArrowRight'); await wait(300);
+  const firstSlide=document.querySelector('#modal [data-testid="swipe-to-dismiss"]');
+  const layerBeforeSwap=document.querySelector('.xmn-controls-layer');
+  firstSlide.setAttribute('aria-hidden','true');
+  const visibleSecond=firstSlide.cloneNode(true);
+  visibleSecond.removeAttribute('aria-hidden');
+  // Real X carousel slides occupy the SAME media pane. A normal-flow
+  // sibling would be below the viewport and must correctly remain hidden.
+  const oldBounds=firstSlide.getBoundingClientRect();
+  visibleSecond.style.position='fixed';
+  visibleSecond.style.left=oldBounds.left+'px';
+  visibleSecond.style.top=oldBounds.top+'px';
+  visibleSecond.style.width=oldBounds.width+'px';
+  visibleSecond.style.height=oldBounds.height+'px';
+  firstSlide.after(visibleSecond);
+  await wait(600);
+  const afterLayer=document.querySelector('.xmn-controls-layer');
+  const selectedViewer=window.XMN.Controller.prototype.findActiveViewer.call({});
+  const layerVisible=afterLayer && getComputedStyle(afterLayer).display!=='none';
+  result('hidden photo 1 and visible photo 2 keep the same portaled post arrows',
+    afterLayer===layerBeforeSwap && selectedViewer===visibleSecond &&
+    document.querySelectorAll('.xmn-controls-layer .xmn-nav-button').length===2 &&
+    layerVisible);
+  const forwardPostButton=layerBeforeSwap?.querySelector('.xmn-next');
+  forwardPostButton?.click();
+  await wait(700);
+  result('post arrow clicked on photo 2 opens adjacent post with native SPA',
+    location.pathname.endsWith('/22/photo/1') &&
+    clicked.at(-1)==='/alice/status/22/photo/1');
+  document.querySelector('#modal button[aria-label="Close"]')?.click();
+  await wait(400);
+  result('modal close removes portaled post controls without stale click targets',
+    !document.querySelector('.xmn-controls-layer') &&
+    !document.querySelector('.xmn-nav-button'));
+
   document.body.setAttribute('data-xmn-results',records.map(r=>r.label+':'+(r.pass?'PASS':'FAIL')).join('|'));
 }
 
@@ -344,7 +408,7 @@ function runChromium(url, userDataDir) {
     const args = [
       '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-background-networking', '--no-first-run',
-      '--user-data-dir=' + userDataDir, '--virtual-time-budget=27000', '--dump-dom', url,
+      '--user-data-dir=' + userDataDir, '--virtual-time-budget=33000', '--dump-dom', url,
     ];
     const child = spawn(browser, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
@@ -384,7 +448,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 23, report);
+    assert.equal(report.split('|').length, 28, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

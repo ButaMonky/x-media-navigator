@@ -1822,6 +1822,55 @@ test('late decode from an old image cannot release a newly displayed target', as
     state.pathname='/alice/media';
   }
 });
+test('when X mounts several carousel slides, choose the visible viewer, not hidden photo 1', () => {
+  const oldAll=document.querySelectorAll;
+  const hidden=new FakeElement('div',{'aria-hidden':'true'});
+  hidden.getBoundingClientRect=()=>({left:0,top:0,right:700,bottom:650,width:700,height:650});
+  const visible=new FakeElement('div');
+  visible.getBoundingClientRect=()=>({left:0,top:0,right:700,bottom:650,width:700,height:650});
+  document.querySelectorAll=s=>s==='[data-testid="swipe-to-dismiss"]'?[hidden,visible]:[];
+  try {
+    const ctrl=Object.create(proto);
+    assert.equal(proto.findActiveViewer.call(ctrl),visible,'the hidden first slide may remain mounted in DOM');
+    visible.attrs['aria-hidden']='true';
+    assert.equal(proto.findActiveViewer.call(ctrl),null,'no visible slide: never pin controls to a hidden viewer');
+  } finally {document.querySelectorAll=oldAll;}
+});
+
+test('opacity-hidden native photo 1 never steals controls from visible photo 2', () => {
+  const oldQuery=document.querySelectorAll,oldStyle=context.window.getComputedStyle;
+  const old=new FakeElement('div'),current=new FakeElement('div');
+  const area=()=>({left:0,top:0,right:700,bottom:600,width:700,height:600});
+  old.getBoundingClientRect=area;current.getBoundingClientRect=area;
+  document.querySelectorAll=s=>s==='[data-testid="swipe-to-dismiss"]'?[old,current]:[];
+  context.window.getComputedStyle=el=>({display:'block',visibility:'visible',opacity:el===old?'0':'1'});
+  try { assert.equal(proto.findActiveViewer.call(Object.create(proto)),current); }
+  finally {document.querySelectorAll=oldQuery;context.window.getComputedStyle=oldStyle;}
+});
+
+test('steady native gallery polls reuse the selected viewer until route or visibility changes', () => {
+  const previous=state.pathname;
+  state.pathname='/alice/status/100/photo/1';
+  const pane=new FakeElement('div');
+  pane.getBoundingClientRect=()=>({left:0,top:0,right:700,bottom:600,width:700,height:600});
+  const ctrl=Object.create(proto);
+  let scans=0;
+  ctrl.viewer=pane;
+  ctrl.activeViewerPath='';
+  ctrl.findActiveViewer=()=>{scans++;return pane;};
+  try {
+    assert.equal(proto.activeViewerForRoute.call(ctrl),pane);
+    for(let i=0;i<100;i++) assert.equal(proto.activeViewerForRoute.call(ctrl),pane);
+    assert.equal(scans,1,'no repeated document query and forced layout for idle polls');
+    state.pathname='/alice/status/100/photo/2';
+    assert.equal(proto.activeViewerForRoute.call(ctrl),pane);
+    assert.equal(scans,2,'new native photo route must recheck the active pane');
+    pane.attrs['aria-hidden']='true';
+    proto.activeViewerForRoute.call(ctrl);
+    assert.equal(scans,3,'X hiding the selected slide invalidates the cache');
+  }finally{state.pathname=previous;}
+});
+
 test('SPA viewer observer reacts to an in-place image source swap', () => {
   const oldObserver=context.MutationObserver,oldImage=context.HTMLImageElement;
   let observer=null,ui=0,handoffs=0;
