@@ -681,7 +681,10 @@ test('decoded next-photo handoff is non-interactive and expires or reveals safel
     assert.equal(ctrl.handoff.targetStatus,'22');
     assert.equal(host.style.properties.get('width'),'700px','handoff is bounded to the left image area');
     state.pathname='/alice/status/22/photo/1';
-    proto.finishVisualHandoff.call(ctrl,{isConnected:true,querySelector:()=>({complete:true,naturalWidth:1})});
+    proto.finishVisualHandoff.call(ctrl,{isConnected:true,querySelectorAll:()=>[{
+      currentSrc:'https://pbs.twimg.com/media/NEXT?format=jpg&name=orig',
+      src:'',complete:true,naturalWidth:1,
+    }]});
     assert.notEqual(ctrl.handoff.revealTimer,null);
     const reveal=timers.get(ctrl.handoff.revealTimer);
     reveal();
@@ -790,16 +793,23 @@ test('visual handoff waits for actual X image load instead of modal mounting onl
   context.window.clearTimeout = (id) => timers.delete(id);
   try {
     const image = { complete: false, naturalWidth: 0, handler: null,
+      currentSrc:'https://pbs.twimg.com/media/MATCH?format=jpg&name=orig',
       addEventListener(event, fn) { if (event === 'load') this.handler = fn; } };
-    const viewer = { isConnected: true, querySelector() { return image; } };
+    const unrelated = { complete: true, naturalWidth: 200,
+      currentSrc:'https://pbs.twimg.com/profile_images/123/photo_200x200.jpg' };
+    const wrongPhoto = { complete:true,naturalWidth:1000,
+      currentSrc:'https://pbs.twimg.com/media/OTHER?format=jpg&name=large' };
+    const viewer = { isConnected:true, querySelectorAll() { return [unrelated,wrongPhoto,image]; } };
     const host = { removed: false, remove() { this.removed = true; } };
     const controller = Object.create(proto);
     controller.originProfile = 'alice'; controller.navGeneration = 2;
     controller.handoff = { host, targetStatus: '77', targetMediaIndex: 1,
+      targetPhotoIdentity:'MATCH',
       generation: 2, timeout: 99, revealTimer: null, observer: null, waitingImage: null };
     state.pathname = '/alice/status/77/photo/1';
     proto.finishVisualHandoff.call(controller, viewer);
-    assert.equal(controller.handoff.revealTimer, null, 'not ready when img has not loaded');
+    assert.equal(controller.handoff.revealTimer, null,
+      'loaded avatar and unrelated photo must not hide the target image');
     assert.equal(typeof image.handler, 'function');
     image.complete = true; image.naturalWidth = 100;
     image.handler();
@@ -1320,5 +1330,319 @@ test('leaving a media session cancels unfinished CDN prefetches and clears its q
     assert.equal(ctrl.navGeneration,8,'late callbacks are isolated from the new session');
   } finally {
     document.querySelectorAll=oldQueryAll;
+  }
+});
+test('SPA handoff waits for the matching displayed CDN photo and its decode', async () => {
+  const oldSet=context.window.setTimeout, oldClear=context.window.clearTimeout;
+  let tick=1, resolveDecode, decodeCalls=0;
+  const timers=new Map();
+  context.window.setTimeout=(fn)=>{timers.set(tick,fn);return tick++;};
+  context.window.clearTimeout=(id)=>timers.delete(id);
+  const current='https://pbs.twimg.com/media/BEFORE?format=jpg&name=large';
+  const target='https://pbs.twimg.com/media/DEST?format=jpg&name=orig';
+  const image={
+    complete:true,naturalWidth:1024,currentSrc:current,src:target,
+    decode(){decodeCalls++;return new Promise(resolve=>{resolveDecode=resolve;});},
+    addEventListener(){},
+    removeEventListener(){},
+  };
+  const avatar={
+    complete:true,naturalWidth:100,
+    src:'https://pbs.twimg.com/profile_images/xyz/photo.jpg',
+    currentSrc:'https://pbs.twimg.com/profile_images/xyz/photo.jpg',
+  };
+  const other={complete:true,naturalWidth:400,currentSrc:current,src:current};
+  const viewer={isConnected:true,querySelectorAll(){return [avatar,other,image];}};
+  const host={removed:false,remove(){this.removed=true;}};
+  const controller=Object.create(proto);
+  controller.originProfile='alice';controller.navGeneration=6;
+  controller.handoff={
+    host,targetStatus:'99',targetMediaIndex:1,targetPhotoIdentity:'DEST',
+    generation:6,timeout:90,revealTimer:null,decodingImage:null,decodingSrc:null,
+    decodedImage:null,decodedSrc:null,observer:null,waitingImage:null,
+  };
+  state.pathname='/alice/status/99/photo/1';
+  try {
+    proto.finishVisualHandoff.call(controller,viewer);
+    assert.equal(controller.handoff.revealTimer,null,
+      'changing src while currentSrc still shows an old photo must not remove the handoff');
+    assert.equal(decodeCalls,0,'not even begin decoding the wrong displayed image');
+    image.currentSrc=target;
+    proto.finishVisualHandoff.call(controller,viewer);
+    assert.equal(decodeCalls,1);
+    assert.equal(controller.handoff.revealTimer,null,
+      'loaded pixels alone are insufficient: wait for Image.decode');
+    proto.finishVisualHandoff.call(controller,viewer);
+    assert.equal(decodeCalls,1,'repeated MutationObserver checks must not duplicate decode');
+    resolveDecode();
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    assert.notEqual(controller.handoff.revealTimer,null);
+    timers.get(controller.handoff.revealTimer)();
+    assert.equal(controller.handoff,null);
+    assert.equal(host.removed,true);
+  } finally {
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+test('late decode from an old image cannot release a newly displayed target', async () => {
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const timers=[];
+  context.window.setTimeout=(fn)=>{timers.push(fn);return timers.length;};
+  context.window.clearTimeout=()=>{};
+  let resolveDecode;
+  const original='https://pbs.twimg.com/media/TARGET?format=jpg&name=large';
+  const photo={currentSrc:original,src:original,complete:true,naturalWidth:800,
+    addEventListener(){},
+    decode(){return new Promise(resolve=>{resolveDecode=resolve;});}};
+  const viewer={isConnected:true,querySelectorAll(){return [photo];}};
+  const ctrl=Object.create(proto);
+  ctrl.originProfile='alice';ctrl.navGeneration=12;
+  const host={removed:false,remove(){this.removed=true;}};
+  ctrl.handoff={
+    host,generation:12,targetStatus:'50',targetMediaIndex:1,
+    targetPhotoIdentity:'TARGET',timeout:1,revealTimer:null,
+    waitingImage:null,observer:null,decodingImage:null,decodingSrc:null,
+    decodedImage:null,decodedSrc:null,
+  };
+  state.pathname='/alice/status/50/photo/1';
+  try {
+    proto.finishVisualHandoff.call(ctrl,viewer);
+    assert.equal(typeof resolveDecode,'function');
+    photo.currentSrc='https://pbs.twimg.com/media/OTHER?format=jpg&name=large';
+    resolveDecode();
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    assert.equal(ctrl.handoff.revealTimer,null,'old photo completion must not remove overlay');
+    assert.equal(host.removed,false);
+  } finally {
+    context.window.setTimeout=oldSet;
+    context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+test('SPA viewer observer reacts to an in-place image source swap', () => {
+  const oldObserver=context.MutationObserver,oldImage=context.HTMLImageElement;
+  let observer=null,ui=0,handoffs=0;
+  context.HTMLImageElement=FakeElement;
+  context.MutationObserver=class {
+    constructor(callback){this.callback=callback;observer=this;}
+    observe(target,config){this.target=target;this.config=config;}
+    disconnect(){this.disconnected=true;}
+  };
+  const viewer=new FakeElement('div');
+  const instance=Object.create(proto);
+  instance.viewer=null;instance.originProfile='alice';
+  instance.removeViewerUI=()=>{instance.viewer=null;};
+  instance.ensureViewerButtons=()=>{ui++;};
+  instance.finishVisualHandoff=()=>{handoffs++;};
+  try{
+    proto.syncViewer.call(instance,viewer);
+    assert.equal(observer.config.attributes,true);
+    assert.deepEqual(Array.from(observer.config.attributeFilter),['src','srcset']);
+    const beforeUI=ui,beforeHandoff=handoffs;
+    const photo=new FakeElement('img');
+    observer.callback([{type:'attributes',target:photo,attributeName:'src'}]);
+    assert.equal(ui,beforeUI,'source swap does not unnecessarily rebuild buttons');
+    assert.equal(handoffs,beforeHandoff+1,'source swap rechecks SPA photo readiness');
+    const badge=new FakeElement('span');
+    badge.matches=()=>false;badge.querySelector=()=>null;
+    observer.callback([{type:'childList',addedNodes:[badge],removedNodes:[]}]);
+    assert.equal(ui,beforeUI,'status badge changes do not trigger extra viewer rebuild');
+    const appended=new FakeElement('img');
+    appended.matches=(selector)=>selector.includes('img');
+    appended.querySelector=()=>null;
+    observer.callback([{type:'childList',addedNodes:[appended],removedNodes:[]}]);
+    assert.equal(ui,beforeUI+1,'new photo renders refresh the viewer controls');
+    assert.equal(handoffs,beforeHandoff+2);
+  }finally{
+    observer?.disconnect();
+    context.MutationObserver=oldObserver;
+    context.HTMLImageElement=oldImage;
+    state.pathname='/alice/media';
+  }
+});
+
+test('SPA reuses an img: wait for its target src to finish loading', () => {
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const handlers=new Map(),timers=new Map();let next=1;
+  context.window.setTimeout=(fn)=>{timers.set(next,fn);return next++;};
+  context.window.clearTimeout=(id)=>timers.delete(id);
+  const old='https://pbs.twimg.com/media/OLD?format=jpg&name=large';
+  const target='https://pbs.twimg.com/media/NEW?format=jpg&name=orig';
+  const img={src:target,currentSrc:old,complete:false,naturalWidth:0,
+    addEventListener(event,fn){handlers.set(event,fn);}};
+  const viewer={isConnected:true,querySelectorAll(){return [img];}};
+  const host={removed:false,remove(){this.removed=true;}};
+  const instance=Object.create(proto);
+  instance.navGeneration=4;instance.originProfile='alice';
+  instance.handoff={
+    host,targetStatus:'88',targetMediaIndex:1,targetPhotoIdentity:'NEW',
+    generation:4,timeout:100,revealTimer:null,waitingImage:null,
+    decodingImage:null,decodingSrc:null,decodedImage:null,decodedSrc:null,observer:null,
+  };
+  state.pathname='/alice/status/88/photo/1';
+  try{
+    proto.finishVisualHandoff.call(instance,viewer);
+    assert.equal(typeof handlers.get('load'),'function');
+    assert.equal(instance.handoff.revealTimer,null);
+    img.currentSrc=target;img.complete=true;img.naturalWidth=1000;
+    handlers.get('load')();
+    assert.notEqual(instance.handoff.revealTimer,null);
+    timers.get(instance.handoff.revealTimer)();
+    assert.equal(instance.handoff,null);
+    assert.equal(host.removed,true);
+  }finally{
+    context.window.setTimeout=oldSet;
+    context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+
+test('paint-delay handoff never reveals a different photo after React recycles its img', () => {
+  const oldSet=context.window.setTimeout, oldClear=context.window.clearTimeout;
+  const timers=new Map(); let next=1;
+  context.window.setTimeout=(fn)=>{const id=next++;timers.set(id,fn);return id;};
+  context.window.clearTimeout=id=>timers.delete(id);
+  const target='https://pbs.twimg.com/media/DEST?format=jpg&name=orig';
+  const wrong='https://pbs.twimg.com/media/OTHER?format=jpg&name=large';
+  const image={currentSrc:target,src:target,complete:true,naturalWidth:1600,isConnected:true};
+  const viewer={isConnected:true,querySelectorAll(){return [image];}};
+  const host={removed:false,remove(){this.removed=true;}};
+  const controller=Object.create(proto);
+  controller.originProfile='alice';controller.navGeneration=4;
+  controller.handoff={
+    host,generation:4,targetStatus:'19',targetMediaIndex:1,
+    targetPhotoIdentity:'DEST',timeout:99,revealTimer:null,observer:null,
+    waitingImage:null,decodingImage:null,decodingSrc:null,
+    decodedImage:null,decodedSrc:null,
+  };
+  state.pathname='/alice/status/19/photo/1';
+  try{
+    proto.finishVisualHandoff.call(controller,viewer);
+    const first=controller.handoff.revealTimer;
+    assert.equal(typeof timers.get(first),'function');
+    image.currentSrc=wrong;image.src=wrong;
+    timers.get(first)();
+    assert.equal(controller.handoff.revealTimer,null,
+      'old scheduled reveal is rejected after image content changes');
+    assert.equal(host.removed,false);
+    image.currentSrc=target;image.src=target;
+    proto.finishVisualHandoff.call(controller,viewer);
+    const second=controller.handoff.revealTimer;
+    assert.notEqual(second,first);
+    timers.get(second)();
+    assert.equal(controller.handoff,null);
+    assert.equal(host.removed,true);
+  } finally {
+    context.window.setTimeout=oldSet;
+    context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+
+test('closing SPA handoff detaches abandoned photo load listeners and the observer', () => {
+  const oldClear=context.window.clearTimeout;
+  const cleared=[];
+  context.window.clearTimeout=id=>cleared.push(id);
+  let detached=0,disconnected=0,removed=0;
+  const image={
+    removeEventListener(type,handler){
+      assert.equal(type,'load');assert.equal(typeof handler,'function');detached++;
+    },
+  };
+  const controller=Object.create(proto);
+  controller.handoff={
+    timeout:11,revealTimer:12,observer:{disconnect(){disconnected++;}},
+    host:{remove(){removed++;}},waitingImage:image,waitingLoadHandler:()=>{},
+    decodedImage:null,decodedSrc:null,
+  };
+  try {
+    proto.clearVisualHandoff.call(controller);
+    assert.equal(controller.handoff,null);
+    assert.deepEqual(cleared,[11,12]);
+    assert.equal(detached,1);
+    assert.equal(disconnected,1);
+    assert.equal(removed,1);
+    proto.clearVisualHandoff.call(controller);
+    assert.equal(detached,1,'clear is idempotent');
+  } finally {
+    context.window.clearTimeout=oldClear;
+  }
+});
+
+test('late decode after closing the modal cannot resurrect visual handoff', async () => {
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const timers=new Map();let id=1,resolve;
+  context.window.setTimeout=(fn)=>{const n=id++;timers.set(n,fn);return n;};
+  context.window.clearTimeout=n=>timers.delete(n);
+  const src='https://pbs.twimg.com/media/DEST?format=jpg&name=orig';
+  const img={currentSrc:src,src,complete:true,naturalWidth:320,
+    decode(){return new Promise(r=>{resolve=r;});}};
+  const viewer={isConnected:true,querySelectorAll(){return [img];}};
+  const host={removed:0,remove(){this.removed++;}};
+  const ctrl=Object.create(proto);
+  ctrl.originProfile='alice';ctrl.navGeneration=7;
+  ctrl.handoff={
+    host,targetStatus:'42',targetMediaIndex:1,targetPhotoIdentity:'DEST',
+    generation:7,timeout:14,revealTimer:null,
+    waitingImage:null,waitingLoadHandler:null,observer:null,
+    decodingImage:null,decodingSrc:null,decodedImage:null,decodedSrc:null,
+  };
+  state.pathname='/alice/status/42/photo/1';
+  try{
+    proto.finishVisualHandoff.call(ctrl,viewer);
+    assert.equal(typeof resolve,'function');
+    proto.clearVisualHandoff.call(ctrl);
+    assert.equal(ctrl.handoff,null);
+    assert.equal(host.removed,1);
+    resolve();
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    assert.equal(ctrl.handoff,null);
+    assert.equal(timers.size,0,'late promise must never schedule a reveal');
+    assert.equal(host.removed,1);
+  } finally {
+    context.window.setTimeout=oldSet;
+    context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+test('failed SPA MutationObserver setup removes overlay and does not block later transitions', () => {
+  const oldBody=document.body,oldCreate=document.createElement;
+  const oldObserver=context.MutationObserver,oldMatch=context.window.matchMedia;
+  const oldWidth=context.window.innerWidth,oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const removedTimers=[];
+  const body=new FakeElement('body');
+  document.body=body; document.hidden=false;
+  document.createElement=tag=>{
+    const element=new FakeElement(tag);
+    element.style={setProperty(){}};
+    element.remove=()=>{body.children=body.children.filter(x=>x!==element);};
+    return element;
+  };
+  context.MutationObserver=class { observe(){throw new Error('observer unavailable');} };
+  context.window.matchMedia=()=>({matches:false});
+  context.window.innerWidth=1200;
+  context.window.setTimeout=()=>91;
+  context.window.clearTimeout=id=>removedTimers.push(id);
+  const url='https://pbs.twimg.com/media/DEST?format=jpg&name=large';
+  const target=ref('/alice/status/42/photo/1');
+  const image=new FakeElement('img');image.naturalWidth=900;
+  const ctrl=Object.create(proto);
+  ctrl.handoff=null;ctrl.originProfile='alice';ctrl.navGeneration=1;
+  ctrl.viewer={getBoundingClientRect(){return {left:0,top:0,width:700,height:600,right:700};},querySelector(){return null;}};
+  ctrl.imageSources=new Map([[target.key,url]]);
+  ctrl.prefetched=new Map([[url,{image,ready:true}]]);
+  try{
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target),false);
+    assert.equal(ctrl.handoff,null);
+    assert.equal(body.children.length,0);
+    assert.deepEqual(removedTimers,[91]);
+  }finally{
+    document.body=oldBody;document.createElement=oldCreate;
+    context.MutationObserver=oldObserver;
+    context.window.matchMedia=oldMatch;
+    context.window.innerWidth=oldWidth;
+    context.window.setTimeout=oldSet;
+    context.window.clearTimeout=oldClear;
   }
 });

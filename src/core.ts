@@ -156,6 +156,21 @@ namespace XMN {
     return null;
   }
 
+  /**
+   * Stable X photo identity across small/large/orig variants of the same CDN
+   * image. This does NOT download a URL or authorize an arbitrary image origin.
+   * It is used only to decide when the X viewer has rendered our target.
+   */
+  export function photoCdnIdentity(src: string): string | null {
+    let url: URL;
+    try { url = new URL(src); } catch { return null; }
+    if (url.protocol !== 'https:' || url.hostname !== 'pbs.twimg.com' ||
+        url.username !== '' || url.password !== '' || url.port !== '') return null;
+    const matched = /^\/media\/([A-Za-z0-9_-]+)(?:\.(?:jpg|jpeg|png|webp))?(?::(?:thumb|small|medium|large|orig|4096x4096))?$/i
+      .exec(url.pathname);
+    return matched ? matched[1] : null;
+  }
+
   /** Only rewrite genuine X image CDN thumbnails. No arbitrary URL/network access. */
   export function preloadImageUrl(src: string): string | null {
     let url: URL;

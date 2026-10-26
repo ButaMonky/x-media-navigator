@@ -77,8 +77,17 @@ function show(href, withClose=true) {
   const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';
   viewer.style.cssText='width:65vw; height:85vh; position:relative;';
   modal.appendChild(viewer);
+  // X's modal may include loaded avatars/other media ahead of the displayed
+  // photo. The handoff must wait for the exact target media ID.
+  const unrelatedPhoto = document.createElement('img');
+  unrelatedPhoto.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  Object.defineProperty(unrelatedPhoto,'currentSrc',{value:'https://pbs.twimg.com/media/WRONG?format=jpg&name=large'});
+  viewer.appendChild(unrelatedPhoto);
   const activePhoto = document.createElement('img');
   activePhoto.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  Object.defineProperty(activePhoto,'currentSrc',{
+    value:'https://pbs.twimg.com/media/M'+href.replace(/[^a-zA-Z0-9]/g,'_')+'?format=jpg&name=orig',
+  });
   activePhoto.alt='Current X media photo';
   viewer.appendChild(activePhoto);
   const article = document.createElement('article'); article.dataset.testid='tweet';

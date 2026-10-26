@@ -74,12 +74,18 @@ namespace XMN {
     host: HTMLDivElement;
     targetStatus: string;
     targetMediaIndex: number | null;
+    targetPhotoIdentity: string;
     timeout: number;
     generation: number;
     revealTimer: number | null;
     sourceViewer: HTMLElement | null;
     observer: MutationObserver | null;
     waitingImage: HTMLImageElement | null;
+    waitingLoadHandler: (() => void) | null;
+    decodingImage: HTMLImageElement | null;
+    decodingSrc: string | null;
+    decodedImage: HTMLImageElement | null;
+    decodedSrc: string | null;
   }
 
   /** Maintain a stable ordered list of media refs, never cached DOM nodes. */
@@ -424,14 +430,28 @@ namespace XMN {
       if (viewer !== this.viewer) {
         this.removeViewerUI();
         this.viewer = viewer;
-        this.viewObserver = new MutationObserver(() => {
-          // X may replace viewer children during /photo/N transitions.
-          if (this.viewer?.isConnected) {
-            this.ensureViewerButtons();
-            this.finishVisualHandoff(this.viewer);
-          }
+        this.viewObserver = new MutationObserver((changes) => {
+          if (!this.viewer?.isConnected) return;
+          // React may reuse an existing <img> and swap only its src/srcset.
+          // React render/remount uses childList. Ignore our own button/status
+          // decoration whenever possible to avoid repeated full UI updates.
+          const photoAttributeChange = changes.some((change) =>
+            change.type === 'attributes' &&
+            change.target instanceof HTMLImageElement &&
+            (change.attributeName === 'src' || change.attributeName === 'srcset'));
+          const structuralChange = changes.some((change) =>
+            change.type === 'childList' &&
+            [...change.addedNodes, ...change.removedNodes].some((node) =>
+              node instanceof Element &&
+              (node.matches('img, picture, video') ||
+                !!node.querySelector('img, picture, video'))));
+          if (structuralChange) this.ensureViewerButtons();
+          if (structuralChange || photoAttributeChange) this.finishVisualHandoff(this.viewer);
         });
-        this.viewObserver.observe(viewer, { childList: true, subtree: true });
+        this.viewObserver.observe(viewer, {
+          childList: true, subtree: true,
+          attributes: true, attributeFilter: ['src', 'srcset'],
+        });
       }
       this.ensureViewerButtons();
       this.finishVisualHandoff(viewer);
@@ -909,7 +929,9 @@ namespace XMN {
           window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
       const url = this.imageSources?.get(target.key);
       const record = url ? this.prefetched?.get(url) : undefined;
-      if (!url || preloadImageUrl(url) !== url || !record?.ready || record.image.naturalWidth < 1) return false;
+      const targetPhotoIdentity = url ? photoCdnIdentity(url) : null;
+      if (!url || !targetPhotoIdentity || preloadImageUrl(url) !== url ||
+          !record?.ready || record.image.naturalWidth < 1) return false;
       let host: HTMLDivElement | null = null;
       try {
         host = document.createElement('div');
@@ -943,12 +965,18 @@ namespace XMN {
           host,
           targetStatus: target.statusId,
           targetMediaIndex: target.mediaIndex,
+          targetPhotoIdentity,
           timeout,
           generation: this.navGeneration,
           revealTimer: null,
           sourceViewer: this.viewer,
           observer: null,
           waitingImage: null,
+          waitingLoadHandler: null,
+          decodingImage: null,
+          decodingSrc: null,
+          decodedImage: null,
+          decodedSrc: null,
         };
         this.handoff = handoff;
         // Only for the short handoff window: detect the new SPA modal as
@@ -967,9 +995,32 @@ namespace XMN {
         }
         return true;
       } catch {
-        host?.remove();
+        // A failed MutationObserver setup can happen AFTER the overlay was
+        // attached and this.handoff assigned. Dispose both together.
+        if (host && this.handoff?.host === host) this.clearVisualHandoff();
+        else host?.remove();
         return false; // Handoff is optional; never interrupt native SPA navigation.
       }
+    }
+
+    /** Attach at most one load listener, and detach it if the SPA swaps images. */
+    private watchHandoffImageLoad(
+      handoff: VisualHandoff, image: HTMLImageElement, viewer: HTMLElement,
+    ): void {
+      if (handoff.waitingImage === image && handoff.waitingLoadHandler) return;
+      if (handoff.waitingImage && handoff.waitingLoadHandler) {
+        handoff.waitingImage.removeEventListener('load', handoff.waitingLoadHandler);
+      }
+      const handler = (): void => {
+        if (handoff.waitingImage === image && handoff.waitingLoadHandler === handler) {
+          handoff.waitingImage = null;
+          handoff.waitingLoadHandler = null;
+        }
+        if (this.handoff === handoff) this.finishVisualHandoff(viewer);
+      };
+      handoff.waitingImage = image;
+      handoff.waitingLoadHandler = handler;
+      image.addEventListener('load', handler, { once: true });
     }
 
     private finishVisualHandoff(viewer: HTMLElement): void {
@@ -980,18 +1031,75 @@ namespace XMN {
       if (!shown || shown.statusId !== handoff.targetStatus ||
           (handoff.targetMediaIndex !== null && shown.mediaIndex !== null &&
            handoff.targetMediaIndex !== shown.mediaIndex)) return;
-      const actualImage = viewer.querySelector<HTMLImageElement>('img[src]');
-      // A mounted React viewer is not necessarily ready to paint. Do not
-      // reveal it until its own photo pixels have loaded.
-      if (!actualImage || !actualImage.complete || actualImage.naturalWidth < 1) {
-        if (actualImage && handoff.waitingImage !== actualImage) {
-          handoff.waitingImage = actualImage;
-          actualImage.addEventListener('load', () => this.finishVisualHandoff(viewer), { once: true });
-        }
+      // A mounted X viewer can first show avatars or another photo. Match
+      // the actual CDN *media identity* before removing the decoded handoff.
+      // The display may use name=orig while prefetch used name=large.
+      const candidates = [...viewer.querySelectorAll<HTMLImageElement>('img[src], img[srcset]')];
+      const actualImage = candidates.find((img) => {
+        // A new src may be assigned while currentSrc still displays the OLD
+        // image. Never accept that loading target as rendered and decoded.
+        const displayed = img.currentSrc || '';
+        return displayed
+          ? photoCdnIdentity(displayed) === handoff.targetPhotoIdentity
+          : photoCdnIdentity(img.src || '') === handoff.targetPhotoIdentity;
+      });
+      if (!actualImage) {
+        // The target may already be assigned to the same <img> whose currentSrc
+        // still points to the previous photo. Subscribe to its next load event.
+        const pendingTarget = candidates.find((img) =>
+          photoCdnIdentity(img.src || '') === handoff.targetPhotoIdentity);
+        if (pendingTarget) this.watchHandoffImageLoad(handoff, pendingTarget, viewer);
         return;
       }
+      if (!actualImage.complete || actualImage.naturalWidth < 1) {
+        if (actualImage) this.watchHandoffImageLoad(handoff, actualImage, viewer);
+        return;
+      }
+      // X can report a loaded image before its pixels are decoded. Wait
+      // for the matching full-size image's decode(), never an avatar/old photo.
+      // The 1.8s failsafe still removes the overlay on stalled decoding.
+      const displayedSrc = actualImage.currentSrc || actualImage.src || '';
+      if (typeof actualImage.decode === 'function' &&
+          (handoff.decodedImage !== actualImage || handoff.decodedSrc !== displayedSrc)) {
+        if (handoff.decodingImage === actualImage && handoff.decodingSrc === displayedSrc) return;
+        handoff.decodingImage = actualImage;
+        handoff.decodingSrc = displayedSrc;
+        void actualImage.decode().catch(() => {
+          // If decode() rejects for an already loaded image, avoid a permanent
+          // visual stall; X will render it itself.
+        }).then(() => {
+          if (this.handoff !== handoff || handoff.decodingImage !== actualImage ||
+              handoff.decodingSrc !== displayedSrc) return;
+          handoff.decodingImage = null;
+          handoff.decodingSrc = null;
+          handoff.decodedImage = actualImage;
+          handoff.decodedSrc = displayedSrc;
+          this.finishVisualHandoff(viewer);
+        });
+        return;
+      }
+      if (typeof actualImage.decode !== 'function') {
+        handoff.decodedImage = actualImage;
+        handoff.decodedSrc = displayedSrc;
+      }
       handoff.revealTimer = window.setTimeout(() => {
-        if (this.handoff === handoff) this.clearVisualHandoff();
+        if (this.handoff !== handoff) return;
+        const stillVisible = handoff.decodedImage &&
+          handoff.decodedImage.isConnected !== false &&
+          viewer.isConnected && handoff.decodedImage.complete &&
+          handoff.decodedImage.naturalWidth > 0 &&
+          (handoff.decodedImage.currentSrc || handoff.decodedImage.src || '') === handoff.decodedSrc &&
+          photoCdnIdentity(handoff.decodedSrc || '') === handoff.targetPhotoIdentity;
+        if (stillVisible) {
+          this.clearVisualHandoff();
+        } else {
+          // React can recycle the image again during this 90ms paint window.
+          // Avoid exposing an unrelated image; the 1.8s failsafe still expires.
+          handoff.revealTimer = null;
+          handoff.decodedImage = null;
+          handoff.decodedSrc = null;
+          this.finishVisualHandoff(viewer);
+        }
       }, 90);
     }
 
@@ -1002,6 +1110,11 @@ namespace XMN {
       window.clearTimeout(handoff.timeout);
       if (handoff.revealTimer !== null) window.clearTimeout(handoff.revealTimer);
       handoff.observer?.disconnect();
+      if (handoff.waitingImage && handoff.waitingLoadHandler) {
+        handoff.waitingImage.removeEventListener('load', handoff.waitingLoadHandler);
+      }
+      handoff.waitingImage = null;
+      handoff.waitingLoadHandler = null;
       handoff.host.remove();
     }
 

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "X Media Navigator (TypeScript Dev)",
   "description": "Xメディア閲覧を高速化。左右キーは投稿内画像を優先し、端の画像で別投稿へ移動。前後画像を少数先読み。",
-  "version": "2.4.4",
+  "version": "2.4.5",
   "content_scripts": [
     {
       "matches": ["https://x.com/*", "https://twitter.com/*"],

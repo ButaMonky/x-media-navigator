@@ -183,3 +183,28 @@ test('repeated noncontiguous status IDs never skip intervening posts', () => {
   assert.equal(XMN.adjacentPostIndex(refs, 'other', 1, 2), null);
   assert.equal(XMN.adjacentPostIndex(refs, '11', 1, 99), 1, 'invalid anchor uses conservative fallback');
 });
+test('same photo CDN identity matches different X image sizes but never other images', () => {
+  const base='https://pbs.twimg.com/media/EXAMPLE_ID';
+  const cases=[
+    base+'?format=jpg&name=small',
+    base+'?format=jpg&name=large',
+    base+'?format=png&name=orig',
+    base+'.jpg?name=large',
+    base+'.webp:large',
+    base+'.png:orig',
+    base+'?format=webp&name=4096x4096',
+  ];
+  for(const url of cases) assert.equal(XMN.photoCdnIdentity(url),'EXAMPLE_ID',url);
+  for(const url of [
+    'data:image/png;base64,AAAA',
+    'https://pbs.twimg.com/profile_images/EXAMPLE_ID/photo.jpg',
+    'https://other.example/media/EXAMPLE_ID?format=jpg&name=large',
+    'http://pbs.twimg.com/media/EXAMPLE_ID?format=jpg&name=large',
+    'https://user:secret@pbs.twimg.com/media/EXAMPLE_ID?format=jpg&name=large',
+    'https://pbs.twimg.com:8080/media/EXAMPLE_ID?format=jpg&name=large',
+    'https://pbs.twimg.com/media/EXAMPLE_ID.gif?name=orig',
+    'https://pbs.twimg.com/media/other.jpg:evil',
+  ]) assert.equal(XMN.photoCdnIdentity(url),null,url);
+  assert.notEqual(XMN.photoCdnIdentity(base+'?format=jpg&name=large'),
+    XMN.photoCdnIdentity('https://pbs.twimg.com/media/OTHER?format=jpg&name=large'));
+});
