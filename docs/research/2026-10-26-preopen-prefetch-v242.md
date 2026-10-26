@@ -58,3 +58,10 @@ v2.4.2修正：`/profile/media` の一覧にある実際の画像リンクを **
 - https://developer.mozilla.org/en-US/docs/Web/API/HTMLImageElement/decode
 - https://github.com/PiesP/xcom-enhanced-gallery/blob/master/docs/media-sources.md （表示の観測URLとダウンロードのURLは別に扱う）
 - https://chromewebstore.google.com/detail/x-media-viewer/hlnejegokbfmimhajpdnlpojkffepilj （独自の持続的ギャラリーという別方針の例）
+
+## CI障害記録（AUD-XMN-20261026-CHROME-01）
+
+- 2026-10-26、コミット `d2082a8` の GitHub Actions プッシュ実行は成功したが、同一コミットの PR 実行は Node・型検査PASSの後、Chromium合成Xの `--dump-dom` が20秒ウォールクロック期限でタイムアウト（`tests/browser.test.mjs:269`）。
+- 実行の `--virtual-time-budget=19000` は仮想時間であり、GitHub共有ランナーのChrome起動・終了に必要な現実時間の余裕を20秒ではほとんど与えていなかった。
+- 改善：実ブラウザの試験を飛ばさず、ウォールクロックの安全期限を45秒に拡大。失敗時に必ずエラーを返し、CI成功扱いにはしない。
+- この調整はナビゲーション製品コードには一切影響しない。実際のXサイトでの高速化率を示すものでもない。再度push/PR双方で検証し、成功後にのみ固定PC版を更新する。

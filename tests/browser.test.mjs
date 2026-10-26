@@ -266,7 +266,10 @@ function runChromium(url, userDataDir) {
     ];
     const child = spawn(browser, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
-    const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Chromium timed out')) }, 20000);
+    // GitHub-hosted Chrome startup can exceed the 20s wall clock even when the
+    // 19s *virtual* fixture completes successfully. Allow runner overhead;
+    // still fail on a genuinely stalled browser, rather than skipping tests.
+    const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Chromium timed out after 45s')) }, 45000);
     child.stdout.on('data', d => { stdout += d.toString('utf8'); });
     child.stderr.on('data', d => { stderr += d.toString('utf8'); });
     child.on('error', err => { clearTimeout(timeout); reject(err); });
