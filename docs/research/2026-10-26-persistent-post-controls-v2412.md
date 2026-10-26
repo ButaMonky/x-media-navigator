@@ -33,3 +33,17 @@ v2.4.11 is markedly better, but custom ◀/▶ post buttons only appear on the f
 - Important distinction: this change *adds* a small dedicated DOM layer and TypeScript code; it primarily reduces needless runtime layout/DOM work on idle polls, not the extension bundle's byte size. Do not claim a measured real X CPU/FPS improvement without Performance profiling.
 - Unresolved risks: actual X's modal may not use exactly these aria/CSS hide behaviors; X login DOM is unavailable through the connected browser context, so real X multi-photo button persistence, keyboard focus trap and fullscreen interaction must be user-verified. We do not call this LIVE X PASS.
 - No changes to 5-image prefetch, 2-concurrent request limit, approximate 80MiB memory budget, native gallery keys, X-owned SPA routes or permissions.
+
+## CI and installed private beta (deployment verified)
+
+- Implementation commit: `210e4bb86d80aee30d1d421bb3454fda0536da9f` pushed to private `fix/prefetch-startup-v241`. GitHub TypeScript `verify` concluded **SUCCESS for both push and Draft PR #17** before installation; main remains unchanged.
+- Installed-folder preflight: original manifest version `2.4.11`, source `2.4.12`.
+- The original six files were copied with independently verified hashes and retained in `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v2412-20261027_005522`, including `SHA256-OLD.txt`.
+- Exactly six fixed-folder files were refreshed under `C:\Users\Saito\Downloads\X-Media-Navigator-Current`. All installed SHA256 values match source:
+  - `content_script.js` `7DCC4BAF8EB0BDC99AD63554F513AEE9BF489B1C87E8EF8F209AC0D8B12E35A0`
+  - `manifest.json` `B057D74B8723325E9688F37378B3FF242C753B21E18E1E538F8FB86FD9BD8195`
+  - `style.css` `C0EB781242DD69F40F0F7A474A3D6D497E6290B60CA9F153ED8E4DB96D2E4543`
+  - `icon16.png` `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png` `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png` `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Installed manifest `2.4.12` verified. No ZIP, release, user Chrome restart, public/main changes, new service or updater. The loaded Chrome extension still needs user Reload and X tab refresh.
