@@ -140,6 +140,20 @@ test('navigation only clicks a known destination after viewer closes', async () 
   assert.equal(instance.navigationBusy,false);
 });
 
+test('handoff detects a closed X modal within a short polling interval', async () => {
+  const oldQuery=document.querySelector,oldSet=context.window.setTimeout;
+  const viewer={isConnected:true},delays=[];
+  document.querySelector=(selector)=>selector==='[data-testid="swipe-to-dismiss"]'
+    ? viewer : oldQuery(selector);
+  context.window.setTimeout=(fn,ms)=>{delays.push(ms);viewer.isConnected=false;fn();return 5;};
+  try {
+    assert.equal(await proto.waitForViewerToClose.call({},viewer),true);
+    assert.ok(delays[0]<=50,'125ms polling leaves a visible blank gap after X closes');
+  } finally {
+    document.querySelector=oldQuery;context.window.setTimeout=oldSet;
+  }
+});
+
 test('missing close button aborts rather than navigating elsewhere', async () => {
   state.pathname='/alice/status/11/photo/1';
   let errors=0;
@@ -380,7 +394,7 @@ test('carousel showing two or three images never proves the entire album size', 
   state.pathname='/alice/media';
 });
 
-test('unknown gallery boundary never skips first photo; repeated unchanged right confirms next post', () => {
+test('unknown gallery boundary never skips a still-unverified photo, even after a repeated right key', () => {
   const controller=Object.create(proto);
   let delayed=null;let directions=[];let notices=[];
   context.window.setTimeout=(fn)=>{delayed=fn;return 91;};
@@ -401,8 +415,8 @@ test('unknown gallery boundary never skips first photo; repeated unchanged right
   assert.match(notices[0],/もう一度/);
   assert.equal(directions.length,0,'no navigation on unverified first photo');
   const second=keyEvent('ArrowRight');proto.onKeyDown.call(controller,second);
-  assert.equal(second.prevented,true);
-  assert.deepEqual(directions,[1],'second press can navigate, no silent no-op');
+  assert.equal(second.prevented,false,'unverified photo keeps native X controls on repeated input');
+  assert.deepEqual(directions,[],'an unready photo must not be skipped by manual confirmation');
   state.pathname='/alice/media';
 });
 
@@ -706,6 +720,31 @@ test('decoded next-photo handoff is non-interactive and expires or reveals safel
     state.pathname='/alice/media';
   }
 });
+test('visual handoff begins its safety expiry only when the old modal has closed', () => {
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const cleared=[],timers=new Map();
+  let next=100;
+  context.window.setTimeout=(fn,ms)=>{const id=next++;timers.set(id,{fn,ms});return id;};
+  context.window.clearTimeout=(id)=>{cleared.push(id);timers.delete(id);};
+  const classes=[];
+  const ctrl=Object.assign(Object.create(proto),{
+    navGeneration:3,
+    handoff:{generation:3,timeout:42,shown:false,
+      host:{classList:{add(c){classes.push(c);}},remove(){}},
+      revealTimer:null,observer:null,waitingImage:null,waitingLoadHandler:null},
+  });
+  try {
+    proto.showVisualHandoff.call(ctrl);
+    assert.ok(cleared.includes(42),'the timer created before modal close must be cleared');
+    assert.deepEqual(classes,['xmn-handoff-visible']);
+    assert.equal(timers.get(100)?.ms,1800,'a full handoff window remains after modal close');
+    proto.showVisualHandoff.call(ctrl);
+    assert.equal(timers.size,1,'repeated reveal must not restart the expiry indefinitely');
+  } finally {
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+  }
+});
+
 test('lookahead queues five future posts with at most two parallel downloads', async () => {
   const previousImage = context.Image;
   context.navigator = { onLine: true, connection: { saveData: false, effectiveType: '4g' } };
@@ -1733,6 +1772,18 @@ test('disabled next-photo control cannot prove gallery end when another next-pho
   assert.equal(proto.nativeGalleryArrowDisabled.call(ctrl,viewer),false,'an enabled native arrow vetoes terminal evidence');
   enabled.attrs['aria-disabled']='true';
   assert.equal(proto.nativeGalleryArrowDisabled.call(ctrl,viewer),true,'all observed photo arrows are disabled');
+});
+
+test('aria-hidden photo arrows never create false gallery-boundary evidence', () => {
+  context.HTMLButtonElement=FakeElement;
+  const hiddenNext=new FakeElement('button',{'aria-label':'Next photo','aria-hidden':'true'});
+  const hiddenDisabled=new FakeElement('button',{'aria-label':'Next photo','aria-disabled':'true'});
+  // X may leave a disabled native arrow inside a hidden carousel subtree.
+  hiddenDisabled.closest=s=>s.includes('[aria-hidden="true"]') ? {} : null;
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='[aria-label], [title]'?[hiddenNext,hiddenDisabled]:[];
+  assert.equal(proto.nativeGalleryArrowAvailable.call({},viewer,1),false,'hidden enabled arrow must not block a verified boundary');
+  assert.equal(proto.nativeGalleryArrowDisabled.call({},viewer),false,'hidden disabled arrow must not fake a gallery edge');
 });
 
 test('generic Previous and Next controls are not photo-specific arrows', () => {

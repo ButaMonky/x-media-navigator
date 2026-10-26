@@ -74,7 +74,8 @@
   /* Do not paint another black backdrop over X's native viewer. */
   background: transparent;
   opacity: 0;
-  transition: opacity 90ms ease-out;
+  /* No fade-in from blank after X has already closed its native modal. */
+  transition: none;
   overflow: hidden;
   pointer-events: none !important;
 }

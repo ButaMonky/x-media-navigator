@@ -23,6 +23,13 @@ test('development manifest is a distinct, least-permission MV3 extension', () =>
   assert.deepEqual(m.content_scripts[0].matches, ['https://x.com/*', 'https://twitter.com/*']);
 });
 
+test('handoff overlay reveals immediately after modal close instead of fading from a blank panel', () => {
+  const css = get(dev, 'style.css').toString('utf8');
+  const rule = css.match(/\.xmn-visual-handoff\s*\{([^}]+)\}/)?.[1] ?? '';
+  assert.match(rule, /opacity:\s*0\s*;/,'handoff must stay hidden until safe to reveal');
+  assert.match(rule, /transition:\s*none\s*;/,'fade-in after native modal close causes a blank flash');
+});
+
 test('manifest content scripts, CSS and referenced icons exist', () => {
   const m = JSON.parse(get(dev, 'manifest.json').toString('utf8'));
   for (const item of m.content_scripts ?? []) {

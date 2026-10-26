@@ -233,6 +233,13 @@ var XMN;
             return false;
         return !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="slider"], [role="spinbutton"], video');
     }
+    /** Hidden X carousel controls cannot prove a live gallery boundary. */
+    function isHiddenNativeControl(control) {
+        return control.getAttribute('aria-hidden') === 'true' ||
+            control.getAttribute('hidden') !== null ||
+            control.getAttribute('inert') !== null ||
+            !!control.closest?.('[aria-hidden="true"], [hidden], [inert]');
+    }
     function usableTileLink(tile, profile) {
         const links = Array.from(tile.querySelectorAll('a[href]'));
         const possibilities = links
@@ -793,7 +800,7 @@ var XMN;
             const root = viewer.closest('[role="dialog"]') ?? viewer;
             const pattern = direction === 1 ? NATIVE_NEXT : NATIVE_PREVIOUS;
             for (const button of root.querySelectorAll('[aria-label], [title]')) {
-                if (button.closest('.xmn-nav-button'))
+                if (button.closest('.xmn-nav-button') || isHiddenNativeControl(button))
                     continue;
                 const label = (button.getAttribute('aria-label') || button.getAttribute('title') || '').trim();
                 if (pattern.test(label) && button.getAttribute('aria-disabled') !== 'true' &&
@@ -809,7 +816,7 @@ var XMN;
             const root = viewer.closest('[role="dialog"]') ?? viewer;
             let disabledPhotoNextSeen = false;
             for (const button of root.querySelectorAll('[aria-label], [title]')) {
-                if (button.closest('.xmn-nav-button'))
+                if (button.closest('.xmn-nav-button') || isHiddenNativeControl(button))
                     continue;
                 const label = (button.getAttribute('aria-label') || button.getAttribute('title') || '').trim();
                 // A generic disabled "Next" could belong to the sidebar, not photos.
@@ -928,15 +935,8 @@ var XMN;
             const pending = this.pendingRightConfirmation;
             if (!readyBefore && pending && pending.path === path && pending.signature === signature &&
                 Date.now() < pending.expiresAt) {
-                // Unknown/non-image viewers keep an explicit fallback, not a guessed
-                // photo count. Do not persist an unproved album size.
-                this.pendingRightConfirmation = null;
-                if (this.rightProbeTimer !== null)
-                    window.clearTimeout(this.rightProbeTimer);
-                this.rightProbeTimer = null;
-                event.preventDefault();
-                event.stopImmediatePropagation();
-                void this.navigate(1);
+                // A second press is not proof of an album edge while the image is
+                // unready. Keep the key native; never skip a slow-loading photo.
                 return;
             }
             this.pendingRightConfirmation = null;
@@ -1265,6 +1265,7 @@ var XMN;
                     targetPhotoIdentity,
                     timeout,
                     generation: this.navGeneration,
+                    shown: false,
                     revealTimer: null,
                     sourceViewer: this.viewer,
                     observer: null,
@@ -1325,7 +1326,12 @@ var XMN;
         /** Reveal the decoded image only once the old native modal has closed. */
         showVisualHandoff() {
             const handoff = this.handoff;
-            if (handoff && handoff.generation === this.navGeneration) {
+            if (handoff && handoff.generation === this.navGeneration && !handoff.shown) {
+                handoff.shown = true;
+                // The old modal can take most of the original 1.8s to close.
+                // Start the visible handoff window only after that close finishes.
+                window.clearTimeout(handoff.timeout);
+                handoff.timeout = window.setTimeout(() => this.clearVisualHandoff(), 1800);
                 handoff.host.classList.add('xmn-handoff-visible');
             }
         }
@@ -1468,10 +1474,12 @@ var XMN;
             }, 2800);
         }
         async waitForViewerToClose(viewer) {
-            for (let i = 0; i < 12; i++) {
+            // Keep the same 1.5s timeout but avoid a 125ms blank gap between
+            // X closing its modal and the prefetched-photo handoff appearing.
+            for (let i = 0; i < 30; i++) {
                 if (!viewer.isConnected || !document.querySelector(VIEWER_SELECTOR))
                     return true;
-                await pause(125);
+                await pause(50);
             }
             return !viewer.isConnected;
         }
