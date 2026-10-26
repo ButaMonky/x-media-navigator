@@ -295,6 +295,34 @@ test('temporary link guard prevents a hard browser navigation after X delegated 
   }
 });
 
+test('X-unclaimed in-modal link falls back promptly without six 50ms polls', async () => {
+  const oldNode=context.Node,oldAdd=context.window.addEventListener,
+    oldRemove=context.window.removeEventListener,oldSet=context.window.setTimeout;
+  const listeners=new Map(),delays=[];
+  context.Node=FakeElement;
+  context.window.addEventListener=(type,fn)=>listeners.set(type,fn);
+  context.window.removeEventListener=(type,fn)=>listeners.delete(type);
+  context.window.setTimeout=(fn,ms)=>{delays.push(ms);fn();return delays.length;};
+  const viewer={isConnected:true};
+  const link=new FakeElement('a',{href:'/alice/status/72/photo/1'});
+  link.click=()=>{
+    const event={target:link,defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};
+    listeners.get('click')(event);
+  };
+  const ctrl={originProfile:'alice',navGeneration:7};
+  state.pathname='/alice/status/71/photo/1';
+  try{
+    const result=await proto.tryNativeInModalNavigation.call(ctrl,ref('/alice/status/72/photo/1'),link,viewer,7);
+    assert.equal(result,'fallback');
+    assert.ok(delays.reduce((a,b)=>a+b,0)<=100,'an unclaimed native click should not impose the full 300ms wait');
+    assert.equal(listeners.size,0,'the safety listener still detaches');
+  }finally{
+    context.Node=oldNode;context.window.addEventListener=oldAdd;
+    context.window.removeEventListener=oldRemove;context.window.setTimeout=oldSet;
+    state.pathname='/alice/media';
+  }
+});
+
 test('ignored in-modal route attempts fall back once without guessing a URL', async () => {
   state.pathname='/alice/status/11/photo/1';
   const oldSet=context.window.setTimeout;
@@ -698,7 +726,7 @@ test('unknown gallery boundary never skips a still-unverified photo, even after 
   assert.equal(first.prevented,false,'first press goes to native X gallery');
   assert.equal(directions.length,0);
   delayed();
-  assert.match(notices[0],/もう一度/);
+  assert.match(notices[0],/Xの操作を優先/,'an unverified image must not ask for a second arrow');
   assert.equal(directions.length,0,'no navigation on unverified first photo');
   const second=keyEvent('ArrowRight');proto.onKeyDown.call(controller,second);
   assert.equal(second.prevented,false,'unverified photo keeps native X controls on repeated input');
@@ -2020,6 +2048,141 @@ test('failed SPA MutationObserver setup removes overlay and does not block later
     context.window.clearTimeout=oldClear;
   }
 });
+test('a single right key retries an initially unready photo without requesting another key', () => {
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const queue=[],navigations=[],messages=[];
+  let clock=0;
+  context.window.setTimeout=(fn,delay)=>{const id=++clock;queue.push({fn,delay,id});return id;};
+  context.window.clearTimeout=id=>{const item=queue.find(x=>x.id===id);if(item)item.cancelled=true;};
+  const url='https://pbs.twimg.com/media/SLOWONE?format=jpg&name=large';
+  const photo={src:url,currentSrc:'',complete:false,naturalWidth:0};
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[photo]:[];
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',navGeneration:4,navigationBusy:false,
+    refs:[ref('/alice/status/71/photo/1'),ref('/alice/status/72/photo/1')],
+    activeIndex(){return 0;},photoCount(){return null;},
+    nativeGalleryArrowAvailable(){return false;},navigate(d){navigations.push(d);},
+    toast(m){messages.push(m);},rightProbeTimer:null,pendingRightConfirmation:null,
+  });
+  state.pathname='/alice/status/71/photo/1';
+  const runNext=()=>{const item=queue.shift();assert.ok(item,'a bounded follow-up must be scheduled');if(!item.cancelled)item.fn();};
+  try{
+    const key=keyEvent('ArrowRight');proto.onKeyDown.call(ctrl,key);
+    assert.equal(key.prevented,false,'first arrow stays with native X gallery');
+    assert.equal(queue[0].delay,1050);
+    runNext();
+    assert.equal(navigations.length,0,'unready media cannot be skipped');
+    assert.equal(queue.length,1,'one first press automatically awaits a ready image');
+    photo.complete=true;photo.naturalWidth=1200;photo.currentSrc=url;
+    runNext();
+    assert.deepEqual(navigations,[1],'one key finishes once the same photo is actually ready');
+    assert.ok(!messages.some(m=>m.includes('もう一度')),'never demand a misleading second arrow');
+  }finally{
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+
+test('a stale currentSrc finishes loading without consuming a second right key', () => {
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const queue=[],moved=[];
+  context.window.setTimeout=(fn,delay)=>{queue.push({fn,delay});return queue.length;};
+  context.window.clearTimeout=()=>{};
+  const oldUrl='https://pbs.twimg.com/media/OLD?format=jpg&name=large';
+  const nextUrl='https://pbs.twimg.com/media/ASSIGNED?format=jpg&name=large';
+  const image={src:nextUrl,currentSrc:oldUrl,complete:false,naturalWidth:0};
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[image]:[];
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',navGeneration:8,navigationBusy:false,
+    refs:[ref('/alice/status/81/photo/2'),ref('/alice/status/82/photo/1')],
+    activeIndex(){return 0;},photoCount(){return null;},
+    nativeGalleryArrowAvailable(){return false;},navigate(d){moved.push(d);},
+    toast(){},rightProbeTimer:null,
+  });
+  state.pathname='/alice/status/81/photo/2';
+  try{
+    proto.onKeyDown.call(ctrl,keyEvent('ArrowRight'));
+    image.currentSrc=nextUrl;image.complete=true;image.naturalWidth=1280;
+    queue.shift().fn();
+    assert.deepEqual(moved,[1],'compare the route-assigned image rather than stale displayed pixels');
+  }finally{
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+
+test('another right press does not postpone the first native gallery probe', () => {
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const queue=[];let ticks=0;
+  context.window.setTimeout=(fn,delay)=>{ticks++;queue.push({fn,delay});return ticks;};
+  context.window.clearTimeout=()=>{};
+  const image={src:'https://pbs.twimg.com/media/UNCHANGED?format=jpg&name=large',
+    currentSrc:'https://pbs.twimg.com/media/UNCHANGED?format=jpg&name=large',
+    complete:true,naturalWidth:900};
+  const viewer=new FakeElement('div');viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[image]:[];
+  const nav=[];
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',navGeneration:6,navigationBusy:false,
+    refs:[ref('/alice/status/91/photo/1'),ref('/alice/status/92/photo/1')],
+    activeIndex(){return 0;},photoCount(){return null;},
+    nativeGalleryArrowAvailable(){return false;},navigate(d){nav.push(d);},
+    toast(){},rightProbeTimer:null,
+  });
+  state.pathname='/alice/status/91/photo/1';
+  try {
+    proto.onKeyDown.call(ctrl,keyEvent('ArrowRight'));
+    proto.onKeyDown.call(ctrl,keyEvent('ArrowRight'));
+    assert.equal(ticks,1,'do not replace and delay an outstanding boundary probe');
+    queue[0].fn();assert.deepEqual(nav,[1]);
+  }finally{
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+
+test('an offscreen preloaded duplicate never impersonates the visible X photo', () => {
+  const old=state.pathname;state.pathname='/alice/status/74/photo/1';
+  const hidden={src:'https://pbs.twimg.com/media/ACTIVE?format=jpg&name=large',
+    currentSrc:'https://pbs.twimg.com/media/ACTIVE?format=jpg&name=large',
+    complete:true,naturalWidth:1600,
+    getBoundingClientRect(){return {left:-900,top:0,right:-100,bottom:600,width:800,height:600}}};
+  const visible={src:'https://pbs.twimg.com/media/OLDER?format=jpg&name=large',
+    currentSrc:'https://pbs.twimg.com/media/OLDER?format=jpg&name=large',
+    complete:true,naturalWidth:900,
+    getBoundingClientRect(){return {left:0,top:0,right:700,bottom:600,width:700,height:600}}};
+  const viewer=new FakeElement('div');viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[hidden,visible]:[];
+  const current=ref('/alice/status/74/photo/1');
+  const ctrl=Object.assign(Object.create(proto),{viewer,originProfile:'alice',
+    imageSources:new Map([[current.key,'https://pbs.twimg.com/media/ACTIVE?format=jpg&name=large']])});
+  try{
+    assert.equal(proto.displayedPhoto.call(ctrl),visible,'offscreen target CDN image is not proof of rendered pixels');
+    assert.equal(proto.currentPhotoReady.call(ctrl),false,'visible old pixels do not prove the route-assigned image is ready');
+  }finally{state.pathname=old;}
+});
+
+test('the active tile CDN identity resolves visually equal-size gallery images', () => {
+  const old=state.pathname;state.pathname='/alice/status/73/photo/1';
+  const main={src:'https://pbs.twimg.com/media/ACTIVE?name=orig&format=jpg',
+    currentSrc:'https://pbs.twimg.com/media/ACTIVE?name=orig&format=jpg',
+    complete:true,naturalWidth:1400,getBoundingClientRect(){return {left:0,top:0,width:700,height:600,right:700,bottom:600}}};
+  const other={src:'https://pbs.twimg.com/media/UNRELATED?name=orig&format=jpg',
+    currentSrc:'https://pbs.twimg.com/media/UNRELATED?name=orig&format=jpg',
+    complete:true,naturalWidth:900,getBoundingClientRect(){return {left:0,top:0,width:700,height:600,right:700,bottom:600}}};
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[other,main]:[];
+  const current=ref('/alice/status/73/photo/1');
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',
+    imageSources:new Map([[current.key,'https://pbs.twimg.com/media/ACTIVE?format=jpg&name=large']]),
+  });
+  try {
+    assert.equal(proto.displayedPhoto.call(ctrl),main,'prefer the active post photo over equally sized unrelated media');
+    assert.equal(proto.currentPhotoReady.call(ctrl),true);
+  }finally{state.pathname=old;}
+});
+
 test('one right press advances when X leaves a ready photo unchanged', () => {
   const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
   let scheduled=null,scheduledMs=null;
@@ -2091,7 +2254,7 @@ test('no post jump if native X changes photo source or is still loading', () => 
     proto.onKeyDown.call(ctrl,keyEvent('ArrowRight'));
     probe();
     assert.deepEqual(nav,[],'current photo not ready must not auto-cross');
-    assert.match(toasts.at(-1),/もう一度/);
+    assert.deepEqual(toasts,[],'slow loading must not demand a second key');
   }finally{
     context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
     state.pathname='/alice/media';

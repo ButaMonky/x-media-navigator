@@ -302,6 +302,31 @@ async function exercise() {
     !unknownFirst.defaultPrevented &&
     location.pathname.endsWith('/77/photo/1') &&
     clicked.at(-1)==='/alice/status/77/photo/1');
+
+  // Simulate X assigning a real CDN resource that finishes after the initial
+  // 1050ms probe. ONE right key should navigate after readiness, with no
+  // second keydown and no skipped/native unseen album photo.
+  document.querySelector('#modal button[aria-label="Close"]')?.click();
+  await wait(350);
+  ul.appendChild(tile('/alice/status/88/photo/1'));
+  await wait(350);
+  source('/alice/status/77/photo/1').click();
+  await wait(550);
+  document.getElementById('gallery-counter')?.remove();
+  document.querySelectorAll('#modal [data-testid="tweetPhoto"]').forEach(n=>n.remove());
+  const delayedPhoto=document.querySelector('#modal img[alt="Current X media photo"]');
+  let imageLoaded=false;
+  Object.defineProperty(delayedPhoto,'complete',{configurable:true,get(){return imageLoaded;}});
+  Object.defineProperty(delayedPhoto,'naturalWidth',{configurable:true,get(){return imageLoaded?1200:0;}});
+  const delayedKey=key('ArrowRight');
+  await wait(1150);
+  const notSkippedWhileUnready=location.pathname.endsWith('/77/photo/1');
+  imageLoaded=true;
+  await wait(450);
+  result('one arrow waits for slow current photo without a second keystroke',
+    !delayedKey.defaultPrevented && notSkippedWhileUnready &&
+    location.pathname.endsWith('/88/photo/1') &&
+    clicked.at(-1)==='/alice/status/88/photo/1');
   document.body.setAttribute('data-xmn-results',records.map(r=>r.label+':'+(r.pass?'PASS':'FAIL')).join('|'));
 }
 
@@ -319,7 +344,7 @@ function runChromium(url, userDataDir) {
     const args = [
       '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-background-networking', '--no-first-run',
-      '--user-data-dir=' + userDataDir, '--virtual-time-budget=22000', '--dump-dom', url,
+      '--user-data-dir=' + userDataDir, '--virtual-time-budget=27000', '--dump-dom', url,
     ];
     const child = spawn(browser, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
@@ -359,7 +384,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 22, report);
+    assert.equal(report.split('|').length, 23, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

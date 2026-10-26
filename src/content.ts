@@ -120,7 +120,6 @@ namespace XMN {
     private handoff: VisualHandoff | null = null;
     private preloadTimer: number | null = null;
     private preloadForPath = '';
-    private pendingRightConfirmation: { path: string; signature: string | null; expiresAt: number } | null = null;
     private nativeAdvancedPost: string | null = null;
     private rightProbeTimer: number | null = null;
 
@@ -172,7 +171,6 @@ namespace XMN {
       if (this.preopenExpireTimer !== null) window.clearTimeout(this.preopenExpireTimer);
       this.preopenExpireTimer = null;
       this.preloadForPath = '';
-      this.pendingRightConfirmation = null;
       this.nativeAdvancedPost = null;
       if (this.rightProbeTimer !== null) window.clearTimeout(this.rightProbeTimer);
       this.rightProbeTimer = null;
@@ -279,7 +277,6 @@ namespace XMN {
             this.nativeAdvancedPost = displayed.statusId;
           }
         }
-        this.pendingRightConfirmation = null;
         this.lastPath = path;
       }
       const viewer = this.originProfile && profileStatusFromPath(path, this.originProfile)
@@ -434,7 +431,6 @@ namespace XMN {
       this.viewerStateSnapshot = null;
       this.viewObserver?.disconnect();
       this.viewObserver = null;
-      this.pendingRightConfirmation = null;
       if (this.rightProbeTimer !== null) window.clearTimeout(this.rightProbeTimer);
       this.rightProbeTimer = null;
       if (this.viewer) {
@@ -674,7 +670,6 @@ namespace XMN {
         return;
       }
       if (direction === -1 && current && adjacentPostIndex(this.refs, current.statusId, -1, currentIndex) === null) return;
-      this.pendingRightConfirmation = null;
       if (direction === 1 && current?.kind === 'photo' && current.mediaIndex !== null &&
           (photoCount === current.mediaIndex)) this.rememberPhotoTotal?.(current.statusId, photoCount);
       event.preventDefault();
@@ -692,8 +687,39 @@ namespace XMN {
       if (!viewer || typeof viewer.querySelectorAll !== 'function') return null;
       const photos = [...viewer.querySelectorAll<HTMLImageElement>('img[src], img[srcset]')]
         .filter((img) => photoCdnIdentity(img.currentSrc || '') ||
-          photoCdnIdentity(img.src || ''));
+          photoCdnIdentity(img.src || ''))
+        .filter((img) => {
+          // X may keep decoded carousel siblings outside the viewport. A
+          // hidden/offscreen preload is NOT the image the user can see.
+          if (typeof img.closest === 'function' &&
+              img.closest('[aria-hidden="true"], [hidden], [inert]')) return false;
+          if (typeof img.getBoundingClientRect !== 'function') return true;
+          const r = img.getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && r.right > 0 && r.bottom > 0 &&
+            (typeof window.innerWidth !== 'number' || r.left < window.innerWidth) &&
+            (typeof window.innerHeight !== 'number' || r.top < window.innerHeight);
+        });
       if (photos.length === 1) return photos[0];
+      // X may keep an adjacent carousel image (or quoted photo) at the same
+      // layout size. Resolve the *active route's* X CDN media identity first
+      // instead of treating equal-size unrelated photos as ambiguous.
+      const current = this.originProfile
+        ? mediaRefFromHref(window.location.pathname, this.originProfile) : null;
+      const ownedUrl = current ? this.imageSources?.get(current.key) : null;
+      const ownedId = ownedUrl ? photoCdnIdentity(ownedUrl) : null;
+      if (ownedId) {
+        const matching = photos.filter((img) =>
+          photoCdnIdentity(img.currentSrc || '') === ownedId ||
+          photoCdnIdentity(img.src || '') === ownedId);
+        if (matching.length === 1) return matching[0];
+        const loaded = matching.filter((img) => {
+          const selected = photoCdnIdentity(img.currentSrc || img.src || '');
+          const assigned = photoCdnIdentity(img.src || '');
+          return img.complete && img.naturalWidth > 0 &&
+            selected === ownedId && (!assigned || assigned === ownedId);
+        });
+        if (loaded.length === 1) return loaded[0];
+      }
       const ranked = photos.map((img) => {
         const rect = typeof img.getBoundingClientRect === 'function'
           ? img.getBoundingClientRect() : null;
@@ -716,6 +742,14 @@ namespace XMN {
         : null;
     }
 
+    /** Track X's assigned photo, not old pixels awaiting the new resource. */
+    private currentPhotoIdentity(): string | null {
+      const image = this.displayedPhoto();
+      return image
+        ? photoCdnIdentity(image.src || '') ?? photoCdnIdentity(image.currentSrc || '')
+        : null;
+    }
+
     /** A pending native photo download must never be mistaken for gallery end. */
     private currentPhotoReady(): boolean {
       if (!this.viewer || typeof this.viewer.querySelector !== 'function') return false;
@@ -726,68 +760,73 @@ namespace XMN {
       const selectedId = photoCdnIdentity(image.currentSrc || '') ||
         photoCdnIdentity(image.src || '');
       const assignedId = photoCdnIdentity(image.src || '');
-      return selectedId !== null && (!assignedId || selectedId === assignedId);
+      const routeRef = this.originProfile
+        ? mediaRefFromHref(window.location.pathname, this.originProfile) : null;
+      const ownedUrl = routeRef ? this.imageSources?.get(routeRef.key) : null;
+      const ownedId = ownedUrl ? photoCdnIdentity(ownedUrl) : null;
+      // If X still paints the previous photo while an indexed current photo
+      // loads, the old visible pixels cannot prove the new gallery edge.
+      return selectedId !== null && (!assignedId || selectedId === assignedId) &&
+        (!ownedId || selectedId === ownedId);
     }
 
     /**
-     * Let X handle the FIRST right-arrow. If it has not changed the displayed
-     * photo or route after the bounded probe, continue to the next POST.
-     * Never do that while an image is still loading, an explicit next photo
-     * is indexed, or X exposes an enabled photo-next control.
-     * If no reliable photo signature exists, retain the manual confirmation.
+     * Let X handle the FIRST right-arrow. An unknown album boundary is never
+     * established from a timer alone: a stable, loaded X photo and no observed
+     * next-photo control are also required. If that photo is still loading,
+     * keep the first key's probe alive rather than demanding a second press.
      */
-    private handleUnknownRightBoundary(event: KeyboardEvent, current: MediaRef): void {
+    private handleUnknownRightBoundary(_event: KeyboardEvent, current: MediaRef): void {
       if (!this.viewer || this.navigationBusy || current.mediaIndex === null) return;
-      // An observed later photo is positive evidence we are NOT at the end.
-      const hasLaterPhoto = this.refs?.some((ref) => ref.statusId === current.statusId &&
-        ref.kind === 'photo' && ref.mediaIndex !== null &&
-        ref.mediaIndex > current.mediaIndex!);
-      if (hasLaterPhoto) return;
+      if (this.refs?.some((ref) => ref.statusId === current.statusId &&
+          ref.kind === 'photo' && ref.mediaIndex !== null &&
+          ref.mediaIndex > current.mediaIndex!)) return;
+      // Another key must not restart the active native-gallery observation.
+      // X still receives the original keydown to operate its own carousel.
+      if (this.rightProbeTimer != null) return;
       const path = window.location.pathname;
       const signature = this.currentPhotoSignature();
-      const readyBefore = signature !== null && this.currentPhotoReady();
-      const pending = this.pendingRightConfirmation;
-      if (!readyBefore && pending && pending.path === path && pending.signature === signature &&
-          Date.now() < pending.expiresAt) {
-        // A second press is not proof of an album edge while the image is
-        // unready. Keep the key native; never skip a slow-loading photo.
-        return;
-      }
-      this.pendingRightConfirmation = null;
-      if (this.rightProbeTimer !== null) window.clearTimeout(this.rightProbeTimer);
+      const photoId = this.currentPhotoIdentity();
       const generation = this.navGeneration;
       const viewer = this.viewer;
-      this.rightProbeTimer = window.setTimeout(() => {
+      let loadingWaitMs = 0;
+      const check = (): void => {
         this.rightProbeTimer = null;
         if (generation !== this.navGeneration || viewer !== this.viewer ||
             !viewer.isConnected || this.navigationBusy) return;
         const after = this.originProfile
           ? mediaRefFromHref(window.location.pathname, this.originProfile) : null;
         if (!after || after.statusId !== current.statusId) return;
-        if (window.location.pathname !== path || this.currentPhotoSignature() !== signature) {
-          if (after.mediaIndex !== null && after.mediaIndex !== current.mediaIndex) {
+        if (window.location.pathname !== path || after.mediaIndex !== current.mediaIndex) {
+          if (after.mediaIndex !== null && after.mediaIndex !== current.mediaIndex)
             this.nativeAdvancedPost = current.statusId;
-          }
-          return;
+          return; // X has changed photos; never jump over a native slide.
         }
+        const nowId = this.currentPhotoIdentity();
+        if ((photoId && nowId !== photoId) ||
+            (!photoId && signature !== this.currentPhotoSignature())) return;
         if (this.nativeGalleryArrowAvailable(viewer, 1)) return;
         if (this.refs?.some((ref) => ref.statusId === current.statusId &&
             ref.kind === 'photo' && ref.mediaIndex !== null &&
             ref.mediaIndex > current.mediaIndex!)) return;
         const nativeReachedHere = current.mediaIndex !== null &&
           current.mediaIndex > 1 && this.nativeAdvancedPost === current.statusId;
-        if ((readyBefore && this.currentPhotoReady()) || nativeReachedHere) {
-          // One keystroke, delayed only until X has had a chance to handle
-          // its own gallery. This is an observed no-op, NOT proof of total count.
-          this.pendingRightConfirmation = null;
+        if ((photoId !== null && this.currentPhotoReady()) || nativeReachedHere) {
+          // A loaded, unchanged photo after X's chance to handle the native key.
+          // This remains a conservative no-op heuristic, not an album count.
           void this.navigate(1);
           return;
         }
-        this.pendingRightConfirmation = {
-          path, signature, expiresAt: Date.now() + 2600,
-        };
-        this.toast('画像の状態を確認できません。もう一度→で次の投稿へ');
-      }, 1050);
+        if (photoId !== null && loadingWaitMs < 2400) {
+          loadingWaitMs += 150;
+          this.rightProbeTimer = window.setTimeout(check, 150);
+          return;
+        }
+        // Never suggest "press again" when another key cannot prove an edge.
+        // Leave unknown or permanently unready galleries under X's control.
+        if (photoId === null) this.toast('表示中の写真を特定できないため、Xの操作を優先しました');
+      };
+      this.rightProbeTimer = window.setTimeout(check, 1050);
     }
 
     private schedulePreload(): void {
@@ -1315,11 +1354,17 @@ namespace XMN {
           (link.target && link.target !== '_self') || link.hasAttribute?.('download')) return 'fallback';
 
       // Let X's delegated SPA listener handle the link, but cancel a browser
-      // document navigation if it does not. X's root handler runs before
-      // this temporary window-bubble fallback guard.
+      // document navigation if it does not. Check whether X already claimed
+      // the click BEFORE our safety guard calls preventDefault().
+      let observedNativeClick = false;
+      let claimedByX = false;
       const guard = (event: MouseEvent): void => {
         const node = event.target;
-        if (node instanceof Node && (node === link || link.contains(node))) event.preventDefault();
+        if (node instanceof Node && (node === link || link.contains(node))) {
+          observedNativeClick = true;
+          claimedByX = event.defaultPrevented;
+          event.preventDefault();
+        }
       };
       window.addEventListener('click', guard);
       try {
@@ -1328,9 +1373,11 @@ namespace XMN {
         window.removeEventListener('click', guard);
       }
 
-      // X normally writes the SPA URL immediately; a short bounded allowance
-      // covers deferred router work without penalizing every failed attempt.
-      for (let i = 0; i < 7; i++) {
+      // If X did not claim a normally bubbling click, a native document
+      // navigation would have happened without our guard. Allow 100ms for a
+      // very short deferred route, not the full 300ms used for X-owned SPA.
+      const probeCount = observedNativeClick && !claimedByX ? 3 : 7;
+      for (let i = 0; i < probeCount; i++) {
         if (generation !== this.navGeneration || this.originProfile !== profile) return 'abort';
         const route = mediaRefFromHref(window.location.pathname, profile);
         if (route?.key === target.key) {
@@ -1344,7 +1391,7 @@ namespace XMN {
           // X already changed the route or dialog unexpectedly: no second click.
           return 'abort';
         }
-        if (i < 6) await pause(50);
+        if (i < probeCount - 1) await pause(50);
       }
       return 'fallback';
     }
