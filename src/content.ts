@@ -13,8 +13,10 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const NATIVE_NEXT = /^(next(?: (?:photo|image|media))?|次の(?:画像|写真|メディア)(?:へ)?|次へ)$/i;
-  const NATIVE_PREVIOUS = /^(prev(?:ious)?(?: (?:photo|image|media))?|前の(?:画像|写真|メディア)(?:へ)?|前へ)$/i;
+  // Generic "Next"/"Previous" controls can belong to the POST sidebar,
+  // not the photo carousel. Only photo-specific labels prove gallery arrows.
+  const NATIVE_NEXT = /^(?:next\s+(?:photo|image|media)(?:\s+image)?|次の(?:画像|写真|メディア)(?:へ)?)$/i;
+  const NATIVE_PREVIOUS = /^(?:prev(?:ious)?\s+(?:photo|image|media)(?:\s+image)?|前の(?:画像|写真|メディア)(?:へ)?)$/i;
 
   const CLOSE_SELECTOR = [
     'button[data-testid="app-bar-close"]',
@@ -652,28 +654,75 @@ namespace XMN {
       void this.navigate(direction);
     }
 
-    /** Snapshot only the displayed photo, never an unrelated reply image. */
-    private currentPhotoSignature(): string | null {
+    /**
+     * Find the primary displayed photo, not every thumbnail/quoted photo in
+     * the X viewer. Prefer the single large on-screen candidate. If the layout
+     * is ambiguous, abstain rather than skipping an unseen gallery photo.
+     */
+    private displayedPhoto(): HTMLImageElement | null {
       const viewer = this.viewer;
-      if (!viewer) return null;
-      const image = viewer.querySelector<HTMLImageElement>('img[src]');
-      return image?.currentSrc || image?.src || null;
+      if (!viewer || typeof viewer.querySelectorAll !== 'function') return null;
+      const photos = [...viewer.querySelectorAll<HTMLImageElement>('img[src], img[srcset]')]
+        .filter((img) => photoCdnIdentity(img.currentSrc || '') ||
+          photoCdnIdentity(img.src || ''));
+      if (photos.length === 1) return photos[0];
+      const ranked = photos.map((img) => {
+        const rect = typeof img.getBoundingClientRect === 'function'
+          ? img.getBoundingClientRect() : null;
+        const visible = rect && rect.width >= 100 && rect.height >= 100 &&
+          rect.right > 0 && rect.bottom > 0 &&
+          (typeof window.innerWidth !== 'number' || rect.left < window.innerWidth) &&
+          (typeof window.innerHeight !== 'number' || rect.top < window.innerHeight);
+        return { img, area: visible ? rect.width * rect.height : 0 };
+      }).filter((item) => item.area > 0).sort((a, b) => b.area - a.area);
+      if (!ranked.length || (ranked.length > 1 &&
+          ranked[1].area >= ranked[0].area * 0.65)) return null;
+      return ranked[0].img;
+    }
+
+    /** Observe only the active X photo, not unrelated images in the dialog. */
+    private currentPhotoSignature(): string | null {
+      const image = this.displayedPhoto();
+      return image
+        ? `${image.currentSrc || ''}|${image.src || ''}|${image.complete ? 1 : 0}|${image.naturalWidth || 0}`
+        : null;
+    }
+
+    /** A pending native photo download must never be mistaken for gallery end. */
+    private currentPhotoReady(): boolean {
+      if (!this.viewer || typeof this.viewer.querySelector !== 'function') return false;
+      // Do not mistake an X-internal loading state for the end of its gallery.
+      if (this.viewer.querySelector('[aria-busy="true"], [role="progressbar"]')) return false;
+      const image = this.displayedPhoto();
+      if (!image || !image.complete || image.naturalWidth < 1) return false;
+      const selectedId = photoCdnIdentity(image.currentSrc || '') ||
+        photoCdnIdentity(image.src || '');
+      const assignedId = photoCdnIdentity(image.src || '');
+      return selectedId !== null && (!assignedId || selectedId === assignedId);
     }
 
     /**
-     * Last-photo fallback when X provides no total count / reliable arrow label.
-     * A native transition is always allowed first. A known working native gallery
-     * can advance on its first stalled press; otherwise require explicit repeat
-     * confirmation to avoid skipping an unseen image in an unknown-length post.
+     * Let X handle the FIRST right-arrow. If it has not changed the displayed
+     * photo or route after the bounded probe, continue to the next POST.
+     * Never do that while an image is still loading, an explicit next photo
+     * is indexed, or X exposes an enabled photo-next control.
+     * If no reliable photo signature exists, retain the manual confirmation.
      */
     private handleUnknownRightBoundary(event: KeyboardEvent, current: MediaRef): void {
-      if (!this.viewer || this.navigationBusy) return;
+      if (!this.viewer || this.navigationBusy || current.mediaIndex === null) return;
+      // An observed later photo is positive evidence we are NOT at the end.
+      const hasLaterPhoto = this.refs?.some((ref) => ref.statusId === current.statusId &&
+        ref.kind === 'photo' && ref.mediaIndex !== null &&
+        ref.mediaIndex > current.mediaIndex!);
+      if (hasLaterPhoto) return;
       const path = window.location.pathname;
       const signature = this.currentPhotoSignature();
+      const readyBefore = signature !== null && this.currentPhotoReady();
       const pending = this.pendingRightConfirmation;
-      if (pending && pending.path === path && pending.signature === signature &&
+      if (!readyBefore && pending && pending.path === path && pending.signature === signature &&
           Date.now() < pending.expiresAt) {
-        this.rememberPhotoTotal(current.statusId, current.mediaIndex);
+        // Unknown/non-image viewers keep an explicit fallback, not a guessed
+        // photo count. Do not persist an unproved album size.
         this.pendingRightConfirmation = null;
         if (this.rightProbeTimer !== null) window.clearTimeout(this.rightProbeTimer);
         this.rightProbeTimer = null;
@@ -690,25 +739,33 @@ namespace XMN {
         this.rightProbeTimer = null;
         if (generation !== this.navGeneration || viewer !== this.viewer ||
             !viewer.isConnected || this.navigationBusy) return;
-        const after = this.originProfile ? mediaRefFromHref(window.location.pathname, this.originProfile) : null;
+        const after = this.originProfile
+          ? mediaRefFromHref(window.location.pathname, this.originProfile) : null;
         if (!after || after.statusId !== current.statusId) return;
         if (window.location.pathname !== path || this.currentPhotoSignature() !== signature) {
-          if (after.mediaIndex !== null && current.mediaIndex !== null &&
-              after.mediaIndex !== current.mediaIndex) this.nativeAdvancedPost = current.statusId;
+          if (after.mediaIndex !== null && after.mediaIndex !== current.mediaIndex) {
+            this.nativeAdvancedPost = current.statusId;
+          }
           return;
         }
         if (this.nativeGalleryArrowAvailable(viewer, 1)) return;
-        if (current.mediaIndex !== null && current.mediaIndex > 1 &&
-            this.nativeAdvancedPost === current.statusId) {
-          this.rememberPhotoTotal(current.statusId, current.mediaIndex);
+        if (this.refs?.some((ref) => ref.statusId === current.statusId &&
+            ref.kind === 'photo' && ref.mediaIndex !== null &&
+            ref.mediaIndex > current.mediaIndex!)) return;
+        const nativeReachedHere = current.mediaIndex !== null &&
+          current.mediaIndex > 1 && this.nativeAdvancedPost === current.statusId;
+        if ((readyBefore && this.currentPhotoReady()) || nativeReachedHere) {
+          // One keystroke, delayed only until X has had a chance to handle
+          // its own gallery. This is an observed no-op, NOT proof of total count.
+          this.pendingRightConfirmation = null;
           void this.navigate(1);
           return;
         }
         this.pendingRightConfirmation = {
           path, signature, expiresAt: Date.now() + 2600,
         };
-        this.toast('画像枚数を確認できません。もう一度→で次の投稿へ');
-      }, 850);
+        this.toast('画像の状態を確認できません。もう一度→で次の投稿へ');
+      }, 1050);
     }
 
     private schedulePreload(): void {
@@ -1023,6 +1080,14 @@ namespace XMN {
       image.addEventListener('load', handler, { once: true });
     }
 
+    /** Reveal the decoded image only once the old native modal has closed. */
+    private showVisualHandoff(): void {
+      const handoff = this.handoff;
+      if (handoff && handoff.generation === this.navGeneration) {
+        handoff.host.classList.add('xmn-handoff-visible');
+      }
+    }
+
     private finishVisualHandoff(viewer: HTMLElement): void {
       const handoff = this.handoff;
       if (!handoff || handoff.revealTimer !== null || !viewer.isConnected ||
@@ -1249,6 +1314,9 @@ namespace XMN {
         if (generation !== this.navGeneration) return;
         const link = destination && destination.statusId !== currentRef.statusId ? this.findLiveLink(destination) : null;
         if (link) {
+          // The old X viewer is now closed. Keep its own photo visible
+          // until this point; showing the next image early caused a flash.
+          this.showVisualHandoff?.();
           link.click();
           destinationOpened = true;
         } else {

@@ -33,13 +33,16 @@ window.Image = function() {
   image.decode=()=>Promise.resolve();
   return image;
 };
-let handoffsSeen=0, nonBlockingHandoff=true;
+let handoffsSeen=0, nonBlockingHandoff=true, noBlackBackdrop=true, hiddenUntilClose=true;
 new MutationObserver(mutations=>{
   for(const mutation of mutations){
     for(const item of mutation.addedNodes){
       if(item.nodeType===1 && item.classList.contains('xmn-visual-handoff')){
         handoffsSeen++;
-        nonBlockingHandoff=nonBlockingHandoff && getComputedStyle(item).pointerEvents==='none';
+        const style=getComputedStyle(item);
+        nonBlockingHandoff=nonBlockingHandoff && style.pointerEvents==='none';
+        noBlackBackdrop=noBlackBackdrop && style.backgroundColor!=='rgb(0, 0, 0)';
+        hiddenUntilClose=hiddenUntilClose && style.opacity==='0';
       }
     }
   }
@@ -81,10 +84,13 @@ function show(href, withClose=true) {
   // photo. The handoff must wait for the exact target media ID.
   const unrelatedPhoto = document.createElement('img');
   unrelatedPhoto.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  unrelatedPhoto.style.cssText='display:block;width:35px;height:35px;';
   Object.defineProperty(unrelatedPhoto,'currentSrc',{value:'https://pbs.twimg.com/media/WRONG?format=jpg&name=large'});
   viewer.appendChild(unrelatedPhoto);
   const activePhoto = document.createElement('img');
   activePhoto.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  // Render like an actual large X photo, rather than a 1px unstyled fixture.
+  activePhoto.style.cssText='display:block;width:60vw;height:72vh;object-fit:contain;';
   Object.defineProperty(activePhoto,'currentSrc',{
     value:'https://pbs.twimg.com/media/M'+href.replace(/[^a-zA-Z0-9]/g,'_')+'?format=jpg&name=orig',
   });
@@ -157,8 +163,9 @@ async function exercise() {
   const boundaryRight=key('ArrowRight');
   await wait(850);
   result('last photo ArrowRight advances to next POST',boundaryRight.defaultPrevented && location.pathname.endsWith('/22/photo/1') && clicked.at(-1)==='/alice/status/22/photo/1');
-  result('predecoded SPA handoff is non-interactive and clears after viewer switch',
-    handoffsSeen>0 && nonBlockingHandoff && !document.querySelector('.xmn-visual-handoff'));
+  result('predecoded SPA handoff has no extra black flash and clears safely',
+    handoffsSeen>0 && nonBlockingHandoff && noBlackBackdrop && hiddenUntilClose &&
+    !document.querySelector('.xmn-visual-handoff'));
   const boundaryLeft=key('ArrowLeft');
   await wait(850);
   result('first photo ArrowLeft returns to previous POST last image',boundaryLeft.defaultPrevented && location.pathname.endsWith('/11/photo/2') && clicked.at(-1)==='/alice/status/11/photo/2');
@@ -235,8 +242,8 @@ async function exercise() {
     withoutCounter.defaultPrevented &&
     location.pathname.endsWith('/66/photo/1') && clicked.at(-1)==='/alice/status/66/photo/1');
 
-  // With neither counter nor complete grid, a native ArrowRight is not stolen.
-  // If X did not change photo after 850ms, offer a confirmed second-arrow fallback.
+  // Without a counter, first let X process its own ArrowRight. If the
+  // displayed CDN photo remains loaded and unchanged, cross with ONE press.
   document.querySelector('#modal button[aria-label="Close"]')?.click();
   await wait(450);
   ul.appendChild(tile('/alice/status/77/photo/1'));
@@ -246,14 +253,11 @@ async function exercise() {
   document.getElementById('gallery-counter')?.remove();
   document.querySelectorAll('#modal [data-testid="tweetPhoto"]').forEach(n=>n.remove());
   const unknownFirst=key('ArrowRight');
-  await wait(1050);
-  const offeredConfirmation=document.querySelector('.xmn-toast')?.textContent.includes('もう一度') &&
-    location.pathname.endsWith('/66/photo/1') && !unknownFirst.defaultPrevented;
-  const unknownSecond=key('ArrowRight');
-  await wait(900);
-  result('unknown gallery length requires explicit second-arrow confirmation',
-    offeredConfirmation && unknownSecond.defaultPrevented &&
-    location.pathname.endsWith('/77/photo/1') && clicked.at(-1)==='/alice/status/77/photo/1');
+  await wait(1600);
+  result('unknown last photo auto-advances with one ArrowRight after native no-op',
+    !unknownFirst.defaultPrevented &&
+    location.pathname.endsWith('/77/photo/1') &&
+    clicked.at(-1)==='/alice/status/77/photo/1');
   document.body.setAttribute('data-xmn-results',records.map(r=>r.label+':'+(r.pass?'PASS':'FAIL')).join('|'));
 }
 

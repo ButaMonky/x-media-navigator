@@ -93,7 +93,7 @@ test('bare arrows change POSTS only at first/last photo; video remains native', 
   assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),c,3,true),null,'native X next button wins');
   assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),c,null),null,'unknown gallery size: safe fallback');
   assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),a,3),-1);
-  assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),a,3,false,true),null,'native X previous button wins');
+  assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),a,3,false,true),-1,'photo/1 always crosses to previous post');
   assert.equal(XMN.galleryBoundaryDirection(key('ArrowLeft'),b,3),null);
   assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),movie,1),null,'do not hijack video seek');
   assert.equal(XMN.galleryBoundaryDirection(key('ArrowRight'),null,1),null);

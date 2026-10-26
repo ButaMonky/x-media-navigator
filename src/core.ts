@@ -125,7 +125,9 @@ namespace XMN {
   ): Direction | null {
     const direction = postShortcutDirection(event);
     if (!direction || current?.kind !== 'photo' || current.mediaIndex === null) return null;
-    if (direction === -1) return current.mediaIndex === 1 && !nativePreviousAvailable ? -1 : null;
+    // /photo/1 is the first photo by definition. Generic X Previous buttons
+    // may navigate between POSTS, not photos, so never require an extra press.
+    if (direction === -1) return current.mediaIndex === 1 ? -1 : null;
     if (nativeNextAvailable) return null;
     return photoCount !== null && photoCount >= 1 && current.mediaIndex === photoCount ? 1 : null;
   }

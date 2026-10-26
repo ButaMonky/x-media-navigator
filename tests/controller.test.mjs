@@ -443,11 +443,10 @@ test('unknown boundary native X photo advancement prevents cross-post navigation
   controller.toast=(note)=>notes.push(note);
   state.pathname='/alice/status/100/photo/1';
   const first=keyEvent('ArrowRight');proto.onKeyDown.call(controller,first);
+  assert.equal(delayed,null,'a known later /photo/2 prevents any automatic post probe');
   state.pathname='/alice/status/100/photo/2';
-  delayed();
-  assert.deepEqual(navigations,[],'the native photo change is never treated as end of post');
+  assert.deepEqual(navigations,[],'a known later image must never be skipped');
   assert.deepEqual(notes,[]);
-  assert.equal(controller.nativeAdvancedPost,'100');
   state.pathname='/alice/media';
 });
 
@@ -1645,4 +1644,203 @@ test('failed SPA MutationObserver setup removes overlay and does not block later
     context.window.setTimeout=oldSet;
     context.window.clearTimeout=oldClear;
   }
+});
+test('one right press advances when X leaves a ready photo unchanged', () => {
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  let scheduled=null,scheduledMs=null;
+  context.window.setTimeout=(fn,ms)=>{scheduled=fn;scheduledMs=ms;return 21;};
+  context.window.clearTimeout=()=>{};
+  const photo={
+    complete:true,naturalWidth:1200,
+    src:'https://pbs.twimg.com/media/ONE?format=jpg&name=large',
+    currentSrc:'https://pbs.twimg.com/media/ONE?format=jpg&name=large',
+  };
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=(selector)=>selector==='img[src], img[srcset]'?[photo]:[];
+  const ctrl=Object.create(proto);
+  const moved=[],messages=[];
+  Object.assign(ctrl,{
+    viewer,originProfile:'alice',navigationBusy:false,navGeneration:3,
+    refs:[ref('/alice/status/31/photo/1'),ref('/alice/status/32/photo/1')],
+    activeIndex(){return 0;},photoCount(){return null;},
+    nativeGalleryArrowAvailable(){return false;},
+    navigate(dir){moved.push(dir);},
+    toast(msg){messages.push(msg);},
+    rightProbeTimer:null,pendingRightConfirmation:null,
+  });
+  state.pathname='/alice/status/31/photo/1';
+  try{
+    const ev=keyEvent('ArrowRight');
+    proto.onKeyDown.call(ctrl,ev);
+    assert.equal(ev.prevented,false,'give native gallery the first key');
+    assert.equal(scheduledMs,1050);
+    assert.deepEqual(moved,[]);
+    scheduled();
+    assert.deepEqual(moved,[1],'after a verified native no-op, one key crosses posts');
+    assert.equal(messages.length,0,'no request for a second key');
+  }finally{
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+
+test('no post jump if native X changes photo source or is still loading', () => {
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  let probe=null;
+  context.window.setTimeout=(fn)=>{probe=fn;return 23;};
+  context.window.clearTimeout=()=>{};
+  const photo={complete:true,naturalWidth:1200,
+    src:'https://pbs.twimg.com/media/BEFORE?format=jpg&name=large',
+    currentSrc:'https://pbs.twimg.com/media/BEFORE?format=jpg&name=large'};
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[photo]:[];
+  const nav=[],toasts=[];
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',navGeneration:4,navigationBusy:false,
+    refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
+    activeIndex(){return 0;},photoCount(){return null;},
+    nativeGalleryArrowAvailable(){return false;},
+    navigate(dir){nav.push(dir);},toast(msg){toasts.push(msg);},
+    rightProbeTimer:null,
+  });
+  state.pathname='/alice/status/11/photo/1';
+  try {
+    proto.onKeyDown.call(ctrl,keyEvent('ArrowRight'));
+    photo.src='https://pbs.twimg.com/media/NEXT?format=jpg&name=large';
+    photo.complete=false;
+    probe();
+    assert.deepEqual(nav,[],'slow native photo load must not skip');
+    assert.deepEqual(toasts,[]);
+    photo.src=photo.currentSrc='https://pbs.twimg.com/media/BEFORE?format=jpg&name=large';
+    photo.complete=false;
+    proto.onKeyDown.call(ctrl,keyEvent('ArrowRight'));
+    probe();
+    assert.deepEqual(nav,[],'current photo not ready must not auto-cross');
+    assert.match(toasts.at(-1),/もう一度/);
+  }finally{
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+    state.pathname='/alice/media';
+  }
+});
+
+test('generic Previous and Next controls are not photo-specific arrows', () => {
+  context.HTMLButtonElement=FakeElement;
+  const previous=new FakeElement('button',{'aria-label':'Previous'});
+  const next=new FakeElement('button',{'aria-label':'Next'});
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='[aria-label], [title]'?[previous,next]:[];
+  const controller=Object.create(proto);
+  assert.equal(proto.nativeGalleryArrowAvailable.call(controller,viewer,-1),false);
+  assert.equal(proto.nativeGalleryArrowAvailable.call(controller,viewer,1),false);
+  next.attrs['aria-label']='Next photo';
+  assert.equal(proto.nativeGalleryArrowAvailable.call(controller,viewer,1),true);
+});
+
+test('visual handoff appears only after navigation closes the old modal', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  const order=[], viewer={isConnected:true};
+  const ctrl=Object.assign(Object.create(proto),{
+    navigationBusy:false, navGeneration:12, originProfile:'alice', viewer,
+    refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
+    activeIndex(){return 0;},updateViewerState(){},
+    findCloseButton(){return {click(){order.push('close');viewer.isConnected=false;state.pathname='/alice/media';}};},
+    async waitForViewerToClose(){order.push('closed');return true;},
+    findLiveLink(item){return {isConnected:true,click(){order.push('open:'+item.statusId);}};},
+    beginVisualHandoff(){
+      this.handoff={generation:12,host:{classList:{add(name){order.push('reveal:'+name);}}}};
+      return true;
+    },
+    clearVisualHandoff(){},toast(msg){throw new Error(msg);}
+  });
+  try {
+    await proto.navigate.call(ctrl,1);
+    assert.deepEqual(order,['close','closed','reveal:xmn-handoff-visible','open:22']);
+  } finally {state.pathname='/alice/media';}
+});
+
+test('the handoff overlay never paints a second black backdrop', () => {
+  const style=readFileSync(new URL('../extension/style.css',import.meta.url),'utf8');
+  const section=style.match(/\.xmn-visual-handoff\s*\{([^}]+)\}/)?.[1] ?? '';
+  assert.match(section,/background:\s*transparent/);
+  assert.match(section,/opacity:\s*0/);
+  assert.match(style,/\.xmn-visual-handoff\.xmn-handoff-visible\s*\{\s*opacity:\s*1/);
+});
+
+test('primary visible photo wins over small thumbnails and unrelated media', () => {
+  const picture=(id,w,h,extra={})=>({
+    currentSrc:'https://pbs.twimg.com/media/'+id+'?format=jpg&name=large',
+    src:'https://pbs.twimg.com/media/'+id+'?format=jpg&name=large',
+    complete:true,naturalWidth:1000,
+    getBoundingClientRect:()=>({left:0,top:0,right:w,bottom:h,width:w,height:h}),
+    ...extra,
+  });
+  const main=picture('MAIN',820,690);
+  const other=picture('OTHER',120,130);
+  const thumbnail=picture('HIDDEN',0,0);
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[other,thumbnail,main]:[];
+  const controller=Object.assign(Object.create(proto),{viewer});
+  assert.equal(proto.displayedPhoto.call(controller),main);
+  assert.equal(proto.currentPhotoReady.call(controller),true);
+  assert.match(proto.currentPhotoSignature.call(controller),/MAIN/);
+  other.src=other.currentSrc='https://pbs.twimg.com/media/ANOTHER?format=jpg&name=large';
+  assert.match(proto.currentPhotoSignature.call(controller),/MAIN/,
+    'unrelated thumbnail source changes do not abort the gallery no-op probe');
+  main.src='https://pbs.twimg.com/media/LOADING?format=jpg&name=large';
+  assert.equal(proto.currentPhotoReady.call(controller),false,
+    'new assigned photo with old displayed media is not ready');
+  main.src=main.currentSrc;
+  main.complete=false;
+  assert.equal(proto.currentPhotoReady.call(controller),false);
+});
+
+test('ambiguous two large pictures abstain instead of guessing gallery boundary', () => {
+  const make=(id,w)=>({
+    src:'https://pbs.twimg.com/media/'+id+'?format=jpg&name=large',
+    currentSrc:'https://pbs.twimg.com/media/'+id+'?format=jpg&name=large',
+    complete:true,naturalWidth:100,
+    getBoundingClientRect(){return {left:0,top:0,width:w,height:500,right:w,bottom:500};}
+  });
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[make('A',600),make('B',570)]:[];
+  const controller=Object.assign(Object.create(proto),{viewer});
+  assert.equal(proto.displayedPhoto.call(controller),null);
+  assert.equal(proto.currentPhotoSignature.call(controller),null);
+  assert.equal(proto.currentPhotoReady.call(controller),false);
+});
+
+test('native gallery loading indicator blocks one-press auto navigation', () => {
+  const photo={
+    complete:true,naturalWidth:800,
+    src:'https://pbs.twimg.com/media/READY?format=jpg&name=large',
+    currentSrc:'https://pbs.twimg.com/media/READY?format=jpg&name=large',
+  };
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[photo]:[];
+  viewer.querySelector=s=>s.includes('aria-busy')?{isConnected:true}:null;
+  const ctrl=Object.assign(Object.create(proto),{viewer});
+  assert.equal(proto.currentPhotoReady.call(ctrl),false);
+  viewer.querySelector=()=>null;
+  assert.equal(proto.currentPhotoReady.call(ctrl),true);
+});
+
+test('single-viewer photo is chosen without relying on artificial fixture dimensions', () => {
+  const image={
+    complete:true,naturalWidth:200,
+    src:'https://pbs.twimg.com/media/TINY?format=jpg&name=large',
+    currentSrc:'https://pbs.twimg.com/media/TINY?format=jpg&name=large',
+  };
+  const viewer=new FakeElement('div');
+  viewer.querySelectorAll=s=>s==='img[src], img[srcset]'?[image]:[];
+  const ctrl=Object.assign(Object.create(proto),{viewer});
+  assert.equal(proto.displayedPhoto.call(ctrl),image);
+  assert.equal(proto.currentPhotoReady.call(ctrl),true);
+});
+
+test('decoded handoff photo fits captured media panel instead of cropping at viewport size', () => {
+  const style=readFileSync(new URL('../extension/style.css',import.meta.url),'utf8');
+  const css=style.match(/\.xmn-visual-handoff\s+\.xmn-handoff-image\s*\{([^}]+)\}/)?.[1] ?? '';
+  assert.match(css,/max-width:\s*100%/,'decoded image must fit the handoff panel width');
+  assert.match(css,/max-height:\s*100%/,'decoded image must fit the handoff panel height');
+  assert.doesNotMatch(css,/max-(?:width|height):\s*100v[wh]/,'viewport sizing can crop a narrower X viewer');
 });
