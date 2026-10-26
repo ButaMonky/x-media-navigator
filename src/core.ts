@@ -93,12 +93,18 @@ namespace XMN {
   export function findCurrentIndex(items: readonly MediaRef[], pathname: string, profile: string): number | null {
     const current = mediaRefFromHref(pathname, profile);
     if (!current) return null;
-    const exact = items.findIndex((item) => item.key === current.key);
-    if (exact >= 0) return exact;
-    // URLs without /photo/N can only be resolved safely when the status has one item.
-    const sameStatus = items.map((item, i) => ({ item, i })).filter(({ item }) => item.statusId === current.statusId);
-    if (sameStatus.length === 1) return sameStatus[0].i;
-    return null;
+    // One pass, no temporary O(N) map/filter arrays on large media feeds.
+    // An exact photo key always wins; status-only fallback needs one owner.
+    let onlyStatusIndex: number | null = null;
+    let ambiguousStatus = false;
+    for (let i = 0; i < items.length; i++) {
+      const ref = items[i];
+      if (ref.key === current.key) return i;
+      if (ref.statusId !== current.statusId) continue;
+      if (onlyStatusIndex === null) onlyStatusIndex = i;
+      else ambiguousStatus = true;
+    }
+    return ambiguousStatus ? null : onlyStatusIndex;
   }
 
   export interface KeyLike {
@@ -182,6 +188,10 @@ namespace XMN {
         !/^(jpg|jpeg|png|webp)$/i.test(url.searchParams.get('format') ?? '') ||
         !url.searchParams.has('name')) return null;
     url.searchParams.set('name', 'large');
+    // Query parameter order is not part of X's media identity. Canonicalize
+    // the same parameter set so reversed name/format order shares a prefetch
+    // queue entry instead of transferring one photo twice.
+    url.searchParams.sort();
     url.hash = '';
     return url.toString();
   }

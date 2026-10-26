@@ -92,14 +92,22 @@ var XMN;
         const current = mediaRefFromHref(pathname, profile);
         if (!current)
             return null;
-        const exact = items.findIndex((item) => item.key === current.key);
-        if (exact >= 0)
-            return exact;
-        // URLs without /photo/N can only be resolved safely when the status has one item.
-        const sameStatus = items.map((item, i) => ({ item, i })).filter(({ item }) => item.statusId === current.statusId);
-        if (sameStatus.length === 1)
-            return sameStatus[0].i;
-        return null;
+        // One pass, no temporary O(N) map/filter arrays on large media feeds.
+        // An exact photo key always wins; status-only fallback needs one owner.
+        let onlyStatusIndex = null;
+        let ambiguousStatus = false;
+        for (let i = 0; i < items.length; i++) {
+            const ref = items[i];
+            if (ref.key === current.key)
+                return i;
+            if (ref.statusId !== current.statusId)
+                continue;
+            if (onlyStatusIndex === null)
+                onlyStatusIndex = i;
+            else
+                ambiguousStatus = true;
+        }
+        return ambiguousStatus ? null : onlyStatusIndex;
     }
     XMN.findCurrentIndex = findCurrentIndex;
     /** A bare arrow may cross posts ONLY at a verified photo boundary. */
@@ -190,6 +198,10 @@ var XMN;
             !url.searchParams.has('name'))
             return null;
         url.searchParams.set('name', 'large');
+        // Query parameter order is not part of X's media identity. Canonicalize
+        // the same parameter set so reversed name/format order shares a prefetch
+        // queue entry instead of transferring one photo twice.
+        url.searchParams.sort();
         url.hash = '';
         return url.toString();
     }
@@ -292,6 +304,9 @@ var XMN;
             this.nativeAdvancedPost = null;
             this.rightProbeTimer = null;
             this.viewer = null;
+            // Ignore unchanged 450ms polling cycles instead of walking the full
+            // media timeline to rebuild identical button state and position labels.
+            this.viewerStateSnapshot = null;
             this.viewObserver = null;
             this.modalObserver = null;
             this.listObserver = null;
@@ -546,8 +561,10 @@ var XMN;
         /** Update only the changed thumbnail without rescanning the whole media grid. */
         recordTileImageSource(tile, found) {
             const ownedImage = found.link.querySelector('img[src]');
-            const allImages = tile.querySelectorAll('img[src]');
-            const thumbnail = ownedImage ?? (allImages.length === 1 ? allImages[0] : null);
+            // Only search the entire tile when X renders the image outside its
+            // anchor. On long grids a second subtree query for every tile adds up.
+            const otherImages = ownedImage ? null : tile.querySelectorAll('img[src]');
+            const thumbnail = ownedImage ?? (otherImages?.length === 1 ? otherImages[0] : null);
             // currentSrc may still be a data: placeholder immediately after a
             // lazy src update. Try the actual src as a second, validated candidate.
             const url = thumbnail
@@ -610,6 +627,7 @@ var XMN;
             }
         }
         removeViewerUI() {
+            this.viewerStateSnapshot = null;
             this.viewObserver?.disconnect();
             this.viewObserver = null;
             this.pendingRightConfirmation = null;
@@ -673,6 +691,8 @@ var XMN;
                         void this.navigate(direction);
                     });
                     viewer.appendChild(button);
+                    // X may recreate DOM controls while leaving the route unchanged.
+                    this.viewerStateSnapshot = null;
                 }
             }
             let status = viewer.querySelector('.xmn-status');
@@ -681,6 +701,7 @@ var XMN;
                 status.className = 'xmn-status';
                 status.setAttribute('aria-live', 'polite');
                 viewer.appendChild(status);
+                this.viewerStateSnapshot = null;
             }
             this.updateViewerState();
             this.schedulePreload();
@@ -693,13 +714,19 @@ var XMN;
                 return exact;
             // A media tab may offer only one link for a post with several photos.
             const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
-            const matches = current ? this.refs.map((ref, i) => ({ ref, i }))
-                .filter(({ ref }) => ref.statusId === current.statusId) : [];
-            return matches.length ? matches[0].i : null;
+            // The status-only fallback is rare: avoid allocating O(N) per-tile
+            // temporary objects when a long X gallery only indexed photo/1.
+            const index = current ? this.refs.findIndex((ref) => ref.statusId === current.statusId) : -1;
+            return index >= 0 ? index : null;
         }
         updateViewerState() {
             const viewer = this.viewer;
             if (!viewer)
+                return;
+            // Media refs are append-only within a session; only their count,
+            // current route, or navigation busy state changes the post controls.
+            const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}`;
+            if (this.viewerStateSnapshot?.viewer === viewer && this.viewerStateSnapshot.key === key)
                 return;
             const current = this.activeIndex();
             const prev = viewer.querySelector('.xmn-prev');
@@ -718,6 +745,7 @@ var XMN;
                 if (indicator.textContent !== label)
                     indicator.textContent = label;
             }
+            this.viewerStateSnapshot = { viewer, key };
         }
         /**
          * Prove the actual media count from accessibility metadata or the official
@@ -1070,6 +1098,15 @@ var XMN;
                 cursor = next;
                 if (this.refs[cursor].kind === 'photo')
                     future.push(this.refs[cursor]);
+                if (hops === 0) {
+                    // X's native carousel may advance to photo/2 immediately after
+                    // opening the next post. Warm one extra photo from that nearest
+                    // album instead of only the first image of distant posts.
+                    const sibling = this.refs[cursor + 1];
+                    if (sibling?.kind === 'photo' && sibling.statusId === this.refs[cursor].statusId &&
+                        targets.length + future.length < PREFETCH_MAX_IMAGES + 3)
+                        future.push(sibling);
+                }
             }
             // 3. Preserve fast forward movement (first two POSTS if there is room),
             // then reserve one of the five slots for going backwards. This improves

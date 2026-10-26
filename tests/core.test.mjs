@@ -124,6 +124,13 @@ test('image preloader only uses X image CDN, never arbitrary third-party or vide
 });
 
 
+test('query parameter ordering never duplicates the same X CDN photo prefetch', () => {
+  const forward=XMN.preloadImageUrl('https://pbs.twimg.com/media/ORDER?name=small&format=jpg');
+  const reversed=XMN.preloadImageUrl('https://pbs.twimg.com/media/ORDER?format=jpg&name=thumb');
+  assert.equal(forward,reversed,'identical X image variants must share one cache/queue key');
+  assert.equal(forward,'https://pbs.twimg.com/media/ORDER?format=jpg&name=large');
+});
+
 test('media timeline context distinguishes Photos/Videos but ignores tracking parameters', () => {
   assert.equal(XMN.mediaTimelineKey('/Alice/media', '?filter=photo'), 'alice|photo');
   assert.equal(XMN.mediaTimelineKey('/alice/media/', '?filter=PHOTO&utm_source=foo'), 'alice|photo');

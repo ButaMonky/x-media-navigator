@@ -540,6 +540,75 @@ test('unchanged media DOM is not rescanned on every route poll', () => {
 });
 
 
+test('unchanged modal polling reuses its status view without rescanning a long timeline', () => {
+  const previous=state.pathname;
+  state.pathname='/alice/status/520/photo/1';
+  const prev={disabled:false}, next={disabled:false}, label={textContent:''};
+  const viewer={isConnected:true,querySelector(s){
+    return s==='.xmn-prev'?prev:s==='.xmn-next'?next:s==='.xmn-status'?label:null;
+  }};
+  let scans=0;
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',navigationBusy:false,
+    refs:Array.from({length:1200},(_,i)=>ref('/alice/status/'+(520+i)+'/photo/1')),
+    activeIndex(){scans++;return 0;},
+  });
+  try {
+    proto.updateViewerState.call(ctrl);
+    for(let i=0;i<30;i++) proto.updateViewerState.call(ctrl);
+    assert.equal(scans,1,'unchanged 450ms ticks must not repeatedly inspect 1200 media entries');
+    state.pathname='/alice/status/521/photo/1';
+    proto.updateViewerState.call(ctrl); assert.equal(scans,2,'route change refreshes buttons');
+    ctrl.navigationBusy=true;
+    proto.updateViewerState.call(ctrl); assert.equal(scans,3,'busy state changes refresh buttons');
+    ctrl.refs.push(ref('/alice/status/99999/photo/1'));
+    proto.updateViewerState.call(ctrl); assert.equal(scans,4,'new media item refreshes position');
+  } finally {state.pathname=previous;}
+});
+
+test('replaced modal indicator invalidates idle status cache and refreshes safely', () => {
+  const oldPath=state.pathname,oldCreate=document.createElement;
+  state.pathname='/alice/status/78/photo/1';
+  const prev={disabled:false},next={disabled:false};
+  let status={textContent:''},calls=0;
+  const viewer={isConnected:true,querySelector(s){
+    return s==='.xmn-prev'?prev:s==='.xmn-next'?next:s==='.xmn-status'?status:null;
+  },appendChild(el){status=el;return el;}};
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',refs:[ref('/alice/status/78/photo/1')],
+    navigationBusy:false,activeIndex(){calls++;return 0;},schedulePreload(){},
+  });
+  document.createElement=tag=>new FakeElement(tag);
+  try {
+    proto.updateViewerState.call(ctrl);
+    assert.equal(calls,1);
+    status=null; // X remounted the indicator without changing the route
+    proto.ensureViewerButtons.call(ctrl);
+    assert.equal(calls,2,'newly attached controls require a real state update');
+    assert.equal(status.textContent,'投稿 1 / 1');
+  }finally{state.pathname=oldPath;document.createElement=oldCreate;}
+});
+
+test('active photo lookup avoids building temporary per-item objects for missing exact links', () => {
+  const previous=state.pathname;
+  state.pathname='/alice/status/77/photo/2';
+  const refs=[ref('/alice/status/77/photo/1'),ref('/alice/status/88/photo/1')];
+  refs.map=()=>{throw Error('an O(N) temporary object array must not be built')};
+  const ctrl=Object.assign(Object.create(proto),{originProfile:'alice',refs});
+  try {assert.equal(proto.activeIndex.call(ctrl),0);}
+  finally{state.pathname=previous;}
+});
+
+test('an owned thumbnail avoids searching the surrounding tile for images again', () => {
+  const entry=ref('/alice/status/18/photo/1');
+  const image={currentSrc:'https://pbs.twimg.com/media/OWNED?format=jpg&name=small',src:''};
+  const link={querySelector(){return image;}};
+  const tile={querySelectorAll(){throw Error('tile-wide image query is redundant when link owns its thumbnail')}};
+  const ctrl=Object.assign(Object.create(proto),{imageSources:new Map(),imageSourcesRevision:0});
+  proto.recordTileImageSource.call(ctrl,tile,{link,ref:entry});
+  assert.equal(ctrl.imageSources.get(entry.key),'https://pbs.twimg.com/media/OWNED?format=jpg&name=large');
+});
+
 test('virtualized missing destination keeps the gallery open instead of losing its position', async () => {
   state.pathname='/alice/status/11/photo/1'; state.search='?filter=photo';
   const viewer={isConnected:true}; let closeAttempts=0; const messages=[];
@@ -833,6 +902,32 @@ test('one explicit media link remains indexable before its thumbnail loads', () 
   assert.equal(generic.children.length,0,'status-only text without media is not a media tile');
   state.root=null;
 });
+test('lookahead warms the second photo of the nearest next post within five slots', () => {
+  const oldNav=context.navigator;
+  context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'},deviceMemory:8};
+  document.hidden=false;
+  const urls=['/alice/status/10/photo/1','/alice/status/20/photo/1',
+    '/alice/status/20/photo/2','/alice/status/20/photo/3',
+    '/alice/status/30/photo/1','/alice/status/40/photo/1',
+    '/alice/status/50/photo/1'].map(ref);
+  const sources=urls.map((x,i)=>'https://pbs.twimg.com/media/MULTI'+i+'?format=jpg&name=large');
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer:{isConnected:true},originProfile:'alice',refs:urls,
+    activeIndex(){return 0;},imageSources:new Map(urls.map((r,i)=>[r.key,sources[i]])),
+    prefetched:new Map(),prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+    prefetchWanted:new Set(),prefetchQueue:[],prefetchInFlight:0,
+    drainPrefetchQueue(){},
+  });
+  const old=state.pathname;state.pathname='/alice/status/10/photo/1';
+  try{
+    proto.preloadAdjacentImages.call(ctrl);
+    assert.equal(ctrl.prefetchWanted.size,5,'do not exceed five images');
+    assert.ok(ctrl.prefetchWanted.has(sources[1]),'next post photo 1');
+    assert.ok(ctrl.prefetchWanted.has(sources[2]),'next post photo 2 should be warmed before navigation');
+    assert.ok(ctrl.prefetchWanted.has(sources[4]),'another adjacent post must remain available');
+  }finally{context.navigator=oldNav;state.pathname=old;}
+});
+
 test('preloads the next photo and the NEXT POST before reaching the album edge', async () => {
   state.pathname='/alice/status/11/photo/1';
   document.hidden=false;
