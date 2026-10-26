@@ -95,7 +95,7 @@ test('tile scanning distinguishes photo positions, scopes profile, reuses number
   const foreign=makeTile('/bob/status/99/photo/1');
   state.pathname='/alice/media';
   state.root=new FakeElement('div');state.root.tiles=[a.tile,b.tile,foreign.tile];
-  const instance={originProfile:'alice',refs:[],indexes:new Map()};
+  const instance=Object.assign(Object.create(proto),{originProfile:'alice',refs:[],indexes:new Map()});
   proto.scanTiles.call(instance);
   assert.equal(instance.refs.length,2);
   assert.equal(instance.indexes.size,2);
@@ -285,7 +285,7 @@ test('thumbnail URL cache stays bounded over a long media timeline', () => {
     return tile;
   });
   state.root=new FakeElement('div');state.root.tiles=tiles;
-  const instance={originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()};
+  const instance=Object.assign(Object.create(proto),{originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()});
   proto.scanTiles.call(instance);
   assert.equal(instance.refs.length,145);
   assert.equal(instance.imageSources.size,128);
@@ -553,7 +553,7 @@ test('quoted and ambiguous media links are not indexed as the parent media tile'
   ambiguous.tile.links.push(new FakeElement('a', {href:'/alice/status/300/photo/1'}));
   state.root=new FakeElement('div');
   state.root.tiles=[main.tile,ambiguous.tile];
-  const instance={originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()};
+  const instance=Object.assign(Object.create(proto),{originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()});
   proto.scanTiles.call(instance);
   assert.deepEqual(instance.refs.map((item)=>item.statusId),['100']);
   assert.equal(main.tile.children[0].textContent,'1');
@@ -597,7 +597,7 @@ test('one explicit media link remains indexable before its thumbnail loads', () 
   const generic=new FakeElement('li');
   generic.links=[new FakeElement('a',{href:'/alice/status/631'})];
   state.root=new FakeElement('div');state.root.tiles=[tile,generic];
-  const instance={originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()};
+  const instance=Object.assign(Object.create(proto),{originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map()});
   proto.scanTiles.call(instance);
   assert.deepEqual(instance.refs.map((x)=>x.statusId),['630']);
   assert.equal(generic.children.length,0,'status-only text without media is not a media tile');
@@ -1104,4 +1104,91 @@ test('pre-open click downloads only two photos until the native viewer exists', 
     context.Image=oldImage;context.navigator=oldNav;
     state.pathname='/alice/media';
   }
+});
+test('attribute-only image mutation updates its tile without scanning the full grid', () => {
+  const oldObserver=context.MutationObserver;
+  const oldTimeout=context.window.setTimeout;
+  const oldClear=context.window.clearTimeout;
+  const scheduled=[];
+  let observer;
+  class Observer {
+    constructor(callback){this.callback=callback;observer=this;}
+    observe(root,opts){this.root=root;this.opts=opts;}
+    disconnect(){}
+  }
+  context.MutationObserver=Observer;
+  context.window.setTimeout=(cb,ms)=>{scheduled.push({cb,ms});return scheduled.length;};
+  context.window.clearTimeout=()=>{};
+  state.pathname='/alice/media';state.root=new FakeElement('div');
+  const tile=makeTile('/alice/status/11/photo/1').tile;
+  const image=new FakeElement('img');
+  image.closest=sel=>sel==='li[role="listitem"]'?tile:null;
+  const avatar=new FakeElement('img');
+  avatar.closest=()=>null;
+  let fullScans=0,partialScans=0;
+  const ctrl=Object.create(proto);
+  ctrl.originProfile='alice';ctrl.pendingGrid=null;
+  ctrl.observedColumn=null;ctrl.scanTimer=null;
+  ctrl.pendingSourceTiles=new Set();ctrl.pendingFullScan=false;
+  ctrl.scanTiles=()=>fullScans++;
+  ctrl.refreshKnownTileSource=(item)=>{assert.equal(item,tile);partialScans++;};
+  try {
+    assert.equal(proto.ensureListObserver.call(ctrl),true);
+    observer.callback([{type:'attributes',target:avatar}]);
+    assert.equal(scheduled.length,0,'unrelated avatar does not trigger a scan');
+    observer.callback([{type:'attributes',target:image}]);
+    assert.equal(scheduled.length,1);
+    assert.equal(scheduled[0].ms,100);
+    scheduled[0].cb();
+    assert.equal(partialScans,1);
+    assert.equal(fullScans,0,'changing one image must not rescan all grid items');
+
+    observer.callback([{type:'attributes',target:image}]);
+    const newTile=new FakeElement('li');
+    newTile.matches=sel=>sel==='li[role="listitem"]';
+    newTile.querySelector=()=>null;
+    observer.callback([{type:'childList',target:state.root,
+      addedNodes:[newTile],removedNodes:[]}]);
+    assert.equal(scheduled.length,2,'structural event is folded into existing debounce');
+    scheduled[1].cb();
+    assert.equal(fullScans,1,'a genuinely new tile requires a full scan');
+    assert.equal(partialScans,1,'structural scan subsumes thumbnail work');
+
+    const statusBadge=new FakeElement('span');
+    statusBadge.matches=()=>false;statusBadge.querySelector=()=>null;
+    observer.callback([{type:'childList',target:state.root,
+      addedNodes:[statusBadge],removedNodes:[]}]);
+    assert.equal(scheduled.length,2,'unrelated DOM decoration is ignored');
+  } finally {
+    context.MutationObserver=oldObserver;
+    context.window.setTimeout=oldTimeout;
+    context.window.clearTimeout=oldClear;
+    state.root=null;state.pathname='/alice/media';
+  }
+});
+
+test('identical thumbnail URL does not churn cache; a new URL advances source revision', () => {
+  state.pathname='/alice/media';
+  const {tile}=makeTile('/alice/status/88/photo/1');
+  const image={currentSrc:'https://pbs.twimg.com/media/SRC1?format=jpg&name=small'};
+  const oldQ=tile.querySelector.bind(tile),oldAll=tile.querySelectorAll.bind(tile);
+  tile.querySelector=sel=>sel==='img[src]'?image:oldQ(sel);
+  tile.querySelectorAll=sel=>sel==='img[src]'?[image]:oldAll(sel);
+  state.root=new FakeElement('div');state.root.tiles=[tile];
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',pendingGrid:null,
+    indexes:new Map(),refs:[],imageSources:new Map(),imageSourcesRevision:0,
+  });
+  try{
+    proto.scanTiles.call(ctrl);
+    assert.equal(ctrl.imageSourcesRevision,1);
+    proto.scanTiles.call(ctrl);
+    assert.equal(ctrl.imageSourcesRevision,1,'unchanged image URL stays cached');
+    image.currentSrc='https://pbs.twimg.com/media/SRC2?format=jpg&name=small';
+    proto.refreshKnownTileSource.call(ctrl,tile);
+    assert.equal(ctrl.imageSourcesRevision,2);
+    assert.equal(ctrl.imageSources.get(ref('/alice/status/88/photo/1').key),
+      'https://pbs.twimg.com/media/SRC2?format=jpg&name=large');
+    assert.equal(ctrl.imageSources.size,1);
+  }finally{state.root=null;state.pathname='/alice/media';}
 });

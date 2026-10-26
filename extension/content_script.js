@@ -243,6 +243,7 @@ var XMN;
             this.refs = [];
             this.indexes = new Map();
             this.imageSources = new Map();
+            this.imageSourcesRevision = 0;
             this.knownPhotoTotals = new Map();
             this.prefetched = new Map();
             this.prefetchQueue = [];
@@ -265,6 +266,8 @@ var XMN;
             this.observedColumn = null;
             this.lastPath = '';
             this.scanTimer = null;
+            this.pendingFullScan = false;
+            this.pendingSourceTiles = new Set();
             this.navigationBusy = false;
             this.navGeneration = 0;
             // Observe actual user keyboard input only when the viewer belongs to a media-tab session.
@@ -282,6 +285,7 @@ var XMN;
             this.refs = [];
             this.indexes.clear();
             this.imageSources.clear();
+            this.imageSourcesRevision++;
             this.knownPhotoTotals.clear();
             this.clearVisualHandoff();
             this.prefetched.clear();
@@ -315,6 +319,8 @@ var XMN;
             if (this.scanTimer !== null)
                 window.clearTimeout(this.scanTimer);
             this.scanTimer = null;
+            this.pendingFullScan = false;
+            this.pendingSourceTiles.clear();
         }
         /**
          * React's history.pushState does not fire popstate. Detect X's modal
@@ -446,30 +452,87 @@ var XMN;
                 return false;
             this.stopListObserver();
             this.observedColumn = column;
+            this.pendingSourceTiles ?? (this.pendingSourceTiles = new Set());
             this.listObserver = new MutationObserver((records) => {
-                // Ignore src/srcset swaps outside the media tiles (avatars, sidebar).
-                // A genuine child-list change can introduce a new tile at any level.
-                const relevant = records.some((record) => record.type !== 'attributes' ||
-                    (record.target instanceof Element && !!record.target.closest(TILE_SELECTOR)));
+                let relevant = false;
+                for (const record of records) {
+                    if (record.type === 'attributes') {
+                        // A late-loading thumbnail only requires updating its own URL.
+                        const tile = record.target instanceof Element
+                            ? record.target.closest(TILE_SELECTOR) : null;
+                        if (tile) {
+                            this.pendingSourceTiles.add(tile);
+                            relevant = true;
+                        }
+                    }
+                    else if (record.type === 'childList') {
+                        // Rescan for actual media additions/removals, but not our badges
+                        // or unrelated spinner/comment mutations outside media tiles.
+                        const insideTile = record.target instanceof Element
+                            ? record.target.closest(TILE_SELECTOR) : null;
+                        const changed = [...record.addedNodes, ...record.removedNodes];
+                        const mediaChanged = changed.some((node) => node instanceof Element &&
+                            (node.matches(TILE_SELECTOR) || !!node.querySelector(TILE_SELECTOR) ||
+                                (!!insideTile && (node.matches('a[href], img, video') ||
+                                    !!node.querySelector('a[href], img, video')))));
+                        if (mediaChanged) {
+                            this.pendingFullScan = true;
+                            relevant = true;
+                        }
+                    }
+                }
                 if (!relevant || this.scanTimer !== null)
                     return;
                 this.scanTimer = window.setTimeout(() => {
                     this.scanTimer = null;
-                    if (XMN.mediaProfileFromPath(window.location.pathname) === this.originProfile) {
-                        if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid))
-                            this.pendingGrid = null;
-                        if (!this.pendingGrid)
-                            this.scanTiles();
-                    }
+                    const full = this.pendingFullScan;
+                    const changed = [...this.pendingSourceTiles];
+                    this.pendingFullScan = false;
+                    this.pendingSourceTiles.clear();
+                    if (XMN.mediaProfileFromPath(window.location.pathname) !== this.originProfile)
+                        return;
+                    if (this.pendingGrid && this.hasGridTurnedOver(this.pendingGrid))
+                        this.pendingGrid = null;
+                    if (this.pendingGrid)
+                        return;
+                    if (full)
+                        this.scanTiles();
+                    else
+                        for (const tile of changed)
+                            this.refreshKnownTileSource(tile);
                 }, 100);
             });
-            // X frequently sets the img src AFTER inserting the tile. Capture those
-            // lazy-loaded URLs without observing unrelated class/style changes.
             this.listObserver.observe(column, {
                 childList: true, subtree: true,
                 attributes: true, attributeFilter: ['src', 'srcset'],
             });
             return true;
+        }
+        /** Update only the changed thumbnail without rescanning the whole media grid. */
+        recordTileImageSource(tile, found) {
+            const ownedImage = found.link.querySelector('img[src]');
+            const allImages = tile.querySelectorAll('img[src]');
+            const thumbnail = ownedImage ?? (allImages.length === 1 ? allImages[0] : null);
+            const url = thumbnail ? XMN.preloadImageUrl(thumbnail.currentSrc || thumbnail.src || '') : null;
+            if (!url || !this.imageSources || this.imageSources.get(found.ref.key) === url)
+                return;
+            this.imageSources.delete(found.ref.key);
+            this.imageSources.set(found.ref.key, url);
+            this.imageSourcesRevision = (this.imageSourcesRevision ?? 0) + 1;
+            while (this.imageSources.size > 128) {
+                const oldest = this.imageSources.keys().next().value;
+                if (oldest === undefined)
+                    break;
+                this.imageSources.delete(oldest);
+            }
+        }
+        refreshKnownTileSource(tile) {
+            if (!tile.isConnected || !this.originProfile || this.pendingGrid ||
+                XMN.mediaProfileFromPath(window.location.pathname) !== this.originProfile)
+                return;
+            const found = usableTileLink(tile, this.originProfile);
+            if (found && this.indexes?.has(found.ref.key))
+                this.recordTileImageSource(tile, found);
         }
         scanTiles() {
             if (!this.originProfile || this.pendingGrid ||
@@ -483,22 +546,7 @@ var XMN;
                 if (!found)
                     continue;
                 const { ref } = found;
-                // Capture only CDN image locations from the already-rendered media tiles.
-                const ownedImage = found.link.querySelector('img[src]');
-                const allImages = tile.querySelectorAll('img[src]');
-                const thumbnail = ownedImage ?? (allImages.length === 1 ? allImages[0] : null);
-                const imageUrl = thumbnail ? XMN.preloadImageUrl(thumbnail.currentSrc || thumbnail.src || '') : null;
-                if (imageUrl) {
-                    // Keep only nearby/recent thumbnail URLs in memory during long timelines.
-                    this.imageSources.delete(ref.key);
-                    this.imageSources.set(ref.key, imageUrl);
-                    while (this.imageSources.size > 128) {
-                        const oldest = this.imageSources.keys().next().value;
-                        if (oldest === undefined)
-                            break;
-                        this.imageSources.delete(oldest);
-                    }
-                }
+                this.recordTileImageSource(tile, found);
                 let index = this.indexes.get(ref.key);
                 if (index === undefined) {
                     index = this.refs.length;
@@ -826,7 +874,7 @@ var XMN;
         schedulePreload() {
             if (!this.originProfile || !this.viewer || document.hidden)
                 return;
-            const key = `${this.originTimeline ?? ''}|${window.location.pathname}|${this.refs.length}|${this.imageSources.size}`;
+            const key = `${this.originTimeline ?? ''}|${window.location.pathname}|${this.refs.length}|${this.imageSources.size}|${this.imageSourcesRevision ?? 0}`;
             if (key === this.preloadForPath)
                 return;
             this.preloadForPath = key;

@@ -1,4 +1,4 @@
-# X Media Navigator — 固定フォルダのインストールと更新（v2.4.2）
+# X Media Navigator — 固定フォルダのインストールと更新（v2.4.3）
 
 > 非公開のChrome拡張開発版です。X実サイトでの速度効果は未検証。旧Web Store版を変更しません。
 
@@ -8,7 +8,7 @@
 2. Web Store版または旧ベータを同じプロフィールで二重有効化しないよう無効化する。
 3. デベロッパーモードをオンにし「パッケージ化されていない拡張機能を読み込む」を選ぶ。
 4. フォルダ `%USERPROFILE%\Downloads\X-Media-Navigator-Current` を読み込む。
-5. `X Media Navigator (TypeScript Dev)` のバージョンが **2.4.2** と表示されるか確認。
+5. `X Media Navigator (TypeScript Dev)` のバージョンが **2.4.3** と表示されるか確認。
 
 ## 今後の更新
 
