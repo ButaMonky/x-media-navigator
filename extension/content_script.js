@@ -1059,25 +1059,33 @@ var XMN;
                 if (this.refs[i].kind === 'photo')
                     targets.push(this.refs[i]);
             }
-            // 2. Several future POSTS, while preserving the observed media order.
+            // 2. Collect future POSTS in their observed order without losing the
+            // nearest previous photo to a long forward-only prefetch window.
+            const future = [];
             let cursor = index;
-            for (let hops = 0; hops < 8 && targets.length < PREFETCH_MAX_IMAGES + 3; hops++) {
+            for (let hops = 0; hops < 8 && targets.length + future.length < PREFETCH_MAX_IMAGES + 3; hops++) {
                 const next = XMN.adjacentPostIndex(this.refs, this.refs[cursor].statusId, 1, cursor);
                 if (next === null)
                     break;
                 cursor = next;
                 if (this.refs[cursor].kind === 'photo')
-                    targets.push(this.refs[cursor]);
+                    future.push(this.refs[cursor]);
             }
-            // 3. Backtracking after future media are queued.
+            // 3. Preserve fast forward movement (first two POSTS if there is room),
+            // then reserve one of the five slots for going backwards. This improves
+            // left-arrow continuity without increasing transfers or memory limits.
             const back = this.refs[index - 1];
-            if (back?.kind === 'photo' && back.statusId === current.statusId)
-                targets.push(back);
-            else {
-                const previous = XMN.adjacentPostIndex(this.refs, current.statusId, -1, index);
-                if (previous !== null && this.refs[previous].kind === 'photo')
-                    targets.push(this.refs[previous]);
-            }
+            const prior = back?.kind === 'photo' && back.statusId === current.statusId ? back
+                : (() => {
+                    const previous = XMN.adjacentPostIndex(this.refs, current.statusId, -1, index);
+                    return previous !== null && this.refs[previous].kind === 'photo'
+                        ? this.refs[previous] : null;
+                })();
+            const forwardFirst = Math.min(2, Math.max(1, PREFETCH_MAX_IMAGES - targets.length - (prior ? 1 : 0)));
+            targets.push(...future.slice(0, forwardFirst));
+            if (prior)
+                targets.push(prior);
+            targets.push(...future.slice(forwardFirst));
             const memory = navigator.deviceMemory;
             const max = connection?.effectiveType === '3g' || (memory !== undefined && memory <= 4)
                 ? 2 : PREFETCH_MAX_IMAGES;
@@ -1561,6 +1569,22 @@ var XMN;
             }
             return 'fallback';
         }
+        /**
+         * Avoid painting a second photo over X if its target is already loaded.
+         * A stale currentSrc plus a different assigned src is NOT ready.
+         */
+        nativeSpaTargetRendered() {
+            const handoff = this.handoff;
+            if (!handoff || !this.viewer?.isConnected)
+                return false;
+            const image = this.displayedPhoto();
+            if (!image || !image.complete || image.naturalWidth < 1)
+                return false;
+            const displayed = XMN.photoCdnIdentity(image.currentSrc || image.src || '');
+            const assigned = XMN.photoCdnIdentity(image.src || '');
+            return displayed === handoff.targetPhotoIdentity &&
+                (!assigned || assigned === handoff.targetPhotoIdentity);
+        }
         async navigate(direction) {
             const currentIndex = this.activeIndex();
             const oldViewer = this.viewer;
@@ -1580,13 +1604,18 @@ var XMN;
                 this.toast('移動先が一覧から消えています。ビューアは閉じません');
                 return;
             }
+            // A native in-modal SPA link does not need a close button. Only the
+            // legacy close-and-reopen fallback depends on this control.
             const closeButton = this.findCloseButton(oldViewer);
-            if (!closeButton) {
-                this.toast('Xの閉じるボタンが見つからず、移動を中止しました');
-                return;
-            }
             this.navigationBusy = true;
             this.updateViewerState();
+            // Rapid arrow presses may overlap the 1.8s decoded-image handoff. A
+            // preview for the prior destination must never paint over a new post.
+            const nextRef = nextIndex === null ? null : this.refs[nextIndex];
+            if (this.handoff && (!nextRef || this.handoff.targetStatus !== nextRef.statusId ||
+                this.handoff.targetMediaIndex !== nextRef.mediaIndex)) {
+                this.clearVisualHandoff();
+            }
             let destinationOpened = false;
             try {
                 // First let X navigate directly between observed photo links. If its
@@ -1594,10 +1623,21 @@ var XMN;
                 if (nextIndex !== null && initialDestination &&
                     currentRef.kind === 'photo' && this.refs[nextIndex].kind === 'photo' &&
                     typeof this.tryNativeInModalNavigation === 'function') {
+                    // Prepare an already decoded photo invisibly. Only paint it when X
+                    // accepted the new route but has not yet rendered its target image.
+                    this.beginVisualHandoff(this.refs[nextIndex]);
                     const result = await this.tryNativeInModalNavigation(this.refs[nextIndex], initialDestination, oldViewer, generation);
                     if (result === 'retained' || result === 'navigated') {
                         destinationOpened = true;
-                        this.clearVisualHandoff();
+                        if (this.handoff && !this.nativeSpaTargetRendered()) {
+                            this.showVisualHandoff();
+                            const activeViewer = document.querySelector(VIEWER_SELECTOR);
+                            if (activeViewer?.isConnected)
+                                this.finishVisualHandoff(activeViewer);
+                        }
+                        else {
+                            this.clearVisualHandoff();
+                        }
                         return;
                     }
                     if (result === 'abort')
@@ -1608,7 +1648,11 @@ var XMN;
                     return;
                 // The direct route was ignored by X. Only now use the proven
                 // close-and-reopen fallback and its decoded photo bridge.
-                if (nextIndex !== null)
+                if (!closeButton) {
+                    this.toast('Xの閉じるボタンが見つからず、移動を中止しました');
+                    return;
+                }
+                if (nextIndex !== null && !this.handoff)
                     this.beginVisualHandoff(this.refs[nextIndex]);
                 closeButton.click();
                 if (!await this.waitForViewerToClose(oldViewer)) {
@@ -1664,9 +1708,13 @@ var XMN;
             }
             finally {
                 if (!destinationOpened)
-                    this.clearVisualHandoff();
+                    this.clearVisualHandoff?.();
                 this.navigationBusy = false;
                 this.updateViewerState();
+                // The direct SPA route can change before the regular 450ms poll.
+                // Start the next bounded lookahead immediately, if X kept the viewer.
+                if (destinationOpened && this.viewer?.isConnected && this.imageSources)
+                    this.schedulePreload?.();
             }
         }
     }

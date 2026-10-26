@@ -229,9 +229,14 @@ async function exercise() {
   await wait(400);
   show('/alice/status/22/photo/1',false);
   await wait(550);
+  const noCloseModal=document.getElementById('modal');
+  const beforeNoClose=window.nativeModalCloses;
   key('ArrowRight');
   await wait(400);
-  result('missing close button safely aborts',location.pathname.endsWith('/22/photo/1') && !!document.getElementById('modal'));
+  result('native in-modal SPA remains usable without a close control',
+    location.pathname.endsWith('/33/photo/1') &&
+    document.getElementById('modal')===noCloseModal &&
+    window.nativeModalCloses===beforeNoClose);
 
   // A previously observed destination may be removed by X's virtualized grid.
   // Preflight must preserve the current viewer rather than closing and losing it.

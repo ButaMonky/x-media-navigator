@@ -145,6 +145,86 @@ test('native in-modal media link can preserve the same viewer without closing it
   }finally{document.querySelector=oldQuery;state.pathname='/alice/media';}
 });
 
+test('rapid consecutive SPA navigation never reuses an overlay for the previous post', async () => {
+  state.pathname='/alice/status/22/photo/1';
+  const steps=[],viewer={isConnected:true};
+  const current=ref('/alice/status/22/photo/1');
+  const target=ref('/alice/status/33/photo/1');
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',navGeneration:6,navigationBusy:false,viewer,
+    handoff:{targetStatus:'22',targetMediaIndex:1,targetPhotoIdentity:'OLD',shown:true},
+    refs:[current,target],activeIndex(){return 0;},findLiveLink(){return {isConnected:true}},
+    updateViewerState(){},findCloseButton(){return {click(){steps.push('close');}};},
+    beginVisualHandoff(ref){steps.push('begin:'+ref.statusId);
+      this.handoff={targetStatus:ref.statusId,targetMediaIndex:ref.mediaIndex,targetPhotoIdentity:'NEW'};return true;},
+    clearVisualHandoff(){steps.push('clear:'+(this.handoff?.targetStatus??'null'));this.handoff=null;},
+    nativeSpaTargetRendered(){return true;},
+    tryNativeInModalNavigation:async()=>{state.pathname='/alice/status/33/photo/1';return 'retained';},
+    toast(m){throw Error(m);},
+  });
+  try {
+    await proto.navigate.call(ctrl,1);
+    assert.deepEqual(steps,['clear:22','begin:33','clear:33'],
+      'clear stale preview before preparing the newly selected post');
+  } finally {state.pathname='/alice/media';}
+});
+
+test('in-modal SPA uses an already decoded photo bridge only while X target is pending', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  const steps=[],viewer={isConnected:true};
+  const dest=ref('/alice/status/22/photo/1');
+  const link={isConnected:true,click(){}};
+  const oldQuery=document.querySelector;
+  document.querySelector=sel=>sel==='[data-testid="swipe-to-dismiss"]'?viewer:oldQuery(sel);
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',navGeneration:5,navigationBusy:false,viewer,
+    refs:[ref('/alice/status/11/photo/1'),dest],imageSources:new Map(),
+    activeIndex(){return 0;},findLiveLink(){return link;},updateViewerState(){},
+    findCloseButton(){return {click(){steps.push('close');}};},
+    beginVisualHandoff(){steps.push('begin');this.handoff={targetPhotoIdentity:'TARGET'};return true;},
+    showVisualHandoff(){steps.push('show');},
+    finishVisualHandoff(){steps.push('finish');},
+    clearVisualHandoff(){steps.push('clear');this.handoff=null;},
+    displayedPhoto(){return {src:'https://pbs.twimg.com/media/OLD?format=jpg&name=large',
+      currentSrc:'https://pbs.twimg.com/media/OLD?format=jpg&name=large',
+      complete:true,naturalWidth:1200};},
+    tryNativeInModalNavigation:async()=>{state.pathname='/alice/status/22/photo/1';return 'retained';},
+    schedulePreload(){steps.push('preload');},
+    toast(m){throw Error(m);},
+  });
+  try{
+    await proto.navigate.call(ctrl,1);
+    assert.deepEqual(steps,['begin','show','finish','preload'],
+      'native SPA should bridge only the left image and schedule next lookahead');
+    assert.equal(ctrl.navigationBusy,false);
+    assert.notEqual(ctrl.handoff,null,'keep decoded image until X target is actually ready');
+  }finally{document.querySelector=oldQuery;state.pathname='/alice/media';}
+});
+
+test('native SPA skips the bridge when X has already rendered the decoded target', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  const events=[],viewer={isConnected:true};
+  const dest=ref('/alice/status/22/photo/1');
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',navGeneration:3,navigationBusy:false,viewer,
+    refs:[ref('/alice/status/11/photo/1'),dest],
+    activeIndex(){return 0;},findLiveLink(){return {isConnected:true}},updateViewerState(){},
+    findCloseButton(){return {click(){events.push('close');}};},
+    beginVisualHandoff(){events.push('begin');this.handoff={targetPhotoIdentity:'TARGET'};return true;},
+    showVisualHandoff(){events.push('show');},
+    clearVisualHandoff(){events.push('clear');this.handoff=null;},
+    displayedPhoto(){return {src:'https://pbs.twimg.com/media/TARGET?format=jpg&name=large',
+      currentSrc:'https://pbs.twimg.com/media/TARGET?format=jpg&name=orig',
+      complete:true,naturalWidth:1600};},
+    tryNativeInModalNavigation:async()=>{state.pathname='/alice/status/22/photo/1';return 'retained';},
+    toast(m){throw Error(m);},
+  });
+  try{
+    await proto.navigate.call(ctrl,1);
+    assert.deepEqual(events,['begin','clear'],'already rendered photo must not be overpainted');
+  }finally{state.pathname='/alice/media';}
+});
+
 test('deferred X SPA route change within the bounded probe prevents duplicate clicks', async () => {
   state.pathname='/alice/status/11/photo/1';
   const oldSet=context.window.setTimeout,oldQuery=document.querySelector;
@@ -270,6 +350,25 @@ test('handoff detects a closed X modal within a short polling interval', async (
   } finally {
     document.querySelector=oldQuery;context.window.setTimeout=oldSet;
   }
+});
+
+test('native SPA succeeds even when X omits its modal close control', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  const viewer={isConnected:true},dest=ref('/alice/status/22/photo/1');
+  let calls=0,notices=0;
+  const ctrl=Object.assign(Object.create(proto),{
+    navigationBusy:false,navGeneration:2,originProfile:'alice',viewer,
+    refs:[ref('/alice/status/11/photo/1'),dest],
+    activeIndex(){return 0;},findLiveLink(){return {isConnected:true}},
+    findCloseButton(){return null;},updateViewerState(){},
+    tryNativeInModalNavigation:async()=>{calls++;state.pathname='/alice/status/22/photo/1';return 'retained';},
+    toast(){notices++;},
+  });
+  try {
+    await proto.navigate.call(ctrl,1);
+    assert.equal(calls,1,'SPA route does not depend on the availability of a close button');
+    assert.equal(notices,0);
+  } finally {state.pathname='/alice/media';}
 });
 
 test('missing close button aborts rather than navigating elsewhere', async () => {
@@ -861,6 +960,30 @@ test('visual handoff begins its safety expiry only when the old modal has closed
   } finally {
     context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
   }
+});
+
+test('five-image prefetch reserves a slot for the nearest previous post', () => {
+  const previousNav=context.navigator, oldHidden=document.hidden;
+  context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'},deviceMemory:8};
+  document.hidden=false;
+  const refs=Array.from({length:12},(_,i)=>ref('/alice/status/'+(100+i)+'/photo/1'));
+  const urls=refs.map((_,i)=>'https://pbs.twimg.com/media/BACK'+i+'?format=jpg&name=large');
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',viewer:{isConnected:true},refs,navGeneration:4,navigationBusy:false,
+    activeIndex(){return 5;},imageSources:new Map(refs.map((item,i)=>[item.key,urls[i]])),
+    prefetched:new Map(),prefetchQueue:[],prefetchWanted:new Set(),
+    prefetchFailed:new Set(),prefetchTooLarge:new Set(),prefetchInFlight:0,
+    drainPrefetchQueue(){},
+  });
+  state.pathname='/alice/status/105/photo/1';
+  try{
+    proto.preloadAdjacentImages.call(ctrl);
+    assert.equal(ctrl.prefetchWanted.size,5);
+    assert.equal(ctrl.prefetchWanted.has(urls[4]),true,'previous post must not be starved by distant future posts');
+    assert.equal(ctrl.prefetchWanted.has(urls[6]),true);
+    assert.equal(ctrl.prefetchWanted.has(urls[7]),true);
+    assert.equal(ctrl.prefetchWanted.has(urls[10]),false,'evict a distant future post instead');
+  } finally{context.navigator=previousNav;document.hidden=oldHidden;state.pathname='/alice/media';}
 });
 
 test('lookahead queues five future posts with at most two parallel downloads', async () => {
