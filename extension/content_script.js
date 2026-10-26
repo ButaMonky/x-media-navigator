@@ -1510,6 +1510,57 @@ var XMN;
             const nextIndex = XMN.adjacentPostIndex(this.refs, statusId, 1, fromIndex);
             return nextIndex === null ? null : this.refs[nextIndex];
         }
+        /**
+         * Try X's own media-tile SPA link before dismissing its dialog.
+         * No URL/history writes, React hooks, GraphQL calls or new permissions.
+         * A changed route is X-owned; never close/reopen it a second time.
+         */
+        async tryNativeInModalNavigation(target, link, viewer, generation) {
+            const profile = this.originProfile;
+            const sourcePath = window.location.pathname;
+            const oldDialog = viewer.closest?.('[role="dialog"]');
+            const href = link.getAttribute?.('href') ?? '';
+            const linkRef = profile ? XMN.mediaRefFromHref(href, profile) : null;
+            if (!profile || !link.isConnected || !viewer.isConnected || linkRef?.key !== target.key ||
+                (link.target && link.target !== '_self') || link.hasAttribute?.('download'))
+                return 'fallback';
+            // Let X's delegated SPA listener handle the link, but cancel a browser
+            // document navigation if it does not. X's root handler runs before
+            // this temporary window-bubble fallback guard.
+            const guard = (event) => {
+                const node = event.target;
+                if (node instanceof Node && (node === link || link.contains(node)))
+                    event.preventDefault();
+            };
+            window.addEventListener('click', guard);
+            try {
+                link.click();
+            }
+            finally {
+                window.removeEventListener('click', guard);
+            }
+            // X normally writes the SPA URL immediately; a short bounded allowance
+            // covers deferred router work without penalizing every failed attempt.
+            for (let i = 0; i < 7; i++) {
+                if (generation !== this.navGeneration || this.originProfile !== profile)
+                    return 'abort';
+                const route = XMN.mediaRefFromHref(window.location.pathname, profile);
+                if (route?.key === target.key) {
+                    const activeViewer = document.querySelector(VIEWER_SELECTOR);
+                    const dialogRetained = oldDialog && oldDialog.isConnected &&
+                        activeViewer?.closest?.('[role="dialog"]') === oldDialog;
+                    return (activeViewer === viewer && viewer.isConnected) || dialogRetained
+                        ? 'retained' : 'navigated';
+                }
+                if (window.location.pathname !== sourcePath || !viewer.isConnected || !link.isConnected) {
+                    // X already changed the route or dialog unexpectedly: no second click.
+                    return 'abort';
+                }
+                if (i < 6)
+                    await pause(50);
+            }
+            return 'fallback';
+        }
         async navigate(direction) {
             const currentIndex = this.activeIndex();
             const oldViewer = this.viewer;
@@ -1536,12 +1587,29 @@ var XMN;
             }
             this.navigationBusy = true;
             this.updateViewerState();
-            // Only show a handoff for a previously decoded, owned destination photo.
-            // The fallback (no ready photo) is always X's unmodified navigation.
-            if (nextIndex !== null)
-                this.beginVisualHandoff(this.refs[nextIndex]);
             let destinationOpened = false;
             try {
+                // First let X navigate directly between observed photo links. If its
+                // modal survives, the right tweet/replies panel is never dismissed.
+                if (nextIndex !== null && initialDestination &&
+                    currentRef.kind === 'photo' && this.refs[nextIndex].kind === 'photo' &&
+                    typeof this.tryNativeInModalNavigation === 'function') {
+                    const result = await this.tryNativeInModalNavigation(this.refs[nextIndex], initialDestination, oldViewer, generation);
+                    if (result === 'retained' || result === 'navigated') {
+                        destinationOpened = true;
+                        this.clearVisualHandoff();
+                        return;
+                    }
+                    if (result === 'abort')
+                        return;
+                }
+                if (generation !== this.navGeneration || !oldViewer.isConnected ||
+                    !XMN.profileStatusFromPath(window.location.pathname, profile))
+                    return;
+                // The direct route was ignored by X. Only now use the proven
+                // close-and-reopen fallback and its decoded photo bridge.
+                if (nextIndex !== null)
+                    this.beginVisualHandoff(this.refs[nextIndex]);
                 closeButton.click();
                 if (!await this.waitForViewerToClose(oldViewer)) {
                     this.toast('ビューアを閉じられませんでした');

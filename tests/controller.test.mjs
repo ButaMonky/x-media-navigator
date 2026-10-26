@@ -30,7 +30,7 @@ const document = {
   querySelector(selector) { return selector==='main [data-testid="primaryColumn"]' ? state.root : null; },
   createElement(tag) { return new FakeElement(tag); },
 };
-const context = vm.createContext({ URL, URLSearchParams, Set, Map, Element:FakeElement, document, window: { location:state }, console });
+const context = vm.createContext({ URL, URLSearchParams, Set, Map, Element:FakeElement, document, window: { location:state, addEventListener(){}, removeEventListener(){} }, console });
 vm.runInContext(source, context);
 const proto = context.XMN.Controller.prototype;
 const ref = (href) => context.XMN.mediaRefFromHref(href, 'alice');
@@ -119,6 +119,124 @@ test('navigation resolves the live replacement DOM link instead of stale one', (
   assert.equal(proto.findLiveLink.call(instance,ref('/alice/status/11/photo/1')),old.link);
   state.root.tiles=[fresh.tile];
   assert.equal(proto.findLiveLink.call(instance,ref('/alice/status/11/photo/1')),fresh.link);
+});
+
+test('native in-modal media link can preserve the same viewer without closing it', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  let closes=0, clicks=0;
+  const viewer={isConnected:true};
+  const dest=ref('/alice/status/22/photo/1');
+  const link={isConnected:true, getAttribute(name){return name==='href'?'/alice/status/22/photo/1':null;},
+    click(){clicks++;state.pathname='/alice/status/22/photo/1';}};
+  const oldQuery=document.querySelector;
+  document.querySelector=sel=>sel==='[data-testid="swipe-to-dismiss"]'?viewer:oldQuery(sel);
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice', navGeneration:1, navigationBusy:false, viewer,
+    refs:[ref('/alice/status/11/photo/1'),dest],
+    activeIndex(){return 0;}, findLiveLink(){return link;}, updateViewerState(){},
+    findCloseButton(){return {click(){closes++;viewer.isConnected=false;state.pathname='/alice/media';}};}, toast(m){throw Error(m);},
+  });
+  try{
+    await proto.navigate.call(ctrl,1);
+    assert.equal(clicks,1,'use only the observed native X media link');
+    assert.equal(closes,0,'do not close the currently mounted modal');
+    assert.equal(ctrl.viewer,viewer);
+    assert.equal(viewer.isConnected,true);
+  }finally{document.querySelector=oldQuery;state.pathname='/alice/media';}
+});
+
+test('deferred X SPA route change within the bounded probe prevents duplicate clicks', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  const oldSet=context.window.setTimeout,oldQuery=document.querySelector;
+  let clicks=0,ticks=0,closes=0;
+  const viewer={isConnected:true};
+  const link={isConnected:true,getAttribute(){return '/alice/status/22/photo/1';},click(){clicks++;}};
+  context.window.setTimeout=(fn,ms)=>{ticks++;if(ticks===1)state.pathname='/alice/status/22/photo/1';fn();return 5;};
+  document.querySelector=sel=>sel==='[data-testid="swipe-to-dismiss"]'?viewer:oldQuery(sel);
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',navGeneration:5,navigationBusy:false,
+    refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
+    activeIndex(){return 0;},findLiveLink(){return link;},updateViewerState(){},
+    findCloseButton(){return {click(){closes++;}};},toast(m){throw Error(m);},
+  });
+  try{
+    await proto.navigate.call(ctrl,1);
+    assert.equal(clicks,1);assert.equal(closes,0);assert.ok(ticks>=1);
+  }finally{
+    context.window.setTimeout=oldSet;document.querySelector=oldQuery;
+    state.pathname='/alice/media';
+  }
+});
+
+test('unexpected native X route aborts without closing or clicking twice', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  let closes=0,clicks=0;
+  const viewer={isConnected:true};
+  const link={isConnected:true,getAttribute(){return '/alice/status/22/photo/1';},
+    click(){clicks++;state.pathname='/alice/status/99/photo/1';}};
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',navGeneration:7,navigationBusy:false,
+    refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
+    activeIndex(){return 0;},findLiveLink(){return link;},updateViewerState(){},
+    findCloseButton(){return {click(){closes++;}};},toast(){},
+  });
+  try{
+    await proto.navigate.call(ctrl,1);
+    assert.equal(clicks,1,'do not duplicate an X-owned navigation');
+    assert.equal(closes,0,'wrong/native route must never be followed by a close');
+    assert.equal(ctrl.navigationBusy,false);
+  }finally{state.pathname='/alice/media';}
+});
+
+test('temporary link guard prevents a hard browser navigation after X delegated handlers', async () => {
+  const oldNode=context.Node, oldAdd=context.window.addEventListener,oldRemove=context.window.removeEventListener;
+  const listeners=new Map(); let prevented=false;
+  context.Node=FakeElement;
+  context.window.addEventListener=(type,fn)=>listeners.set(type,fn);
+  context.window.removeEventListener=(type,fn)=>{if(listeners.get(type)===fn)listeners.delete(type);};
+  state.pathname='/alice/status/11/photo/1';
+  const link=new FakeElement('a',{href:'/alice/status/22/photo/1'});
+  link.click=()=>{
+    const event={target:link,preventDefault(){prevented=true;}};
+    listeners.get('click')(event);
+    state.pathname='/alice/status/22/photo/1';
+  };
+  const viewer={isConnected:true},oldQuery=document.querySelector;
+  document.querySelector=sel=>sel==='[data-testid="swipe-to-dismiss"]'?viewer:oldQuery(sel);
+  const ctrl={originProfile:'alice',navGeneration:10};
+  try {
+    const result=await proto.tryNativeInModalNavigation.call(ctrl,ref('/alice/status/22/photo/1'),link,viewer,10);
+    assert.equal(result,'retained');assert.equal(prevented,true);
+    assert.equal(listeners.size,0,'the window guard must not leak');
+  }finally{
+    document.querySelector=oldQuery;context.Node=oldNode;
+    context.window.addEventListener=oldAdd;context.window.removeEventListener=oldRemove;
+    state.pathname='/alice/media';
+  }
+});
+
+test('ignored in-modal route attempts fall back once without guessing a URL', async () => {
+  state.pathname='/alice/status/11/photo/1';
+  const oldSet=context.window.setTimeout;
+  const timers=[];
+  context.window.setTimeout=(fn,ms)=>{timers.push(ms);fn();return 3;};
+  const viewer={isConnected:true};
+  let closes=0, clicks=0;
+  const link={isConnected:true,getAttribute(){return '/alice/status/22/photo/1';},
+    click(){clicks++;if(closes)state.pathname='/alice/status/22/photo/1';}};
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer,originProfile:'alice',navGeneration:5,navigationBusy:false,
+    refs:[ref('/alice/status/11/photo/1'),ref('/alice/status/22/photo/1')],
+    activeIndex(){return 0;},findLiveLink(){return link;},updateViewerState(){},
+    findCloseButton(){return {click(){closes++;viewer.isConnected=false;state.pathname='/alice/media';}};},
+    async waitForViewerToClose(){return true;},toast(m){throw Error(m);},
+  });
+  try{
+    await proto.navigate.call(ctrl,1);
+    assert.equal(closes,1,'fallback must close only after trying the in-modal link');
+    assert.equal(clicks,2,'one bounded attempt and one ordinary reopened link');
+    assert.ok(timers.length<=6,'do not stall the viewer with long probes');
+  }finally{state.pathname='/alice/media';context.window.setTimeout=oldSet;}
 });
 
 test('navigation only clicks a known destination after viewer closes', async () => {

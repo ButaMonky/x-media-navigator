@@ -68,13 +68,24 @@ const ambiguousTile = tile('/alice/status/888/photo/1');
 ambiguousTile.appendChild(ambiguousTile.querySelector('img'));
 const otherLink = document.createElement('a');otherLink.href='/alice/status/889/photo/1';
 ambiguousTile.prepend(otherLink);ul.appendChild(ambiguousTile);
+window.testSpaKeepModal = true;
+window.testSpaIgnoreInModal = false;
+window.nativeModalCloses = 0;
 function show(href, withClose=true) {
-  document.getElementById('modal')?.remove();
+  const existing = document.getElementById('modal');
+  const retain = !!existing && window.testSpaKeepModal;
+  if (retain) {
+    existing.querySelector('[data-testid="swipe-to-dismiss"]')?.remove();
+    existing.querySelector('article[data-testid="tweet"]')?.remove();
+    existing.querySelector('#test-input')?.remove();
+    existing.querySelector('button[aria-label="Close"]')?.remove();
+  } else existing?.remove();
   history.pushState({},'',href);
-  const modal = document.createElement('div'); modal.id='modal'; modal.setAttribute('role','dialog');
+  const modal = retain ? existing : document.createElement('div');
+  modal.id='modal'; modal.setAttribute('role','dialog');
   if (withClose) {
     const close = document.createElement('button'); close.setAttribute('aria-label','Close');close.textContent='Close';
-    close.addEventListener('click', () => { modal.remove(); history.pushState({},'', '/alice/media'); });
+    close.addEventListener('click', () => { window.nativeModalCloses++; modal.remove(); history.pushState({},'', '/alice/media'); });
     modal.appendChild(close);
   }
   const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';
@@ -111,11 +122,17 @@ function show(href, withClose=true) {
   viewer.appendChild(counter);
   modal.appendChild(article);
   const input = document.createElement('input');input.id='test-input';modal.appendChild(input);
-  document.body.appendChild(modal);
+  if (!modal.querySelector('#replies')) {
+    const panel=document.createElement('section'); panel.id='replies';
+    panel.textContent='Persistent X replies pane';modal.appendChild(panel);
+  }
+  if (!modal.isConnected) document.body.appendChild(modal);
 }
 ul.addEventListener('click', e => {
   const a=e.target.closest('a[href]'); if (!a) return;
-  const href=a.getAttribute('href');e.preventDefault();clicked.push(href);show(href);
+  const href=a.getAttribute('href');e.preventDefault();
+  if (window.testSpaIgnoreInModal && document.getElementById('modal')) return;
+  clicked.push(href);show(href);
 });
 document.addEventListener('keydown', e => {
   if (e.shiftKey || !['ArrowRight','ArrowLeft'].includes(e.key)) return;
@@ -160,11 +177,16 @@ async function exercise() {
   await wait(500);
   result('gallery first image native ArrowRight',!nativeRight.defaultPrevented && nativeMoves===1 && location.pathname.endsWith('/11/photo/2'));
   result('adjacent CDN image preload initiated',window.prefetchLoads.length>0 && window.prefetchLoads[0].startsWith('https://pbs.twimg.com/media/') && window.prefetchLoads[0].includes('name=large'));
+  const originalModal=document.getElementById('modal');
+  const originalReplies=document.getElementById('replies');
+  const beforeSpaCloses=window.nativeModalCloses;
   const boundaryRight=key('ArrowRight');
   await wait(850);
   result('last photo ArrowRight advances to next POST',boundaryRight.defaultPrevented && location.pathname.endsWith('/22/photo/1') && clicked.at(-1)==='/alice/status/22/photo/1');
-  result('predecoded SPA handoff has no extra black flash and clears safely',
-    handoffsSeen>0 && nonBlockingHandoff && noBlackBackdrop && hiddenUntilClose &&
+  result('native in-modal SPA keeps dialog and right replies panel mounted',
+    originalModal===document.getElementById('modal') &&
+    originalReplies===document.getElementById('replies') &&
+    window.nativeModalCloses===beforeSpaCloses &&
     !document.querySelector('.xmn-visual-handoff'));
   const boundaryLeft=key('ArrowLeft');
   await wait(850);
@@ -175,6 +197,17 @@ async function exercise() {
   const modified=key('ArrowRight',true);
   await wait(350);
   result('Shift+arrow not a shortcut',!modified.defaultPrevented && location.pathname.endsWith('/11/photo/1'));
+  key('ArrowRight'); await wait(170);
+  const beforeFallbackCloses=window.nativeModalCloses;
+  window.testSpaIgnoreInModal=true;
+  const fallback=key('ArrowRight'); await wait(950);
+  window.testSpaIgnoreInModal=false;
+  result('unhandled in-modal SPA attempt falls back through one safe close',
+    fallback.defaultPrevented && location.pathname.endsWith('/22/photo/1') &&
+    window.nativeModalCloses===beforeFallbackCloses+1);
+  result('fallback handoff never blackens or blocks the native UI',
+    nonBlockingHandoff && noBlackBackdrop && hiddenUntilClose &&
+    !document.querySelector('.xmn-visual-handoff'));
   document.querySelector('#modal button[aria-label="Close"]').click();
   await wait(500);
   const old=source('/alice/status/11/photo/2').closest('li');
@@ -315,7 +348,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 20, report);
+    assert.equal(report.split('|').length, 22, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
