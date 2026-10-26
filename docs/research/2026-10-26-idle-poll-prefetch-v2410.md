@@ -44,3 +44,19 @@ These single-run Node VM figures illustrate *avoidable work*, not production UI 
 - Modal route transitions may still use the old close-and-reopen fallback if X does not handle a native in-modal tile click. Do not monkeypatch React/history or touch the X authentication/GraphQL layer to guess a solution.
 - Before calling real-X optimization complete, record DevTools Performance/Network observations for 1–4-image posts, sustained right/left arrows, large virtualized media feeds, slow image loads, and video/GIF behavior.
 - Keep user-facing private v2.4.10 beta isolated from main and public releases until explicit real-X acceptance. Update only the fixed six-file folder after push+PR CI success, with a timestamped exact-SHA backup; no ZIP churn.
+
+## Private development verification, CI and deployment
+
+- Private optimization commit: `17e459328801b550af7e903497b78224d0ca4a3f`; pushed to `fix/prefetch-startup-v241`. GitHub Draft PR #17 remained open/draft, and **both push/PR TypeScript check jobs completed SUCCESS** for that exact code SHA before deployment.
+- Fixed installed folder: `C:\Users\Saito\Downloads\X-Media-Navigator-Current`, prior manifest `2.4.9`, now installed manifest `2.4.10`. No public release, main merge, Chrome restart, scheduler/updater, extra permission or ZIP created.
+- Before replacement, original six files were copied and SHA256-verified at:
+  `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v2410-20261026_215057`.
+  That directory also contains `SHA256-OLD.txt` documenting the original hashes.
+- Updated six-file source→installed SHA256 equality:
+  - `content_script.js`: `3EC42A54BED52BB4FE4380A6B67C0747FE2963C2537B925A2B05DF28790BE36B`
+  - `manifest.json`: `BFAEACB1CAE96FB5BD50EEBCB0264C841D7FD8C363A571B1CB033287C3C4D575`
+  - `style.css`: `5C96ED2A77B8BB3F972550FE7F5453C26F4CBF352A1E51A1D878FA585D47A32F`
+  - `icon16.png`: `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png`: `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png`: `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Operational limitation: The user's already-loaded Chrome extension has **not** been reloaded by this session. It needs unpacked extension Reload and an X tab reload for real-X acceptance. Source-only synthetic tests do not authorize closing Issues #14/#16.
