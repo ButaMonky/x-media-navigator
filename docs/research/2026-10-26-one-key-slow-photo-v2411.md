@@ -36,3 +36,20 @@ The user reported that ArrowRight again needs two presses, with a screenshot, an
 - The unclaimed native SPA click fallback saves at most 200ms of code-imposed waiting (300ms → 100ms in that narrowly detected case), NOT a measured whole-page loading speed claim.
 - SPA reply panel retention, confirmed photo boundary behavior and five-photo/two-concurrent transfer prefetch remain covered by prior regression suites.
 - **LIMITATIONS:** unknown gallery sizes still use the 1050ms observation window; image loading may extend the first-key completion by bounded time. X itself might move later than the observation window, so the heuristic remains less certain than an explicit native counter or disabled next-photo control. Never claim a zero-risk unknown gallery edge or X LIVE PASS.
+
+## Verified private commit, CI and six-file deployment
+
+- Implementation commit `a4f61ca396c6ac7119e9a56a24ac2f8584d42847` was pushed to the PRIVATE branch. Draft PR #17 stayed open/draft. The push and PR GitHub `verify` checks both completed SUCCESS on that exact commit before deployment.
+- The installed fixed directory was verified at v2.4.10 before any replacement: `C:\Users\Saito\Downloads\X-Media-Navigator-Current`.
+- The six old files were copied, byte-verified and backed up (no ZIP) under:
+  `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v2411-20261026_223409`.
+  Backup folder contains the old SHA256 audit `SHA256-OLD.txt`.
+- Updated the same six files from the built `extension/` into the fixed folder, all with exact source→installed SHA256 matches:
+  - `content_script.js` = `FC4D1130DF6B416981570E596166A2623AAE24F2DAA363A78EF4C767E4B911F9`
+  - `manifest.json` = `8101C19A35728494F8870E406EE532ED2D13889903B07A2898777F3BB5ED9282`
+  - `style.css` = `5C96ED2A77B8BB3F972550FE7F5453C26F4CBF352A1E51A1D878FA585D47A32F`
+  - `icon16.png` = `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png` = `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png` = `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Installed version checked as **2.4.11**. No Chrome profile restart, extension reload, public release, main merge, new updater or background job was performed.
+- **User LIVE X acceptance still needed:** extension Reload + X tab Reload, one-photo and 2–4-photo posts, slow/loading gallery, one-key ArrowRight, rapid subsequent keys, no unseen-photo skip, measured SPA transition latency.
