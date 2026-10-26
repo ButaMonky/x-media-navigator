@@ -29,3 +29,18 @@ The technique relies on X's native link router processing a click while the medi
 - `mcp Browser.list_tabs` is inaccessible because the active browser lacks the originating extension context. An isolated public-X Edge headless probe returned no HTML, so it supplied no usable DOM evidence; no user cookies/tokens or browser profile were read.
 - The 300ms bounded probe is a heuristic for whether the native link responds. A longer-delayed X route update could still race with the fallback. This remains an explicit unresolved risk, not evidence of native SPA success.
 - Do not update main, close Issue #16 or mark Draft PR ready on synthetic QA alone.
+
+## Private v2.4.8 update and rollback evidence (2026-10-26 JST)
+
+- Implementation commit: `b7939c840ba572613d477af9dcb8778e5ac71b45`, pushed to `fix/prefetch-startup-v241`. Draft PR #17 remained open and Draft; GitHub `verify` checks for both push and PR completed SUCCESS on this exact SHA before deployment.
+- Final local `npm ci`: SUCCESS, zero reported package vulnerabilities. `npm test`: 103 cases / 96 PASS / 0 FAIL / 1 SKIP / 6 LIVE TODO. `npm run typecheck`: SUCCESS. `npm run test:browser` with `XMN_RUN_CHROMIUM=1` + Edge: 2 PASS / 0 FAIL / 0 SKIP.
+- Existing installed manifest **2.4.7** was required as the baseline. All six old files were backed up with verified SHA256 and an `SHA256-OLD.txt` audit under:
+  `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v248-20261026_200650`
+- Updated exactly six unpacked-extension files directly in `C:\Users\Saito\Downloads\X-Media-Navigator-Current` (no ZIP, updater, scheduler, additional permission, or public release). All six installed hashes matched the built source:
+  - `content_script.js` SHA256 `BA442153077B20776AACE55599F7A65767960161190B35E3775CB2F4E8AA40B5`
+  - `manifest.json` SHA256 `BC8AB1F14AC37EC62527D0178BC7D4FDB285D26F9D0FD1042AE10C5C7148B8EA`
+  - `style.css` SHA256 `5C96ED2A77B8BB3F972550FE7F5453C26F4CBF352A1E51A1D878FA585D47A32F`
+  - `icon16.png` SHA256 `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png` SHA256 `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png` SHA256 `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Installed manifest 2.4.8 verified. **Chrome has not been reloaded**, because no authenticated X tab or originating Browser extension context is available. LIVE X screenshot/DOM, media CDN URL cache hit and right-pane persistence remain NOT TESTED. This must not be marked fixed in live X until accepted.
