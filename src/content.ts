@@ -128,6 +128,15 @@ namespace XMN {
     // unmount or hide a slide's children on photo 2 without closing the modal.
     private controlsHost: HTMLDivElement | null = null;
     private controlsViewer: HTMLElement | null = null;
+    private controlsDialog: Element | null = null;
+    // Lock arrows to the PHOTO PANE in viewport coordinates. X can animate,
+    // translate or recycle its inner swipe viewer on every post transition;
+    // reusing that moving bounding box causes accumulating apparent drift.
+    private controlsPaneAnchor: {
+      left: number; top: number; width: number; height: number;
+      viewportWidth: number; viewportHeight: number;
+      fullscreenRoot: Element | null;
+    } | null = null;
     private controlsGeometryKey = '';
     private controlsLayoutPath = '';
     private activeViewerPath = '';
@@ -153,10 +162,12 @@ namespace XMN {
       // X has constructed its React modal. This never consumes the click.
       document.addEventListener('click', (event) => this.onMediaTileClick(event), true);
       window.addEventListener('resize', () => {
+        this.controlsPaneAnchor = null;
         this.controlsLayoutPath = '';
         if (this.viewer?.isConnected) this.positionControls(this.viewer);
       }, { passive: true });
       document.addEventListener('fullscreenchange', () => {
+        this.controlsPaneAnchor = null;
         this.controlsLayoutPath = '';
         if (this.viewer?.isConnected) this.controlContainer(this.viewer);
       });
@@ -166,6 +177,7 @@ namespace XMN {
 
     private resetSession(): void {
       this.navGeneration++;
+      this.controlsPaneAnchor = null;
       this.navigationBusy = false;
       this.pendingGrid = null;
       this.refs = [];
@@ -486,24 +498,39 @@ namespace XMN {
       }
     }
 
-    /** Position the persistent controls over the photo pane, not the replies. */
+    /** Pin post controls to a stable media-pane rectangle, not moving slides. */
     private positionControls(viewer: HTMLElement): void {
       const host = this.controlsHost;
       if (!host || typeof viewer.getBoundingClientRect !== 'function') return;
-      const rect = viewer.getBoundingClientRect();
-      const vw = typeof window.innerWidth === 'number' ? window.innerWidth : rect.right;
-      const vh = typeof window.innerHeight === 'number' ? window.innerHeight : rect.bottom;
-      const maxRight = vw >= 900 ? vw - Math.min(250, vw * 0.2) : vw;
-      const left = Math.max(0, rect.left);
-      const top = Math.max(0, rect.top);
-      const right = Math.min(rect.right, maxRight);
-      const bottom = Math.min(rect.bottom, vh);
-      const width = right - left, height = bottom - top;
-      if (width < 150 || height < 120) {
-        host.style.display = 'none';
-        this.controlsLayoutPath = '';
-        return;
+      const viewportWidth = typeof window.innerWidth === 'number' ? window.innerWidth : 0;
+      const viewportHeight = typeof window.innerHeight === 'number' ? window.innerHeight : 0;
+      const fullscreenRoot = document.fullscreenElement ?? null;
+      let anchor = this.controlsPaneAnchor;
+      if (!anchor || anchor.viewportWidth !== viewportWidth ||
+          anchor.viewportHeight !== viewportHeight ||
+          anchor.fullscreenRoot !== fullscreenRoot) {
+        // X's swipe element may be temporarily translated while advancing
+        // between POSTS. Capture once per stable viewport and reuse; repeated
+        // getBoundingClientRect() caused the arrows to walk across the screen.
+        const rect = viewer.getBoundingClientRect();
+        const vw = viewportWidth || rect.right;
+        const vh = viewportHeight || rect.bottom;
+        const maxRight = vw >= 900 ? vw - Math.min(250, vw * 0.2) : vw;
+        const left = Math.max(0, rect.left);
+        const top = Math.max(0, rect.top);
+        const right = Math.min(rect.right, maxRight);
+        const bottom = Math.min(rect.bottom, vh);
+        const width = right - left, height = bottom - top;
+        if (width < 150 || height < 120 || !Number.isFinite(width) ||
+            !Number.isFinite(height)) {
+          host.style.display = 'none';
+          this.controlsLayoutPath = '';
+          return; // Never cache a transiently invalid slide rectangle.
+        }
+        anchor = { left, top, width, height, viewportWidth, viewportHeight, fullscreenRoot };
+        this.controlsPaneAnchor = anchor;
       }
+      const { left, top, width, height } = anchor;
       const geometry = [left, top, width, height].map(Math.round).join(',');
       if (geometry !== this.controlsGeometryKey) {
         host.style.left = left + 'px';
@@ -529,6 +556,7 @@ namespace XMN {
         host.setAttribute('aria-label', '投稿間ナビゲーション');
         parent.appendChild(host);
         this.controlsHost = host;
+        this.controlsDialog = viewer.closest('[role="dialog"]');
         this.controlsGeometryKey = '';
         this.controlsLayoutPath = '';
         this.viewerStateSnapshot = null;
@@ -551,8 +579,16 @@ namespace XMN {
       this.viewerStateSnapshot = null;
       this.activeViewerPath = '';
       if (!preserveControls) {
+        // X may remove a photo viewer before adding the next one and before
+        // the route poll observes it. Keep the screen-space anchor while on a
+        // status route, even when the previous node is already detached.
+        // Only an explicit return to the media grid invalidates the anchor.
+        if (!this.navigationBusy && this.originProfile &&
+            mediaProfileFromPath(window.location.pathname) === this.originProfile)
+          this.controlsPaneAnchor = null;
         this.controlsHost?.remove();
         this.controlsHost = null;
+        this.controlsDialog = null;
       }
       this.controlsViewer = null;
       this.controlsGeometryKey = '';
@@ -574,7 +610,8 @@ namespace XMN {
         const oldDialog = this.viewer?.closest('[role="dialog"]');
         const newDialog = viewer.closest('[role="dialog"]');
         const preserve = !!this.controlsHost?.isConnected &&
-          !!oldDialog && oldDialog === newDialog;
+          !!newDialog && (oldDialog === newDialog ||
+            this.controlsDialog === newDialog);
         this.removeViewerUI(preserve);
         this.viewer = viewer;
         this.viewObserver = new MutationObserver((changes) => {

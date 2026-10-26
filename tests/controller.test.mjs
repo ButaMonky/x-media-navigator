@@ -594,6 +594,121 @@ test('unchanged modal polling reuses its status view without rescanning a long t
   } finally {state.pathname=previous;}
 });
 
+test('page-to-page carousel animation never moves the post arrows from the original photo pane', () => {
+  const oldPath=state.pathname;
+  const oldW=context.window.innerWidth,oldH=context.window.innerHeight;
+  context.window.innerWidth=1536; context.window.innerHeight=900;
+  let samples=0;
+  const viewer={getBoundingClientRect(){
+    const shift=samples++ * 11;
+    return {left:16+shift,top:90+shift,width:1010-2*shift,height:760-shift,
+      right:1026-shift,bottom:850};
+  }};
+  const host={style:{}};
+  const ctrl=Object.assign(Object.create(proto),{
+    controlsHost:host,controlsGeometryKey:'',controlsLayoutPath:'',
+  });
+  try {
+    state.pathname='/alice/status/100/photo/1';
+    proto.positionControls.call(ctrl,viewer);
+    const original=[host.style.left,host.style.top,host.style.width,host.style.height];
+    for(let i=0;i<14;i++){
+      state.pathname='/alice/status/'+(101+i)+'/photo/1';
+      proto.positionControls.call(ctrl,viewer);
+      assert.deepEqual([host.style.left,host.style.top,host.style.width,host.style.height],original,
+        'transient viewer geometry must not accumulate as arrow drift');
+    }
+    assert.ok(samples<=2,'do not repeatedly force layout for an unchanged media-pane viewport');
+  } finally {
+    state.pathname=oldPath;context.window.innerWidth=oldW;context.window.innerHeight=oldH;
+  }
+});
+
+test('React replacing a detached viewer does not discard the fixed pane anchor', () => {
+  const oldPath=state.pathname;
+  const anchor={left:16,top:90,width:1000,height:760,
+    viewportWidth:1536,viewportHeight:900,fullscreenRoot:null};
+  let removals=0;
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',navigationBusy:false,viewer:null,rightProbeTimer:null,
+    controlsPaneAnchor:anchor,controlsHost:{remove(){removals++;}},
+    controlsGeometryKey:'16,90,1000,760',controlsLayoutPath:'/alice/status/19/photo/1',
+  });
+  try {
+    state.pathname='/alice/status/20/photo/1';
+    proto.removeViewerUI.call(ctrl);
+    assert.equal(ctrl.controlsPaneAnchor,anchor,
+      'post-to-post DOM teardown must not erase the stable pane geometry');
+    assert.equal(removals,1);
+    ctrl.controlsHost=null;
+    state.pathname='/alice/media';
+    proto.removeViewerUI.call(ctrl);
+    assert.equal(ctrl.controlsPaneAnchor,null,'explicit modal close should allow fresh geometry');
+  }finally{state.pathname=oldPath;}
+});
+
+test('React removing the old carousel slide before mounting the next preserves one post-control layer', () => {
+  const oldObserver=context.MutationObserver;
+  context.MutationObserver=class { observe(){} disconnect(){} };
+  const dialog=new FakeElement('div');
+  const detached=new FakeElement('div'),next=new FakeElement('div');
+  detached.closest=()=>null; // React already removed its parent chain
+  next.closest=s=>s==='[role="dialog"]'?dialog:null;
+  const preserves=[];
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer:detached,controlsDialog:dialog,controlsHost:{isConnected:true},
+    removeViewerUI(preserve){preserves.push(preserve);this.viewer=null;},
+    ensureViewerButtons(){},finishVisualHandoff(){},
+  });
+  try {
+    proto.syncViewer.call(ctrl,next);
+    assert.deepEqual(preserves,[true],'do not rebuild buttons while X retains the same dialog');
+    assert.equal(ctrl.viewer,next);
+  }finally{context.MutationObserver=oldObserver;}
+});
+
+test('a real viewport resize deliberately refreshes the otherwise fixed photo-pane anchor', () => {
+  const oldW=context.window.innerWidth,oldH=context.window.innerHeight;
+  context.window.innerWidth=1536;context.window.innerHeight=900;
+  const host={style:{}};
+  let rect={left:12,top:90,right:1012,bottom:850,width:1000,height:760};
+  const viewer={getBoundingClientRect(){return rect;}};
+  const ctrl=Object.assign(Object.create(proto),{controlsHost:host,controlsGeometryKey:'',controlsLayoutPath:''});
+  try {
+    proto.positionControls.call(ctrl,viewer);
+    assert.equal(host.style.left,'12px');
+    context.window.innerWidth=1250;context.window.innerHeight=760;
+    rect={left:8,top:70,right:850,bottom:700,width:842,height:630};
+    proto.positionControls.call(ctrl,viewer);
+    assert.equal(host.style.left,'8px');
+    assert.equal(host.style.width,'842px');
+    assert.equal(host.style.top,'70px');
+  }finally{context.window.innerWidth=oldW;context.window.innerHeight=oldH;}
+});
+
+test('fullscreen root changes re-anchor arrows even without viewport dimension changes', () => {
+  const oldRoot=document.fullscreenElement;
+  const oldW=context.window.innerWidth,oldH=context.window.innerHeight;
+  context.window.innerWidth=1280;context.window.innerHeight=800;
+  const fullscreen=new FakeElement('div');
+  const host={style:{}};
+  let rect={left:12,top:60,right:900,bottom:760,width:888,height:700};
+  const viewer={getBoundingClientRect(){return rect;}};
+  const ctrl=Object.assign(Object.create(proto),{controlsHost:host,controlsGeometryKey:'',controlsPaneAnchor:null});
+  try {
+    document.fullscreenElement=null;
+    proto.positionControls.call(ctrl,viewer);
+    assert.equal(host.style.top,'60px');
+    document.fullscreenElement=fullscreen;
+    rect={left:0,top:0,right:1180,bottom:790,width:1180,height:790};
+    proto.positionControls.call(ctrl,viewer);
+    assert.equal(host.style.top,'0px');
+    assert.equal(ctrl.controlsPaneAnchor.fullscreenRoot,fullscreen);
+  }finally{
+    document.fullscreenElement=oldRoot;context.window.innerWidth=oldW;context.window.innerHeight=oldH;
+  }
+});
+
 test('replaced modal indicator invalidates idle status cache and refreshes safely', () => {
   const oldPath=state.pathname,oldCreate=document.createElement;
   state.pathname='/alice/status/78/photo/1';

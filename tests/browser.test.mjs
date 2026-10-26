@@ -70,6 +70,7 @@ const otherLink = document.createElement('a');otherLink.href='/alice/status/889/
 ambiguousTile.prepend(otherLink);ul.appendChild(ambiguousTile);
 window.testSpaKeepModal = true;
 window.testSpaIgnoreInModal = false;
+window.testSlideTranslateX = 0;
 window.nativeModalCloses = 0;
 function show(href, withClose=true) {
   const existing = document.getElementById('modal');
@@ -90,6 +91,8 @@ function show(href, withClose=true) {
   }
   const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';
   viewer.style.cssText='width:65vw; height:85vh; position:relative;';
+  if (window.testSlideTranslateX) viewer.style.transform =
+    'translateX('+window.testSlideTranslateX+'px)';
   modal.appendChild(viewer);
   // X's modal may include loaded avatars/other media ahead of the displayed
   // photo. The handoff must wait for the exact target media ID.
@@ -199,17 +202,38 @@ async function exercise() {
   const originalModal=document.getElementById('modal');
   const originalReplies=document.getElementById('replies');
   const beforeSpaCloses=window.nativeModalCloses;
+  const arrowAnchorBefore=controlLayer?.getBoundingClientRect();
+  // X may animate a newly mounted swipe viewer sideways during SPA routing.
+  // Buttons should NOT inherit that transient motion on every POST change.
+  window.testSlideTranslateX=34;
   const boundaryRight=key('ArrowRight');
   await wait(850);
   result('last photo ArrowRight advances to next POST',boundaryRight.defaultPrevented && location.pathname.endsWith('/22/photo/1') && clicked.at(-1)==='/alice/status/22/photo/1');
+  const afterRight=controlLayer?.getBoundingClientRect();
+  result('animated next-POST viewer cannot shift the portaled arrow pane',
+    document.querySelector('.xmn-controls-layer') === controlLayer &&
+    arrowAnchorBefore && afterRight &&
+    Math.abs(arrowAnchorBefore.left-afterRight.left)<1 &&
+    Math.abs(arrowAnchorBefore.top-afterRight.top)<1 &&
+    Math.abs(arrowAnchorBefore.width-afterRight.width)<1);
   result('native in-modal SPA keeps dialog and right replies panel mounted',
     originalModal===document.getElementById('modal') &&
     originalReplies===document.getElementById('replies') &&
     window.nativeModalCloses===beforeSpaCloses &&
     !document.querySelector('.xmn-visual-handoff'));
+  window.testSlideTranslateX=-26;
   const boundaryLeft=key('ArrowLeft');
   await wait(850);
   result('first photo ArrowLeft returns to previous POST last image',boundaryLeft.defaultPrevented && location.pathname.endsWith('/11/photo/2') && clicked.at(-1)==='/alice/status/11/photo/2');
+  const afterLeft=controlLayer?.getBoundingClientRect();
+  result('animated previous-POST viewer does not cumulatively shift the arrows',
+    document.querySelector('.xmn-controls-layer') === controlLayer &&
+    arrowAnchorBefore && afterLeft &&
+    Math.abs(arrowAnchorBefore.left-afterLeft.left)<1 &&
+    Math.abs(arrowAnchorBefore.top-afterLeft.top)<1 &&
+    Math.abs(arrowAnchorBefore.width-afterLeft.width)<1);
+  window.testSlideTranslateX=0;
+  document.querySelector('#modal [data-testid="swipe-to-dismiss"]')?.style.removeProperty('transform');
   const nativeLeft=key('ArrowLeft');
   await wait(500);
   result('gallery second image native ArrowLeft',!nativeLeft.defaultPrevented && nativeMoves===2 && location.pathname.endsWith('/11/photo/1'));
@@ -448,7 +472,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 28, report);
+    assert.equal(report.split('|').length, 30, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
