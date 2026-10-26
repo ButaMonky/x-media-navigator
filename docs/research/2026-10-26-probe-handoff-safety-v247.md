@@ -28,3 +28,18 @@ Scope: private Draft PR #17 only. Never merge to main or create a public release
 - Cache hit of preloaded `name=large` CDN URL versus X's actually displayed URL is NOT measured. Check Network / Performance read-only in an authorized X tab: media URL identities, transferred vs cache bytes, photo decode timing, and long-tail latency.
 - Live QA: single and 2-4 photo albums in both directions; slow image and virtualized media grid; video/GIF isolation; multiple posts; photo/replies pane geometry and animation; safe fallback; post close/open with photo filter.
 - Do not automatically update main, PR readiness, release, or global Chrome profile. Refresh only the fixed unpacked-extension six-file directory after CI success, with a separate backup and per-file SHA256 check.
+
+## Verification and installed six-file directory (2026-10-26 JST)
+
+- Code commit `714b2c97b67ededae54504a8312cb439f5711316` pushed to the private development branch; GitHub push and Draft PR #17 `verify` check runs both concluded SUCCESS for that exact commit.
+- Previous installed six files were copied, byte-verified, and preserved under `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v247-20261026_191713` (no ZIP). The backup includes `SHA256-OLD.txt`.
+- Direct installation into `C:\Users\Saito\Downloads\X-Media-Navigator-Current` then succeeded with exact SHA-256 matches to the six source files:
+  - `content_script.js` = `1ACF7CAA6F575DA5DC4E2B51488C7FC0399BDC3111172FB3CDC8C4EF6E2907BF`
+  - `manifest.json` = `DCCC917CC83BC6B1FD7C049BAB11233BF06C0D50BCC0F4F615868E94DCA84773`
+  - `style.css` = `5C96ED2A77B8BB3F972550FE7F5453C26F4CBF352A1E51A1D878FA585D47A32F`
+  - `icon16.png` = `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png` = `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png` = `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Installed manifest version confirmed `2.4.7`; Git working tree was clean before backup/deploy, and no source files changed during deployment.
+- **BLOCKED/NOT TESTED:** Running Chrome extension has not been reloaded or visually checked; access to the live X tab is unavailable from this session. The fixed folder is ready for Chrome's unpacked-extension Reload followed by user LIVE X acceptance. Do not claim full production acceptance.
+- main remains at `47b23d56257ee272f4adc1dea21900340e673c98`; Draft PR #17 remains unmerged.
