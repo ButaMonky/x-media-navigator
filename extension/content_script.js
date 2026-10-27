@@ -324,6 +324,8 @@ var XMN;
             this.observedColumn = null;
             this.lastPath = '';
             this.scanTimer = null;
+            this.routeTickTimer = null;
+            this.observedRouteKey = '';
             this.pendingFullScan = false;
             this.pendingSourceTiles = new Set();
             this.navigationBusy = false;
@@ -345,8 +347,51 @@ var XMN;
                 if (this.viewer?.isConnected)
                     this.controlContainer(this.viewer);
             });
+            this.observedRouteKey = `${window.location.pathname}${window.location.search}`;
+            this.installRouteObserver();
+            // Safety fallback: browsers may omit Navigation API events for X routes
+            // and media content may mount after its URL has already committed.
             this.refreshId = window.setInterval(() => this.tick(), 450);
             this.tick();
+        }
+        /**
+         * Subscribe only to a standard browser event (no React/History hooks).
+         * Navigation API detects committed same-document pushState/replaceState
+         * changes; popstate is the lightweight legacy fallback.
+         */
+        installRouteObserver() {
+            const nav = window.navigation;
+            if (nav && typeof nav.addEventListener === 'function') {
+                try {
+                    nav.addEventListener('currententrychange', () => this.scheduleRouteTick());
+                    return true;
+                }
+                catch { /* Unsupported/limited isolated-world API: poll remains. */ }
+            }
+            window.addEventListener('popstate', () => this.scheduleRouteTick());
+            return false;
+        }
+        /** Collapse consecutive same-route updates into one next-task DOM check. */
+        scheduleRouteTick() {
+            const key = `${window.location.pathname}${window.location.search}`;
+            if (this.observedRouteKey === key)
+                return;
+            this.observedRouteKey = key;
+            if (this.routeTickTimer != null)
+                return;
+            this.routeTickTimer = window.setTimeout(() => {
+                this.routeTickTimer = null;
+                // X's click handler may commit a new URL before its modal finishes
+                // replacing the prior photo. The modal observer covers that mount;
+                // never forcibly tear down controls during an in-flight navigation.
+                if (this.navigationBusy)
+                    return;
+                if (this.originProfile &&
+                    XMN.profileStatusFromPath(window.location.pathname, this.originProfile) &&
+                    !document.querySelector(VIEWER_SELECTOR))
+                    return;
+                this.tick();
+            }, 0);
         }
         resetSession() {
             this.navGeneration++;

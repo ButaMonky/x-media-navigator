@@ -553,6 +553,93 @@ test('thumbnail URL cache stays bounded over a long media timeline', () => {
 });
 
 
+test('Navigation API event schedules an immediate coalesced route scan', () => {
+  const priorNav=context.window.navigation, priorSet=context.window.setTimeout;
+  const previousPath=state.pathname, previousSearch=state.search;
+  const callbacks=new Map(), scheduled=[];
+  context.window.navigation={addEventListener(type,fn){callbacks.set(type,fn);}};
+  context.window.setTimeout=(fn,delay)=>{scheduled.push({fn,delay});return scheduled.length;};
+  const visited=[];
+  const ctrl=Object.assign(Object.create(proto),{
+    observedRouteKey:'/alice/status/11/photo/1',routeTickTimer:null,
+    tick(){visited.push(state.pathname+state.search);},
+  });
+  try {
+    assert.equal(proto.installRouteObserver.call(ctrl),true,'Navigation API is preferred without new permissions');
+    assert.equal(callbacks.has('currententrychange'),true);
+    state.pathname='/alice/status/11/photo/2';
+    callbacks.get('currententrychange')();
+    callbacks.get('currententrychange')();
+    assert.equal(scheduled.length,1,'multiple same-route events are coalesced');
+    assert.equal(scheduled[0].delay,0,'do not wait for the 450ms safety poll');
+    scheduled[0].fn();
+    assert.deepEqual(visited,['/alice/status/11/photo/2']);
+    state.search='?filter=photo';
+    callbacks.get('currententrychange')();
+    assert.equal(scheduled.length,2,'query-only SPA filter changes also trigger a scan');
+    scheduled[1].fn();
+    assert.deepEqual(visited,['/alice/status/11/photo/2','/alice/status/11/photo/2?filter=photo']);
+  } finally {
+    context.window.navigation=priorNav;context.window.setTimeout=priorSet;
+    state.pathname=previousPath;state.search=previousSearch;
+  }
+});
+
+test('Navigation API unsupported safely preserves the 450ms polling fallback', () => {
+  const priorNav=context.window.navigation;
+  const priorAdd=context.window.addEventListener;
+  const callbacks=new Map();
+  context.window.navigation=undefined;
+  context.window.addEventListener=(type,fn)=>callbacks.set(type,fn);
+  const ctrl=Object.create(proto);
+  try {
+    assert.equal(proto.installRouteObserver.call(ctrl),false);
+    assert.equal(callbacks.has('popstate'),true,'native Back should still get an immediate route check');
+  }finally{
+    context.window.navigation=priorNav;context.window.addEventListener=priorAdd;
+  }
+});
+
+test('a route event during native SPA navigation cannot close the modal prematurely', () => {
+  const oldSet=context.window.setTimeout;
+  const previousPath=state.pathname;
+  const queue=[];
+  context.window.setTimeout=(fn,delay)=>{queue.push({fn,delay});return queue.length;};
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',navigationBusy:true,routeTickTimer:null,observedRouteKey:'/alice/status/11/photo/1',
+    tick(){throw Error('must not run a full DOM reconciliation while X route is still in-flight');},
+  });
+  try{
+    state.pathname='/alice/status/22/photo/1';
+    proto.scheduleRouteTick.call(ctrl);
+    assert.equal(queue.length,1);
+    queue[0].fn();
+    assert.equal(ctrl.routeTickTimer,null);
+  }finally{context.window.setTimeout=oldSet;state.pathname=previousPath;}
+});
+
+test('Navigation URL event before modal mount never removes the visible old controls', () => {
+  const oldSet=context.window.setTimeout, oldPath=state.pathname;
+  const oldQuery=document.querySelector, queue=[];
+  context.window.setTimeout=(fn,ms)=>{queue.push(fn);return queue.length;};
+  document.querySelector=()=>null;
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',observedRouteKey:'/alice/status/11/photo/1',
+    routeTickTimer:null,navigationBusy:false,
+    tick(){throw Error('a route event must not tear down controls before X mounts its new viewer');},
+  });
+  try {
+    state.pathname='/alice/status/22/photo/1';
+    proto.scheduleRouteTick.call(ctrl);
+    assert.equal(queue.length,1);
+    queue[0]();
+    assert.equal(ctrl.routeTickTimer,null);
+  }finally{
+    state.pathname=oldPath;context.window.setTimeout=oldSet;
+    document.querySelector=oldQuery;
+  }
+});
+
 test('unchanged media DOM is not rescanned on every route poll', () => {
   state.pathname='/alice/media';state.search='?filter=photo';
   state.root=new FakeElement('div');state.root.tiles=[makeTile('/alice/status/11/photo/1').tile];

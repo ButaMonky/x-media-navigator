@@ -1,6 +1,6 @@
 {
   "name": "x-media-navigator",
-  "version": "2.4.13-dev.1",
+  "version": "2.4.14-dev.1",
   "private": true,
   "description": "TypeScript rebuild of X media profile navigation; private development",
   "scripts": {
@@ -8,7 +8,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "check": "npm run build && node --check extension/content_script.js",
     "test": "npm run build && tsc -p tsconfig.core.json && node --test tests/*.test.mjs",
-    "test:browser": "npm run build && node --test tests/browser.test.mjs"
+    "test:browser": "npm run build && node --test tests/browser.test.mjs",
+    "test:navigation-isolated": "node tools/navigation-isolated-probe.mjs"
   },
   "devDependencies": { "typescript": "5.8.3" },
   "engines": { "node": ">=20" }

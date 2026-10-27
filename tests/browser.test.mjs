@@ -17,6 +17,13 @@ const fixture = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><lin
 <main><div data-testid="primaryColumn"><ul id="tiles"></ul></div></main>
 <script>
 const wait = ms => new Promise(r => setTimeout(r, ms));
+window.navEventsSeen=[];
+window.navApiAvailable=!!window.navigation && typeof window.navigation.addEventListener==='function';
+if(window.navApiAvailable) {
+  window.navigation.addEventListener('currententrychange', () => {
+    window.navEventsSeen.push(location.pathname+location.search);
+  });
+}
 window.prefetchLoads=[];
 window.Image = function() {
   // Use a real DOM Image, but replace its payload with a local 1px fixture.
@@ -179,6 +186,10 @@ async function exercise() {
   const nativeRight=key('ArrowRight');
   await wait(500);
   result('gallery first image native ArrowRight',!nativeRight.defaultPrevented && nativeMoves===1 && location.pathname.endsWith('/11/photo/2'));
+  await wait(0);
+  result('Navigation API sees a native same-document photo route commit when available',
+    !window.navApiAvailable ||
+    window.navEventsSeen.some(path=>path.endsWith('/11/photo/2')));
   // React may discard extension-owned descendants on a native photo rerender.
   // Post navigation controls must instead belong to a separate durable layer.
   const galleryViewer=document.querySelector('#modal [data-testid="swipe-to-dismiss"]');
@@ -472,7 +483,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 30, report);
+    assert.equal(report.split('|').length, 31, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
