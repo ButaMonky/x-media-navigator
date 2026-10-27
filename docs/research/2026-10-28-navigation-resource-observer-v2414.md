@@ -68,3 +68,19 @@ No new permissions, listener scripts, services, persistent telemetry, schedulers
 - `CHROMIUM_PATH=<local Edge> npm run test:navigation-isolated`: PASS all four fields (disposable extension loaded, Navigation API available in isolated world, currententrychange observed, page History pushState observed).
 - `git diff --check`: PASS.
 - No real X network request was initiated. Browser tab access in Chat remained BLOCKED with originating-context error, so real-X `name=large` vs `name=orig` Resource Timing/HTTP cache hits remain **UNMEASURED**.
+
+## Verified private CI and deployment (2026-10-28 JST)
+
+- Implementation SHA `f175bd0e7912314a805e42e8017c4cffeb2703f8` was pushed to private `fix/prefetch-startup-v241`; both GitHub `TypeScript check / verify` runs (push + Draft PR #17) concluded **SUCCESS** on that exact commit before deployment. The main branch remained unchanged.
+- Fixed unpacked extension folder `C:\Users\Saito\Downloads\X-Media-Navigator-Current` was verified at **v2.4.13** before replacement and **v2.4.14** after.
+- Exactly the original six installed files were backed up with SHA256 checks under `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v2414-20261028_025121`; the backup contains `SHA256-OLD.txt`.
+- Exactly six files were refreshed from compiled `extension/` with source/installed SHA256 equality:
+  - `content_script.js`: `BA748962D08668A817B62C82347EFB1612986EE9959D5CC288A84C772B4734E9`
+  - `manifest.json`: `1DBD670D30EBF331F0BBA46BC5ACDEC12D892175D35CBD78DDE4C3E4DED76A1A`
+  - `style.css`: `C0EB781242DD69F40F0F7A474A3D6D497E6290B60CA9F153ED8E4DB96D2E4543`
+  - `icon16.png`: `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png`: `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png`: `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Old version is restorable from the timestamped backup, no ZIP created. No public release, main merge, extra permissions, scheduler, new service, user-profile Chrome restart or automatic extension reload.
+- **LIVE X NOT YET VERIFIED FOR v2.4.14:** User must Reload the unpacked extension in `chrome://extensions`, refresh the X tab, and confirm new route events do not regress stable ◀▶, gallery arrows, modal/reply panel continuity or arrow-once behavior. CDN cache reuse statistics remain unmeasured on the user's authenticated X session.
+- An ancillary PowerShell `ConvertFrom-Json` invocation could not parse the lockfile in the remote terminal, but `node JSON.parse(...)`, `npm pkg get`, `npm ci`, and the full project test pipeline parsed/validated the lockfile successfully. This was a tool/parser limitation, not evidence of corrupted package metadata.
