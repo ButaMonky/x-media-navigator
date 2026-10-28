@@ -64,3 +64,17 @@ Red test: three wanted 35MiB decoded images (`near`, `middle`, `far`) over the 8
 - `git diff --check`: PASS. Before commit, local HEAD and origin `fix/prefetch-startup-v241` match `51061e259025371456949685c41eb05ff1286f59`; main unchanged.
 - `extension/content_script.js` baseline committed blob: **111,119 bytes**; new LF-generated file: **113,956 bytes**. The +2,837-byte increase comes from the safety logic and ordinal cache. This is **not a reduction in bundle size**; the performance claim concerns less redundant runtime work on long timelines.
 - No authenticated X site testing could be performed from the current chat's connected Browser originating context; cannot assert actual transfer/cache hit, tab memory footprint, page FPS or 40x real-world speedup.
+
+## Verified CI and fixed-folder private deployment (2026-10-28 JST)
+
+- Implementation commit `a4e8ff8bf629f54e0d6a358db7abf404c847abff` was pushed to private `fix/prefetch-startup-v241`. Both GitHub `TypeScript check / verify` runs for push and Draft PR #17 concluded **SUCCESS on this exact commit** before deployment.
+- The fixed unpacked-extension folder was verified at v2.4.15 before replacement; its six old files were backed up under `Downloads/X-Media-Navigator-Backups/pre-v2416-20261028_155137/` with per-file SHA256 before any overwrite. `SHA256-OLD.txt` preserves the old values. No ZIP created.
+- Exactly six built source files were copied to the existing `Downloads/X-Media-Navigator-Current/` unpacked-extension folder. Installed manifest v2.4.16 confirmed. Each installed file had an exact SHA256 match to its source:
+  - `content_script.js` — `2C8CD049FE33C1A555D586A3B37EA900471D480F64B16DA756068BA8BD73E090`
+  - `manifest.json` — `96443D1AE3A8736A927DCF206E51CBD03ECBADC7E5D54DB29F3FC06DA786B2AC`
+  - `style.css` — `C0EB781242DD69F40F0F7A474A3D6D497E6290B60CA9F153ED8E4DB96D2E4543`
+  - `icon16.png` — `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png` — `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png` — `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- This operation changed no public release, main branch, extension permissions, persistent workers, user browser processes or X account settings. Main still points at `47b23d56257ee272f4adc1dea21900340e673c98`.
+- **NOT TESTED**: the already loaded Chrome extension was not force-reloaded and X's authenticated live UI, resource timing and CDN cache hits remain unmeasured in Chat. For live acceptance, Reload the unpacked extension, refresh the X tab, and verify 1–4-photo native galleries, 10+ forwards/backwards posts, ▶◀ position, modal/right-panel persistence, and large-feed status positions before any main/public merge.
