@@ -69,3 +69,20 @@ These figures verify avoided work in a synthetic controlled test. They do not me
 - `git diff --check`: PASS. Baseline HEAD equal to origin before new commit: `1b57b32d900559941ab51b4b2e946e1fbe396e61`. Main unchanged at `47b23d56257ee272f4adc1dea21900340e673c98`.
 - Generated `extension/content_script.js` baseline size was **109,479 bytes**; new LF-built file **111,119 bytes**. The +1,640-byte increase is expected for the listener/lifecycle handler. **Do not describe this as bundle-size reduction**; it is a controlled runtime background-load reduction.
 - Actual background-tab CPU/bandwidth, memory reduction and live CDN `name=large/orig` HTTP cache-hit rate remain **unmeasured**. Do not merge or release based only on synthetic tests.
+
+## Private CI and fixed-folder deployment (verified 2026-10-28 JST)
+
+- Runtime implementation commit `c043fabc717083a21c10ce152f0b4ab3b1a317d5` was pushed to private branch `fix/prefetch-startup-v241`. Both GitHub push and Draft PR #17 `TypeScript check / verify` jobs concluded **SUCCESS on that exact SHA** before deployment.
+- Installed manifest v2.4.14 confirmed before replacement; built source v2.4.15 confirmed, with clean local worktree matching CI HEAD. Main remained at `47b23d56257ee272f4adc1dea21900340e673c98`.
+- The six original installed files were copied and SHA256-verified under the rollback directory:
+  `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v2415-20261028_152529`.
+  The backup includes `SHA256-OLD.txt`; no ZIP was created.
+- Updated exactly the original six unpacked-extension files at `C:\Users\Saito\Downloads\X-Media-Navigator-Current`. All installed SHA256 values matched the built `extension/` sources:
+  - `content_script.js` `02B182D266BD0BD25DBD33AE1B6F71DA225278A639B817C03DF5261B58446D31`
+  - `manifest.json` `4AF58D7BB127E357787E5A2A2E6A9D2FBE6D5397D1F4424136BF9AAF9FF96D6A`
+  - `style.css` `C0EB781242DD69F40F0F7A474A3D6D497E6290B60CA9F153ED8E4DB96D2E4543`
+  - `icon16.png` `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png` `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png` `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Installed manifest `2.4.15` verified after replacement. Existing loaded Chrome extension has **not** been Reloaded and the signed-in X tab has **not** been re-tested. Do not claim live-X performance/CPU/HTTP cache improvement from this isolated code/test evidence. Reload the unpacked extension and X media tab before real acceptance.
+- The existing Draft PR remains open/draft; no main merge, public release, app permission changes, outside-X network requests, browser profile restart or new persistent background task was performed.
