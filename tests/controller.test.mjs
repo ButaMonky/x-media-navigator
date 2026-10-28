@@ -1551,6 +1551,127 @@ test('modal DOM observer handles SPA insertion immediately without polling unrel
   }
 });
 
+test('late decode after background cancellation cannot restart stale transfers', async () => {
+  const oldImage=context.Image,oldNav=context.navigator;
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const oldHidden=document.hidden,oldPath=state.pathname;
+  const pending=[],started=[],timers=new Map();
+  let nextTimer=1;
+  context.window.setTimeout=(fn,ms)=>{const id=nextTimer++;timers.set(id,{fn,ms});return id;};
+  context.window.clearTimeout=(id)=>timers.delete(id);
+  context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'},deviceMemory:8};
+  context.Image=class {
+    naturalWidth=1600;naturalHeight=900;
+    set src(v){started.push(v);this.url=v;}
+    decode(){return new Promise(resolve=>pending.push(resolve));}
+    removeAttribute(name){assert.equal(name,'src');this.url='';}
+  };
+  document.hidden=false;state.pathname='/alice/status/10/photo/1';
+  const urls=['ONE','TWO','THREE'].map(x=>'https://pbs.twimg.com/media/'+x+'?format=jpg&name=large');
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer:{isConnected:true},originProfile:'alice',navGeneration:12,
+    navigationBusy:false,
+    prefetched:new Map(),prefetchQueue:[...urls],prefetchWanted:new Set(urls),
+    prefetchedTooLarge:new Set(),prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+    prefetchInFlight:0,preloadTimer:null,preloadForPath:'cached',
+  });
+  try {
+    proto.drainPrefetchQueue.call(ctrl);
+    assert.equal(ctrl.prefetchInFlight,2);
+    assert.deepEqual(started,urls.slice(0,2));
+    document.hidden=true;
+    proto.onVisibilityChange.call(ctrl);
+    assert.equal(ctrl.prefetchInFlight,0,'cancel releases both transfer slots');
+    assert.equal(ctrl.prefetchQueue.length,0,'queued third resource is abandoned');
+    assert.equal(ctrl.prefetchFailed.size,0,'cancellation is not a CDN failure');
+    pending[0]();pending[1]();
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    assert.equal(ctrl.prefetchInFlight,0,'late promise cannot free slots twice');
+    assert.deepEqual(started,urls.slice(0,2),'late decode must not start stale third request');
+    assert.equal(ctrl.prefetched.size,0,'canceled records must not come back');
+    assert.equal(timers.size,0,'all abandoned watchdog timers are released');
+  }finally{
+    context.Image=oldImage;context.navigator=oldNav;context.window.setTimeout=oldSet;
+    context.window.clearTimeout=oldClear;document.hidden=oldHidden;state.pathname=oldPath;
+  }
+});
+
+test('hidden background route polls do no media DOM work and resume once on return', () => {
+  const oldHidden=document.hidden,oldPath=state.pathname;
+  state.pathname='/alice/media';
+  document.hidden=true;
+  let observerWork=0,reconciliations=0,prefetches=0;
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|default',navigationBusy:false,
+    viewer:{isConnected:true},preloadForPath:'old',
+    ensureListObserver(){observerWork++;return false;},
+    scanTiles(){observerWork++;},syncModalObserver(){observerWork++;},
+    schedulePreload(){prefetches++;},
+  });
+  try {
+    proto.tick.call(ctrl);
+    assert.equal(observerWork,0,'hidden interval should avoid touching the DOM');
+    ctrl.tick=()=>{reconciliations++;};
+    document.hidden=false;
+    proto.onVisibilityChange.call(ctrl);
+    assert.equal(reconciliations,1,'resume promptly reconciles X state before prefetching');
+    assert.equal(prefetches,1);
+  }finally{document.hidden=oldHidden;state.pathname=oldPath;}
+});
+
+test('backgrounding the tab stops obsolete prefetch downloads without dropping decoded photos', () => {
+  const oldHidden=document.hidden;
+  const oldClear=context.window.clearTimeout;
+  const cancelled=[], cleared=[];
+  context.window.clearTimeout=(id)=>cleared.push(id);
+  document.hidden=true;
+  const decoded={image:{},ready:true,loading:false,bytes:6400};
+  const unfinished={image:{},ready:false,loading:true,bytes:0,
+    cancel(){cancelled.push('obsolete');ctrl.prefetched.delete('obsolete');ctrl.prefetchInFlight--;}};
+  const handoffImage={};
+  const handoffLoading={image:handoffImage,ready:false,loading:true,bytes:0,
+    cancel(){cancelled.push('visible');}};
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer:{isConnected:true},originProfile:'alice',navGeneration:7,
+    prefetched:new Map([['decoded',decoded],['obsolete',unfinished],['visible',handoffLoading]]),
+    prefetchedReady:new Set(),prefetchQueue:['pending','stale'],
+    prefetchWanted:new Set(['pending','obsolete','visible']),
+    prefetchInFlight:2,preloadForPath:'cached',preloadTimer:15,
+    handoff:{host:{contains(image){return image===handoffImage;}}},
+  });
+  try{
+    proto.onVisibilityChange.call(ctrl);
+    assert.deepEqual(cancelled,['obsolete'],'only non-visible in-flight prefetch should be canceled');
+    assert.equal(ctrl.prefetchQueue.length,0,'queued background transfers should be abandoned');
+    assert.equal(ctrl.prefetchWanted.size,0,'no pending demand while tab is hidden');
+    assert.equal(ctrl.prefetched.get('decoded'),decoded,'retain bounded already decoded image for return');
+    assert.equal(ctrl.prefetched.has('visible'),true,'handoff image must not be canceled');
+    assert.equal(ctrl.prefetchInFlight,1);
+    assert.ok(cleared.includes(15),'clear startup timer so it does not run while hidden');
+  }finally{
+    document.hidden=oldHidden;context.window.clearTimeout=oldClear;
+  }
+});
+
+test('returning to a visible media viewer recalculates prefetch even for unchanged route', () => {
+  const oldHidden=document.hidden;
+  document.hidden=false;
+  let scheduled=0,reconciled=0;
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer:{isConnected:true},originProfile:'alice',
+    preloadForPath:'old-route-cache-key',
+    tick(){reconciled++;},schedulePreload(){scheduled++;},
+  });
+  try{
+    proto.onVisibilityChange.call(ctrl);
+    assert.equal(ctrl.preloadForPath,'','stale same-route dedup must be reset after backgrounding');
+    assert.equal(scheduled,1,'restart only the bounded existing queue on tab return');
+    ctrl.viewer=null;
+    proto.onVisibilityChange.call(ctrl);
+    assert.equal(scheduled,1,'a closed gallery must not start background downloads');
+  }finally{document.hidden=oldHidden;}
+});
+
 test('single oversized decoded photo does not churn repeated prefetch requests', async () => {
   const previousImage=context.Image, previousNavigator=context.navigator;
   document.hidden=false;

@@ -183,6 +183,24 @@ async function exercise() {
   await wait(90);
   result('adjacent prefetch starts before 350ms debounce',window.prefetchLoads.length>0);
   await wait(530);
+  // Real Chromium visibility event wiring: cancel optional background
+  // photo work without removing existing SPA controls, then resume once.
+  const layerBeforeVisibility=document.querySelector('.xmn-controls-layer');
+  let simulatedHidden=true;
+  Object.defineProperty(document,'hidden',{configurable:true,get(){return simulatedHidden;}});
+  document.dispatchEvent(new Event('visibilitychange'));
+  const startCount=window.prefetchLoads.length;
+  await wait(160);
+  result('hidden document stops new optional requests without removing arrows',
+    window.prefetchLoads.length===startCount &&
+    document.querySelector('.xmn-controls-layer')===layerBeforeVisibility);
+  simulatedHidden=false;
+  document.dispatchEvent(new Event('visibilitychange'));
+  await wait(100);
+  delete document.hidden;
+  result('returning to visible keeps the active photo controls',
+    document.querySelector('.xmn-controls-layer')===layerBeforeVisibility &&
+    document.querySelectorAll('.xmn-controls-layer .xmn-nav-button').length===2);
   const nativeRight=key('ArrowRight');
   await wait(500);
   result('gallery first image native ArrowRight',!nativeRight.defaultPrevented && nativeMoves===1 && location.pathname.endsWith('/11/photo/2'));
@@ -483,7 +501,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 31, report);
+    assert.equal(report.split('|').length, 33, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

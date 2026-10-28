@@ -163,6 +163,7 @@ namespace XMN {
       // Preheat adjacent images when a user opens media from the grid, before
       // X has constructed its React modal. This never consumes the click.
       document.addEventListener('click', (event) => this.onMediaTileClick(event), true);
+      document.addEventListener('visibilitychange', () => this.onVisibilityChange(), { passive: true });
       window.addEventListener('resize', () => {
         this.controlsPaneAnchor = null;
         this.controlsLayoutPath = '';
@@ -334,6 +335,10 @@ namespace XMN {
     }
 
     private tick(): void {
+      // Chromium may still dispatch throttled interval callbacks for a hidden
+      // tab. Do not traverse X's media DOM while backgrounded; we reconcile
+      // once on visibilitychange before resuming bounded photo prefetch.
+      if (document.hidden) return;
       const path = window.location.pathname;
       const atMedia = mediaProfileFromPath(path);
       const timeline = mediaTimelineKey(path, window.location.search);
@@ -1060,6 +1065,29 @@ namespace XMN {
         this.preloadTimer = null;
         this.preloadAdjacentImages();
       }, 0);
+    }
+
+    /** Stop obsolete background transfers; reuse decoded photos on return. */
+    private onVisibilityChange(): void {
+      if (document.hidden) {
+        if (this.preloadTimer !== null) window.clearTimeout(this.preloadTimer);
+        this.preloadTimer = null;
+        this.prefetchQueue = [];
+        this.prefetchWanted.clear();
+        // An image currently used as the visual handoff must remain alive.
+        // All other in-flight downloads are optional once X is backgrounded.
+        for (const entry of [...this.prefetched.values()]) {
+          if (entry.loading && !this.handoff?.host.contains(entry.image))
+            entry.cancel?.();
+        }
+        return;
+      }
+      // The previous route/source fingerprint may be unchanged after returning
+      // from the background. Force only the existing bounded prefetch policy
+      // to reconsider nearby photos, not a new polling service.
+      this.preloadForPath = '';
+      this.tick();
+      if (this.viewer?.isConnected && this.originProfile) this.schedulePreload();
     }
 
     /** Prefetch before X opens the modal, but only after a real media-tile click. */
