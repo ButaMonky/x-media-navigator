@@ -68,3 +68,18 @@ test('source-of-truth is TypeScript and no browser secret is embedded', () => {
   assert.ok(!manifest.includes('chrome-extension://'));
   assert.ok(!manifest.includes('localStorage'));
 });
+
+test('progressive thumbnail overlay remains bounded and never reads cross-origin pixels', () => {
+  const css = get(dev, 'style.css').toString('utf8');
+  const rule=css.match(/\.xmn-visual-handoff\s+\.xmn-handoff-preview\s*\{([^}]+)\}/)?.[1]??'';
+  assert.match(rule,/object-fit:\s*contain\s*;/,'do not stretch or crop a thumbnail');
+  assert.match(rule,/pointer-events:\s*none\s*!important\s*;/,
+    'the preview cannot intercept photo or reply-panel clicks');
+  const source=get(root, 'src/content.ts').toString('utf8');
+  const fn=source.split('private captureLowQualityThumbnail(')[1]
+    ?.split('private promoteVisualHandoff()')[0] ?? '';
+  assert.ok(fn.includes("getContext('2d'"));
+  assert.doesNotMatch(fn,/\b(?:getImageData|toDataURL|toBlob|captureStream|fetch)\s*\(/,
+    'never read/export a potentially tainted CDN image or fetch a new thumbnail');
+  assert.match(fn,/256\s*\//,'canvas preview must be memory and size bounded');
+});

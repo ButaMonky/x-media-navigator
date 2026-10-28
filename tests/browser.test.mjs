@@ -223,6 +223,41 @@ async function exercise() {
   result('returning to visible keeps the active photo controls',
     document.querySelector('.xmn-controls-layer')===layerBeforeVisibility &&
     document.querySelectorAll('.xmn-controls-layer .xmn-nav-button').length===2);
+  // Progressively use an existing decoded X thumbnail (no extra CDN fetch),
+  // then switch that same overlay to an already decoded full image.
+  const targetPreviewRef=window.XMN.mediaRefFromHref('/alice/status/22/photo/1','alice');
+  const targetPreviewLink=source('/alice/status/22/photo/1');
+  const targetPreviewSrc=targetPreviewLink.querySelector('img').currentSrc;
+  const targetPreviewUrl=window.XMN.preloadImageUrl(targetPreviewSrc);
+  const previewCtrl=Object.create(window.XMN.Controller.prototype);
+  previewCtrl.originProfile='alice';
+  previewCtrl.viewer=document.querySelector('#modal [data-testid="swipe-to-dismiss"]');
+  previewCtrl.navGeneration=99;
+  previewCtrl.handoff=null;
+  previewCtrl.imageSources=new Map([[targetPreviewRef.key,targetPreviewUrl]]);
+  previewCtrl.prefetched=new Map();
+  const beforePreviewRequests=window.prefetchLoads.length;
+  const previewCreated=previewCtrl.beginVisualHandoff(targetPreviewRef,targetPreviewLink);
+  const previewHost=previewCtrl.handoff?.host;
+  const previewCanvas=previewHost?.querySelector('canvas.xmn-handoff-preview');
+  result('thumbnail-first canvas snapshot uses existing X tile and no new CDN request',
+    previewCreated && !!previewCanvas && previewCanvas.width<=256 && previewCanvas.height<=256 &&
+    previewCtrl.handoff.quality==='low' &&
+    window.prefetchLoads.length===beforePreviewRequests &&
+    getComputedStyle(previewHost).pointerEvents==='none');
+  const decodedHigh=document.createElement('img');
+  decodedHigh.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  await decodedHigh.decode();
+  previewCtrl.prefetched.set(targetPreviewUrl,{image:decodedHigh,ready:true,loading:false,bytes:4});
+  const promoted=previewCtrl.promoteVisualHandoff();
+  result('same handoff upgrades from thumbnail to full image without refetch',
+    promoted && previewCtrl.handoff.quality==='high' &&
+    previewHost.firstElementChild===decodedHigh &&
+    window.prefetchLoads.length===beforePreviewRequests);
+  previewCtrl.clearVisualHandoff();
+  result('progressive preview releases DOM and does not intercept input',
+    !document.querySelector('.xmn-visual-handoff') && previewCtrl.handoff===null);
+
   const nativeRight=key('ArrowRight');
   await wait(500);
   result('gallery first image native ArrowRight',!nativeRight.defaultPrevented && nativeMoves===1 && location.pathname.endsWith('/11/photo/2'));
@@ -523,9 +558,59 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 34, report);
+    assert.equal(report.split('|').length, 37, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Chromium displays a tainted cross-origin canvas without a second image request', {
+  skip: process.env.XMN_RUN_CHROMIUM !== '1' ? 'Requires Chromium' :
+    !existsSync(browser) ? 'Chromium not installed' : false,
+}, async () => {
+  let imageRequests=0;
+  const pixel = Buffer.from('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=', 'base64');
+  const imageServer=createServer((req,res)=>{
+    if(req.url==='/thumb.gif'){
+      imageRequests++;
+      res.writeHead(200,{'content-type':'image/gif','cache-control':'public, max-age=600'});
+      res.end(pixel);
+    }else{res.writeHead(404);res.end();}
+  });
+  await new Promise(resolve=>imageServer.listen(0,'127.0.0.1',resolve));
+  const imageUrl='http://127.0.0.1:'+imageServer.address().port+'/thumb.gif';
+  const pageServer=createServer((req,res)=>{
+    res.writeHead(200,{'content-type':'text/html; charset=utf-8'});
+    res.end(`<!doctype html><html><body>
+<script>
+const image = document.createElement('img');
+image.onload=()=>{
+  const canvas=document.createElement('canvas');
+  canvas.width=1;canvas.height=1;
+  const ctx=canvas.getContext('2d');
+  ctx.drawImage(image,0,0,1,1);
+  document.body.appendChild(canvas);
+  let readBlocked=false;
+  try{ctx.getImageData(0,0,1,1);}catch(e){readBlocked=e.name==='SecurityError';}
+  document.body.dataset.canvasProof=(readBlocked && canvas.isConnected)?'passed':'failed';
+};
+image.onerror=()=>document.body.dataset.canvasProof='load-error';
+image.src=${JSON.stringify(imageUrl)};
+</script></body></html>`);
+  });
+  await new Promise(resolve=>pageServer.listen(0,'127.0.0.1',resolve));
+  const dir=mkdtempSync(join(tmpdir(),'xmn-tainted-canvas-'));
+  try {
+    const output=await runChromium(
+      'http://127.0.0.1:'+pageServer.address().port+'/test',dir);
+    assert.match(output,/data-canvas-proof="passed"/,
+      'a cross-origin tainted canvas may be displayed but its pixels cannot be read');
+    assert.equal(imageRequests,1,
+      'drawImage of an already downloaded thumbnail does not issue another request');
+  }finally{
+    await new Promise(resolve=>pageServer.close(resolve));
+    await new Promise(resolve=>imageServer.close(resolve));
+    rmSync(dir,{recursive:true,force:true});
   }
 });

@@ -85,6 +85,8 @@ namespace XMN {
     targetStatus: string;
     targetMediaIndex: number | null;
     targetPhotoIdentity: string;
+    targetPrefetchUrl: string;
+    quality: 'low' | 'high';
     timeout: number;
     generation: number;
     shown: boolean;
@@ -1301,6 +1303,11 @@ namespace XMN {
               }
             }
           }
+          if (record.ready && this.handoff?.targetPrefetchUrl === url) {
+            // A low-quality preview may already be visible while the decoded
+            // prefetch completes. Upgrade in-place; never issue a second fetch.
+            this.promoteVisualHandoff();
+          }
           this.trimPrefetched();
           // A pre-open click may launch the first two requests. Do not drain
           // the remaining queue until the actual gallery is visible.
@@ -1342,19 +1349,80 @@ namespace XMN {
     }
 
     /**
-     * Visual-only handoff while X closes and reopens its SPA photo viewer.
-     * X still owns the URL, history and modal; this only paints an already
-     * decoded, low-priority CDN image for <= 1.8s. No extra network request.
+     * Capture an ALREADY decoded native thumbnail, never download another
+     * small image. Drawing a third-party image taints this temporary canvas;
+     * we only display the canvas and NEVER export/read pixel data.
      */
-    private beginVisualHandoff(target: MediaRef): boolean {
+    private captureLowQualityThumbnail(
+      target: MediaRef, link: HTMLAnchorElement | null,
+    ): HTMLCanvasElement | null {
+      const expected = this.imageSources?.get(target.key);
+      const expectedId = expected ? photoCdnIdentity(expected) : null;
+      if (!expectedId || target.kind !== 'photo' || !this.originProfile ||
+          !link?.isConnected ||
+          mediaRefFromHref(link.getAttribute('href') ?? '', this.originProfile)?.key !== target.key)
+        return null;
+      let image = link.querySelector<HTMLImageElement>('img[src], img[srcset]');
+      if (!image) {
+        // Some older X tiles place one thumbnail outside their native anchor.
+        // Never guess among several candidate media images.
+        const images = link.closest(TILE_SELECTOR)?.querySelectorAll<HTMLImageElement>(
+          'img[src], img[srcset]');
+        if (images?.length === 1) image = images[0];
+      }
+      if (!image || !image.complete || image.naturalWidth < 1 || image.naturalHeight < 1 ||
+          photoCdnIdentity(image.currentSrc || image.src || '') !== expectedId) return null;
+      try {
+        const canvas = document.createElement('canvas');
+        const scale = Math.min(1, 256 / Math.max(image.naturalWidth, image.naturalHeight));
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const ctx = canvas.getContext('2d', { alpha: false });
+        if (!ctx) return null;
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        canvas.classList.add('xmn-handoff-preview');
+        return canvas;
+      } catch {
+        // Failed/cross-origin-restricted or unsupported draw is optional.
+        // Native X image loading must always remain functional.
+        return null;
+      }
+    }
+
+    /** Promote a low-res canvas to the existing decoded prefetch if ready. */
+    private promoteVisualHandoff(): boolean {
+      const handoff = this.handoff;
+      if (!handoff || handoff.quality !== 'low' ||
+          handoff.generation !== this.navGeneration) return false;
+      const record = this.prefetched?.get(handoff.targetPrefetchUrl);
+      if (!record?.ready || record.image.naturalWidth < 1 ||
+          photoCdnIdentity(handoff.targetPrefetchUrl) !== handoff.targetPhotoIdentity)
+        return false;
+      try {
+        record.image.classList.add('xmn-handoff-image');
+        handoff.host.replaceChildren(record.image);
+        handoff.quality = 'high';
+        return true;
+      } catch { return false; }
+    }
+
+    /**
+     * Visual-only handoff while X swaps its SPA photo viewer.
+     * High quality decoded prefetch wins; otherwise display ONLY an existing
+     * thumbnail's small canvas snapshot, without any extra image request.
+     */
+    private beginVisualHandoff(
+      target: MediaRef, link: HTMLAnchorElement | null = null,
+    ): boolean {
       if (target.kind !== 'photo' || this.handoff || !this.originProfile || document.hidden) return false;
       if (typeof window.matchMedia === 'function' &&
           window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
       const url = this.imageSources?.get(target.key);
       const record = url ? this.prefetched?.get(url) : undefined;
       const targetPhotoIdentity = url ? photoCdnIdentity(url) : null;
-      if (!url || !targetPhotoIdentity || preloadImageUrl(url) !== url ||
-          !record?.ready || record.image.naturalWidth < 1) return false;
+      if (!url || !targetPhotoIdentity || preloadImageUrl(url) !== url) return false;
+      const highReady = !!record?.ready && record.image.naturalWidth > 0;
+      if (!highReady && !link) return false;
       let host: HTMLDivElement | null = null;
       try {
         host = document.createElement('div');
@@ -1380,8 +1448,11 @@ namespace XMN {
         host.style.setProperty('top', `${bounds.top}px`);
         host.style.setProperty('width', `${bounds.width}px`);
         host.style.setProperty('height', `${bounds.height}px`);
-        record.image.classList.add('xmn-handoff-image');
-        host.appendChild(record.image);
+        const visual = highReady ? record!.image
+          : this.captureLowQualityThumbnail(target, link);
+        if (!visual) return false;
+        if (highReady) visual.classList.add('xmn-handoff-image');
+        host.appendChild(visual);
         document.body.appendChild(host);
         const timeout = window.setTimeout(() => this.clearVisualHandoff(), 1800);
         const handoff: VisualHandoff = {
@@ -1389,6 +1460,8 @@ namespace XMN {
           targetStatus: target.statusId,
           targetMediaIndex: target.mediaIndex,
           targetPhotoIdentity,
+          targetPrefetchUrl: url,
+          quality: highReady ? 'high' : 'low',
           timeout,
           generation: this.navGeneration,
           shown: false,
@@ -1451,6 +1524,9 @@ namespace XMN {
     private showVisualHandoff(): void {
       const handoff = this.handoff;
       if (handoff && handoff.generation === this.navGeneration && !handoff.shown) {
+        // If the decoded full-size photo became ready during the SPA route
+        // change, skip showing the blurry intermediary altogether.
+        this.promoteVisualHandoff();
         handoff.shown = true;
         // The old modal can take most of the original 1.8s to close.
         // Start the visible handoff window only after that close finishes.
@@ -1739,7 +1815,7 @@ namespace XMN {
             typeof this.tryNativeInModalNavigation === 'function') {
           // Prepare an already decoded photo invisibly. Only paint it when X
           // accepted the new route but has not yet rendered its target image.
-          this.beginVisualHandoff(this.refs[nextIndex]);
+          this.beginVisualHandoff(this.refs[nextIndex], initialDestination);
           const result = await this.tryNativeInModalNavigation(
             this.refs[nextIndex], initialDestination, oldViewer, generation);
           if (result === 'retained' || result === 'navigated') {
@@ -1763,7 +1839,8 @@ namespace XMN {
           this.toast('Xの閉じるボタンが見つからず、移動を中止しました');
           return;
         }
-        if (nextIndex !== null && !this.handoff) this.beginVisualHandoff(this.refs[nextIndex]);
+        if (nextIndex !== null && !this.handoff)
+          this.beginVisualHandoff(this.refs[nextIndex], initialDestination);
         closeButton.click();
         if (!await this.waitForViewerToClose(oldViewer)) {
           this.toast('ビューアを閉じられませんでした');

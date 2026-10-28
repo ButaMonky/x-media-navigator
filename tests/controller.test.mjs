@@ -1330,6 +1330,151 @@ test('preloads the next photo and the NEXT POST before reaching the album edge',
   state.pathname='/alice/media';
 });
 
+test('loaded matching CDN thumbnail becomes a bounded canvas preview without network', () => {
+  const oldCreate=document.createElement;
+  const oldImage=context.Image;
+  const target=ref('/alice/status/44/photo/1');
+  const source='https://pbs.twimg.com/media/PHOTOFOR44?format=jpg&name=small';
+  const img={src:source,currentSrc:source,complete:true,
+    naturalWidth:640,naturalHeight:420};
+  const link={isConnected:true,getAttribute(n){return n==='href'?target.href:null;},
+    querySelector(){return img;}};
+  const draws=[],created=[];
+  document.createElement=tag=>{
+    created.push(tag);
+    if(tag!=='canvas') throw Error('preview must not allocate images or wrappers');
+    return {width:0,height:0,getContext(name,opts){
+      assert.equal(name,'2d');
+      return {drawImage(...args){draws.push(args);}};
+    },classList:{add(){} }};
+  };
+  context.Image=class {constructor(){throw Error('no new CDN Image request permitted');}};
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',imageSources:new Map([[
+      target.key,'https://pbs.twimg.com/media/PHOTOFOR44?format=jpg&name=large',
+    ]]),
+  });
+  try{
+    const canvas=proto.captureLowQualityThumbnail.call(ctrl,target,link);
+    assert.ok(canvas,'existing thumbnail should be captured');
+    assert.ok(canvas.width>0 && canvas.width<=256);
+    assert.ok(canvas.height>0 && canvas.height<=256);
+    assert.equal(draws.length,1);
+    assert.equal(draws[0][0],img);
+    assert.deepEqual(created,['canvas'],'no additional image resource fetch');
+  }finally{document.createElement=oldCreate;context.Image=oldImage;}
+});
+
+test('low-quality snapshot rejects unrelated, unready and stale recycled thumbnails', () => {
+  const oldCreate=document.createElement;
+  const target=ref('/alice/status/55/photo/1');
+  const next='https://pbs.twimg.com/media/RIGHT55?format=jpg&name=small';
+  const prior='https://pbs.twimg.com/media/WRONG55?format=jpg&name=small';
+  const img={src:next,currentSrc:prior,complete:false,naturalWidth:0,naturalHeight:0};
+  let draws=0;
+  document.createElement=tag=>{
+    assert.equal(tag,'canvas');
+    return {width:0,height:0,classList:{add(){}},getContext(){return {drawImage(){draws++;}};}};
+  };
+  const link={isConnected:true,getAttribute(n){return n==='href'?target.href:null;},
+    querySelector(){return img;}};
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',imageSources:new Map([[target.key,
+      'https://pbs.twimg.com/media/RIGHT55?format=jpg&name=large']]),
+  });
+  try{
+    assert.equal(proto.captureLowQualityThumbnail.call(ctrl,target,link),null);
+    img.complete=true;img.naturalWidth=128;img.naturalHeight=96;
+    assert.equal(proto.captureLowQualityThumbnail.call(ctrl,target,link),null,
+      'a completed thumbnail of the wrong identity must not be displayed');
+    img.currentSrc=next;
+    link.getAttribute=()=>'/alice/status/999/photo/1';
+    assert.equal(proto.captureLowQualityThumbnail.call(ctrl,target,link),null,
+      'a recycled link that changed its target cannot be captured');
+    link.getAttribute=n=>n==='href'?target.href:null;
+    assert.ok(proto.captureLowQualityThumbnail.call(ctrl,target,link));
+    assert.equal(draws,1,'only correct decoded image is rendered');
+  }finally{document.createElement=oldCreate;}
+});
+
+test('unready large photo can use decoded grid thumbnail as a hidden SPA handoff', () => {
+  const oldBody=document.body,oldCreate=document.createElement;
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const oldMatch=context.window.matchMedia,oldWidth=context.window.innerWidth;
+  const timers=new Map();let nextTimer=1;
+  context.window.setTimeout=(fn,ms)=>{const id=nextTimer++;timers.set(id,{fn,ms});return id;};
+  context.window.clearTimeout=id=>timers.delete(id);
+  context.window.matchMedia=()=>({matches:false});context.window.innerWidth=1200;
+  const target=ref('/alice/status/66/photo/1');
+  const url='https://pbs.twimg.com/media/PREVIEW66?format=jpg&name=large';
+  const thumb={currentSrc:'https://pbs.twimg.com/media/PREVIEW66?format=jpg&name=small',
+    src:'',complete:true,naturalWidth:320,naturalHeight:240};
+  const link={isConnected:true,getAttribute(n){return n==='href'?target.href:null;},
+    querySelector(){return thumb;}};
+  const body={children:[],appendChild(n){this.children.push(n);return n;}};
+  document.body=body;
+  document.createElement=tag=>{
+    const node={tag,children:[],classNames:[],attrs:{},
+      classList:{add(name){node.classNames.push(name);}},
+      style:{values:new Map(),setProperty(k,v){this.values.set(k,v);}},
+      setAttribute(k,v){this.attrs[k]=v;},appendChild(el){this.children.push(el);},
+      remove(){body.children=body.children.filter(c=>c!==node);},
+      replaceChildren(...children){this.children=children;},
+    };
+    if(tag==='canvas'){
+      node.getContext=()=>({drawImage(){}});
+    }
+    return node;
+  };
+  const ctrl=Object.assign(Object.create(proto),{
+    navGeneration:3,originProfile:'alice',handoff:null,
+    imageSources:new Map([[target.key,url]]),
+    prefetched:new Map([[url,{image:{naturalWidth:0},ready:false,loading:true}]]),
+    viewer:{getBoundingClientRect:()=>({left:0,top:0,right:720,bottom:610,
+      width:720,height:610}),querySelector(){return null;}},
+  });
+  try{
+    assert.equal(proto.beginVisualHandoff.call(ctrl,target,link),true);
+    assert.equal(body.children.length,1);
+    const host=body.children[0];
+    assert.equal(host.children[0].tag,'canvas');
+    assert.ok(host.children[0].classNames.includes('xmn-handoff-preview'));
+    assert.equal(ctrl.handoff.quality,'low');
+    assert.equal(ctrl.handoff.shown,false,'do not show future image before X changes route');
+    assert.equal(timers.get(ctrl.handoff.timeout).ms,1800);
+    proto.clearVisualHandoff.call(ctrl);
+    assert.equal(body.children.length,0);
+  }finally{
+    document.body=oldBody;document.createElement=oldCreate;
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+    context.window.matchMedia=oldMatch;context.window.innerWidth=oldWidth;
+  }
+});
+
+test('decoded full quality prefetch promotes a thumbnail preview without new downloads', () => {
+  const thumb={};
+  const host={children:[thumb],replaceChildren(...kids){this.children=kids;}};
+  const high={naturalWidth:1280};high.classList={add(name){high.className=name;}};
+  const url='https://pbs.twimg.com/media/QUALITY77?format=jpg&name=large';
+  const ctrl=Object.assign(Object.create(proto),{
+    navGeneration:8,
+    handoff:{quality:'low',generation:8,host,targetStatus:'77',
+      targetMediaIndex:1,targetPhotoIdentity:'QUALITY77',targetPrefetchUrl:url},
+    prefetched:new Map([[url,{ready:true,loading:false,image:high,bytes:1250}]]),
+  });
+  assert.equal(proto.promoteVisualHandoff.call(ctrl),true);
+  assert.deepEqual(host.children,[high]);
+  assert.equal(ctrl.handoff.quality,'high');
+  assert.equal(high.className,'xmn-handoff-image');
+  assert.equal(proto.promoteVisualHandoff.call(ctrl),false,'promotion only once');
+  const other='https://pbs.twimg.com/media/WRONG?format=jpg&name=large';
+  ctrl.handoff.quality='low';
+  ctrl.prefetched=new Map([[url,{ready:true,image:high}],
+    [other,{ready:true,image:{naturalWidth:2000}}]]);
+  assert.equal(proto.promoteVisualHandoff.call(ctrl),true,
+    'only the verified exact target URL may promote the placeholder');
+});
+
 test('decoded next-photo handoff is non-interactive and expires or reveals safely', () => {
   const oldBody=document.body, oldCreate=document.createElement;
   const oldSetTimeout=context.window.setTimeout, oldClearTimeout=context.window.clearTimeout;
@@ -2945,4 +3090,111 @@ test('decoded handoff photo fits captured media panel instead of cropping at vie
   assert.match(css,/max-width:\s*100%/,'decoded image must fit the handoff panel width');
   assert.match(css,/max-height:\s*100%/,'decoded image must fit the handoff panel height');
   assert.doesNotMatch(css,/max-(?:width|height):\s*100v[wh]/,'viewport sizing can crop a narrower X viewer');
+});
+
+test('late prefetch decode automatically replaces a low-resolution handoff in-place', async () => {
+  const oldImage=context.Image,oldNav=context.navigator;
+  const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const oldPath=state.pathname,oldHidden=document.hidden;
+  const url='https://pbs.twimg.com/media/PROMOTE88?format=jpg&name=large';
+  const pending=[],downloads=[];
+  context.Image=class {
+    naturalWidth=1920;naturalHeight=1080;classList={add(){}};
+    set src(v){downloads.push(v);this._src=v;}
+    decode(){return new Promise(resolve=>pending.push(resolve));}
+  };
+  context.window.setTimeout=(fn,ms)=>52;
+  context.window.clearTimeout=()=>{};
+  context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'}};
+  document.hidden=false;state.pathname='/alice/status/88/photo/1';
+  const preview={kind:'canvas'},host={children:[preview],
+    contains(img){return this.children.includes(img);},
+    replaceChildren(...els){this.children=els;}};
+  const ctrl=Object.assign(Object.create(proto),{
+    viewer:{isConnected:true},originProfile:'alice',navGeneration:12,
+    navigationBusy:false,preloadForPath:'',prefetchInFlight:0,
+    prefetched:new Map(),prefetchQueue:[url],prefetchWanted:new Set([url]),
+    prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+    handoff:{quality:'low',generation:12,host,targetStatus:'88',
+      targetMediaIndex:1,targetPhotoIdentity:'PROMOTE88',targetPrefetchUrl:url},
+  });
+  try{
+    proto.drainPrefetchQueue.call(ctrl);
+    assert.deepEqual(downloads,[url],'only existing high-res queued prefetch is requested');
+    assert.equal(host.children[0],preview);
+    pending[0]();
+    await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    assert.equal(ctrl.handoff.quality,'high');
+    assert.equal(host.children[0],ctrl.prefetched.get(url).image);
+    assert.deepEqual(downloads,[url],'upgrade must not fetch another small/large variant');
+    assert.equal(ctrl.prefetchInFlight,0);
+  }finally{
+    context.Image=oldImage;context.navigator=oldNav;
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+    document.hidden=oldHidden;state.pathname=oldPath;
+  }
+});
+
+test('wrong media ID or closed handoff cannot be promoted after late decode', () => {
+  const url='https://pbs.twimg.com/media/EXPECTED89?format=jpg&name=large';
+  const image={naturalWidth:800,classList:{add(){}}};
+  const host={children:[{}],replaceChildren(){throw Error('should not touch unrelated overlay')}};
+  const ctrl=Object.assign(Object.create(proto),{
+    navGeneration:10,
+    handoff:{quality:'low',generation:10,host,targetPhotoIdentity:'UNRELATED',
+      targetPrefetchUrl:url},
+    prefetched:new Map([[url,{ready:true,image}]]),
+  });
+  assert.equal(proto.promoteVisualHandoff.call(ctrl),false);
+  assert.equal(ctrl.handoff.quality,'low');
+  ctrl.handoff=null;
+  assert.equal(proto.promoteVisualHandoff.call(ctrl),false,'closed overlay cannot reappear');
+});
+
+
+
+test('canvas preview is optional and navigation remains possible when drawImage fails', () => {
+  const oldCreate=document.createElement;
+  const target=ref('/alice/status/91/photo/1');
+  const url='https://pbs.twimg.com/media/FALLBACK91?format=jpg&name=small';
+  const image={currentSrc:url,src:url,complete:true,naturalWidth:320,naturalHeight:200};
+  const link={isConnected:true,getAttribute(){return target.href;},
+    querySelector(){return image;}};
+  document.createElement=tag=>{
+    assert.equal(tag,'canvas');
+    return {width:0,height:0,getContext(){return {drawImage(){throw new Error('GPU unavailable');}};}};
+  };
+  const ctrl=Object.assign(Object.create(proto),{originProfile:'alice',imageSources:new Map([[
+    target.key,'https://pbs.twimg.com/media/FALLBACK91?format=jpg&name=large']])});
+  try {
+    assert.equal(proto.captureLowQualityThumbnail.call(ctrl,target,link),null,
+      'optional low-res preview must not block native X navigation');
+  }finally{document.createElement=oldCreate;}
+});
+
+test('progressive preview never opens on a different post or when X navigation aborts', async () => {
+  const previous=state.pathname;
+  const original=ref('/alice/status/101/photo/1');
+  const target=ref('/alice/status/102/photo/1');
+  state.pathname=original.href;
+  let shown=0,closed=0;
+  const viewer={isConnected:true};
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',navGeneration:5,viewer,navigationBusy:false,
+    refs:[original,target],activeIndex(){return 0;},
+    findLiveLink(){return {isConnected:true};},
+    updateViewerState(){},findCloseButton(){return {click(){throw Error('must not close');}};},
+    beginVisualHandoff(){this.handoff={targetStatus:'102',targetMediaIndex:1};return true;},
+    tryNativeInModalNavigation:async()=>{
+      state.pathname='/alice/status/999/photo/1';return 'abort';
+    },
+    showVisualHandoff(){shown++;},
+    clearVisualHandoff(){closed++;this.handoff=null;},
+  });
+  try {
+    await proto.navigate.call(ctrl,1);
+    assert.equal(shown,0,'wrong target route must never reveal the low-res future image');
+    assert.equal(closed,1,'aborted SPA must clear the pending placeholder');
+    assert.equal(ctrl.handoff,null);
+  }finally{state.pathname=previous;}
 });
