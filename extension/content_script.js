@@ -405,6 +405,8 @@ var XMN;
             this.publicApiAnchorFound = false;
             this.publicApiExhausted = false;
             this.publicApiLoading = false;
+            // Persisted X-observed native refs stay navigable after a public API handoff.
+            this.publicSessionRestored = false;
             this.viewer = null;
             // Portaled controls live outside X's React-owned photo carousel. X may
             // unmount or hide a slide's children on photo 2 without closing the modal.
@@ -510,6 +512,7 @@ var XMN;
                 // and at least one validated public API ref must be present.
                 if (keys.size === 0)
                     return;
+                this.publicSessionRestored = true;
                 this.originProfile = data.profile.toLowerCase();
                 this.originTimeline = typeof data.timeline === 'string' ? data.timeline : null;
                 this.refs = refs;
@@ -772,6 +775,7 @@ var XMN;
             this.publicApiCursor = null;
             this.publicApiAnchorFound = false;
             this.publicApiExhausted = false;
+            this.publicSessionRestored = false;
             this.publicApiLoading = false;
             this.imageSources.clear();
             this.imageSourcesRevision++;
@@ -2417,7 +2421,8 @@ var XMN;
                 catch { /* Storage may be disabled. */ }
                 if (!approved) {
                     const message = '続きの投稿を外部サービス FxEmbed の公開APIで取得しますか？' +
-                        '公開プロフィール名のみを送信し、Cookie・ログイン情報は送信しません。';
+                        '公開プロフィール名と接続元IP等の通信情報がFxEmbedに伝わります。' +
+                        'XのCookie・ログイン情報・閲覧履歴は送りません。';
                     if (typeof window.confirm !== 'function' || !window.confirm(message)) {
                         this.toast('ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
                         return;
@@ -2446,8 +2451,11 @@ var XMN;
             // An old media-timeline entry may have been evicted from X's virtualized DOM.
             // Do not close the active viewer when the known destination is no longer clickable.
             if (!initialDestination) {
-                if (this.publicApiKeys?.has(this.refs[nextIndex].key)) {
-                    // X's React media link is absent. Never fake a React SPA route with
+                if (this.publicApiKeys?.has(this.refs[nextIndex].key) ||
+                    (this.publicSessionRestored && this.indexes.has(this.refs[nextIndex].key))) {
+                    // X's link may be absent after an API-driven document navigation.
+                    // Only previously verified native or public refs may navigate here.
+                    // Never fake a React SPA route with
                     // history.pushState: that can desync the image and reply panel.
                     // Use an ordinary X document navigation, preserving only verified
                     // PUBLIC media refs in this tab's short-lived sessionStorage.
