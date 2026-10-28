@@ -83,3 +83,16 @@ test('progressive thumbnail overlay remains bounded and never reads cross-origin
     'never read/export a potentially tainted CDN image or fetch a new thumbnail');
   assert.match(fn,/256\s*\//,'canvas preview must be memory and size bounded');
 });
+
+test('private content script never scrolls the underlying X media tab or calls paid APIs', () => {
+  const source = get(root, 'src/content.ts').toString('utf8');
+  const compiled = get(dev, 'content_script.js').toString('utf8');
+  for (const [label, body] of [['TypeScript',source],['Compiled JS',compiled]]) {
+    assert.doesNotMatch(body,/\bscrollIntoView\s*\(|\bwindow\.scrollTo\s*\(/,
+      label+' must not move the background feed when the next post is unknown');
+    assert.doesNotMatch(body,/api\.x\.com\b|Authorization:\s*Bearer|graphql\/UserMedia/i,
+      label+' must not call paid or undocumented X endpoints');
+  }
+  assert.match(source,/ここまでが読み込み済み/,
+    'unknown destinations retain X viewer and show a clear boundary explanation');
+});

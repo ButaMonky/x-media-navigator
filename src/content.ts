@@ -1675,32 +1675,6 @@ namespace XMN {
       return !viewer.isConnected;
     }
 
-    /** Wait for a DIFFERENT post; new images of the current post are not enough. */
-    private async loadNextPost(statusId: string, generation: number, fromIndex?: number): Promise<MediaRef | null> {
-      for (let attempt = 0; attempt < 20; attempt++) {
-        if (generation !== this.navGeneration) return null;
-        this.scanTiles();
-        const nextIndex = adjacentPostIndex(this.refs, statusId, 1, fromIndex);
-        if (nextIndex !== null) return this.refs[nextIndex];
-        // Prefer scrolling the final *visible media tile*. scrollIntoView also
-        // reaches nested scroll containers, unlike window.scrollTo alone.
-        if (attempt % 3 === 0) {
-          const tiles = mediaColumn()?.querySelectorAll<HTMLElement>(TILE_SELECTOR);
-          const last = tiles?.length ? tiles[tiles.length - 1] : null;
-          if (last && typeof last.scrollIntoView === 'function') {
-            last.scrollIntoView({ block: 'end', behavior: 'auto' });
-          }
-          // Some timelines listen for window scroll instead of item visibility.
-          // Keep the original scroll fallback even when the nested scroll succeeds.
-          window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
-        }
-        await pause(200);
-      }
-      this.scanTiles();
-      const nextIndex = adjacentPostIndex(this.refs, statusId, 1, fromIndex);
-      return nextIndex === null ? null : this.refs[nextIndex];
-    }
-
     /**
      * Try X's own media-tile SPA link before dismissing its dialog.
      * No URL/history writes, React hooks, GraphQL calls or new permissions.
@@ -1782,15 +1756,22 @@ namespace XMN {
       if (this.navigationBusy || currentIndex === null || !oldViewer || !this.originProfile) return;
       const currentRef = this.refs[currentIndex];
       const nextIndex = adjacentPostIndex(this.refs, currentRef.statusId, direction, currentIndex);
-      if (direction === -1 && nextIndex === null) return;
+      // Never change X's scroll position simply to discover an unseen post.
+      // A new post URL cannot be inferred from its predecessor's ID. Keep
+      // the exact current modal/replies panel until X itself loads more cards
+      // from a user-initiated media-timeline scroll.
+      if (nextIndex === null) {
+        if (direction === 1) this.toast(
+          'ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
+        return;
+      }
       const generation = this.navGeneration;
       const profile = this.originProfile;
-      const initialDestination = nextIndex === null ? null : this.findLiveLink(this.refs[nextIndex]);
-      const startingGrid = nextIndex === null && this.originTimeline ? this.captureGrid() : null;
+      const initialDestination = this.findLiveLink(this.refs[nextIndex]);
 
       // An old media-timeline entry may have been evicted from X's virtualized DOM.
       // Do not close the active viewer when the known destination is no longer clickable.
-      if (nextIndex !== null && !initialDestination) {
+      if (!initialDestination) {
         this.toast('移動先が一覧から消えています。ビューアは閉じません');
         return;
       }
@@ -1856,23 +1837,18 @@ namespace XMN {
           // remains connected; an explicit switch to video is never accepted.
           const droppedFilter = returnedTimeline === `${profile}|default` &&
             this.originTimeline !== `${profile}|default`;
-          const unchangedTarget = initialDestination && nextIndex !== null &&
-            this.findLiveLink(this.refs[nextIndex]) === initialDestination &&
+          const unchangedTarget = this.findLiveLink(this.refs[nextIndex]) === initialDestination &&
             initialDestination.isConnected;
-          const retainedGrid = startingGrid !== null && startingGrid.firstTiles.length > 0 &&
-            !this.hasGridTurnedOver(startingGrid);
-          if (!droppedFilter || !(unchangedTarget || retainedGrid)) {
+          // No unknown destination is ever loaded behind the modal anymore.
+          // Do not trust an unrelated retained grid for filter normalization.
+          if (!droppedFilter || !unchangedTarget) {
             this.toast('一覧の種類が切り替わったため、移動を中止しました');
             return;
           }
         }
-        let destination = nextIndex === null ? null : this.refs[nextIndex];
-        // At the end, only click an observed, different post. Never guess a URL.
-        if (!destination && direction === 1) {
-          destination = await this.loadNextPost(currentRef.statusId, generation, currentIndex);
-        }
+        const destination = this.refs[nextIndex];
         if (generation !== this.navGeneration) return;
-        const link = destination && destination.statusId !== currentRef.statusId ? this.findLiveLink(destination) : null;
+        const link = destination.statusId !== currentRef.statusId ? this.findLiveLink(destination) : null;
         if (link) {
           // The old X viewer is now closed. Keep its own photo visible
           // until this point; showing the next image early caused a flash.

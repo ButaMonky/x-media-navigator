@@ -441,22 +441,25 @@ test('preloading is bounded, prioritizes adjacent images, and respects save-data
   assert.equal(calls.length,2,'offline disables preloading');
 });
 
-test('lazy-loader keeps waiting when only more images from the SAME post arrive', async () => {
-  context.window.setTimeout=(callback)=>setTimeout(callback,1);
-  context.window.scrollTo=()=>{};
-  document.documentElement={scrollHeight:200};
-  const refs=['/alice/status/11/photo/1','/alice/status/11/photo/2'].map(ref);
-  let scans=0;
-  const instance={navGeneration:5,refs,
-    scanTiles(){
-      scans++;
-      if (scans===2) this.refs.push(ref('/alice/status/11/photo/3'));
-      if (scans===4) this.refs.push(ref('/alice/status/22/photo/1'));
-    }
-  };
-  const result=await proto.loadNextPost.call(instance,'11',5);
-  assert.equal(result.statusId,'22');
-  assert.equal(scans,4);
+test('loading more photos from the SAME post does not invent a next post or scroll', async () => {
+  const prior=state.pathname;
+  state.pathname='/alice/status/11/photo/1';
+  const viewer={isConnected:true},messages=[];
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',viewer,refs:[
+      ref('/alice/status/11/photo/1'),ref('/alice/status/11/photo/2')],
+    activeIndex(){return 0;},navGeneration:5,navigationBusy:false,
+    findCloseButton(){throw Error('never close');},
+    toast(m){messages.push(m);},
+  });
+  try {
+    await proto.navigate.call(ctrl,1);
+    assert.equal(messages.length,1);
+    ctrl.refs.push(ref('/alice/status/11/photo/3'));
+    await proto.navigate.call(ctrl,1);
+    assert.equal(messages.length,2,'new same-post photo is not a new post');
+    assert.equal(viewer.isConnected,true);
+  }finally{state.pathname=prior;}
 });
 
 
@@ -980,6 +983,84 @@ test('an owned thumbnail avoids searching the surrounding tile for images again'
   assert.equal(ctrl.imageSources.get(entry.key),'https://pbs.twimg.com/media/OWNED?format=jpg&name=large');
 });
 
+test('unknown next post never closes X viewer or scrolls the background timeline', async () => {
+  const prior=state.pathname, oldScroll=context.window.scrollTo;
+  state.pathname='/alice/status/100/photo/1';
+  const clicks=[],messages=[];
+  const viewer={isConnected:true};
+  context.window.scrollTo=()=>{throw Error('background scroll must never run on ArrowRight');};
+  const ctrl=Object.assign(Object.create(proto),{
+    navigationBusy:false,navGeneration:6,originProfile:'alice',
+    viewer,originTimeline:'alice|photo',
+    refs:[ref('/alice/status/100/photo/1')],activeIndex(){return 0;},
+    findCloseButton(){throw Error('do not even query close button without a known destination');},
+    captureGrid(){throw Error('do not inspect background media grid');},
+    findLiveLink(){throw Error('no destination to resolve');},
+    toast(m){messages.push(m);},updateViewerState(){clicks.push('redraw');},
+    loadNextPost(){throw Error('no automatic lazy-load scroll');},
+  });
+  try {
+    await proto.navigate.call(ctrl,1);
+    assert.equal(viewer.isConnected,true,'current native viewer stays open');
+    assert.equal(ctrl.navigationBusy,false,'do not block other shortcuts');
+    assert.equal(state.pathname,'/alice/status/100/photo/1');
+    assert.equal(clicks.length,0,'no transient disabled controls or React rerenders');
+    assert.equal(messages.length,1);
+    assert.match(messages[0],/読み込み済み|一覧/,'plain explanation instead of silent no-op');
+  } finally {state.pathname=prior;context.window.scrollTo=oldScroll;}
+});
+
+test('when X naturally adds the next post later the arrow resumes without scrolling', async () => {
+  const prior=state.pathname;
+  state.pathname='/alice/status/100/photo/1';
+  const current=ref('/alice/status/100/photo/1');
+  const next=ref('/alice/status/200/photo/1');
+  const clicks=[],toasts=[];
+  const viewer={isConnected:true};
+  const ctrl=Object.assign(Object.create(proto),{
+    navigationBusy:false,navGeneration:9,originProfile:'alice',
+    originTimeline:'alice|photo',viewer,refs:[current],
+    activeIndex(){return 0;},
+    findCloseButton(){return {click(){throw Error('successful in-modal route should not close');}};},
+    findLiveLink(ref){return ref.key===next.key?{isConnected:true}:null;},
+    beginVisualHandoff(){return false;},
+    tryNativeInModalNavigation:async()=>{state.pathname=next.href;clicks.push('native');return 'retained';},
+    toast(m){toasts.push(m);},updateViewerState(){},
+    findActiveViewer(){return viewer;},
+  });
+  try {
+    await proto.navigate.call(ctrl,1);
+    assert.equal(toasts.length,1);
+    ctrl.refs.push(next);
+    await proto.navigate.call(ctrl,1);
+    assert.equal(state.pathname,next.href);
+    assert.deepEqual(clicks,['native']);
+    assert.equal(viewer.isConnected,true);
+    assert.equal(ctrl.navigationBusy,false);
+  } finally {state.pathname=prior;}
+});
+
+test('native gallery ArrowRight at the end cannot produce a background scroll', async () => {
+  const prior=state.pathname;
+  state.pathname='/alice/status/100/photo/1';
+  const calls=[];
+  const instance=Object.assign(Object.create(proto),{
+    viewer:{isConnected:true},originProfile:'alice',navigationBusy:false,
+    navGeneration:4,refs:[ref('/alice/status/100/photo/1')],
+    activeIndex(){return 0;},photoCount(){return 1;},
+    nativeGalleryArrowAvailable(){return false;},
+    toast(message){calls.push(message);},
+    findCloseButton(){throw Error('must not close X modal');},
+  });
+  try {
+    const ev=keyEvent('ArrowRight');
+    proto.onKeyDown.call(instance,ev);
+    assert.equal(ev.prevented,true,'confirmed album edge belongs to post navigation');
+    await Promise.resolve();await Promise.resolve();
+    assert.equal(calls.length,1,'do not start hidden background loading');
+  } finally {state.pathname=prior;}
+});
+
 test('virtualized missing destination keeps the gallery open instead of losing its position', async () => {
   state.pathname='/alice/status/11/photo/1'; state.search='?filter=photo';
   const viewer={isConnected:true}; let closeAttempts=0; const messages=[];
@@ -1156,27 +1237,30 @@ test('SPA route poll retains current photo timeline during navigator-controlled 
   state.search='';state.pathname='/alice/media';
 });
 
-test('filter normalization preserves lazy-loaded next post only when media grid remains intact', async () => {
+test('known destination survives filter normalization without background grid snapshots', async () => {
+  const prior=state.pathname,priorSearch=state.search;
   state.pathname='/alice/status/100/photo/1';state.search='?filter=photo';
-  const viewer={isConnected:true}; const clicked=[];
-  const source={isConnected:true,click(){clicked.push('next');}};
-  const originalGrid={column:{},firstTiles:[{}],firstKeys:['100:photo:1']};
-  const controller=Object.create(proto);
-  controller.navigationBusy=false;controller.navGeneration=3;controller.originProfile='alice';
-  controller.originTimeline='alice|photo';controller.viewer=viewer;
-  controller.refs=[ref('/alice/status/100/photo/1')];
-  controller.activeIndex=()=>0;controller.updateViewerState=()=>{};
-  controller.captureGrid=()=>originalGrid;
-  controller.hasGridTurnedOver=()=>false;
-  controller.findLiveLink=(item)=>item.statusId==='101'?source:null;
-  controller.findCloseButton=()=>({click(){viewer.isConnected=false;state.pathname='/alice/media';state.search='';}});
-  controller.waitForViewerToClose=async()=>true;
-  controller.loadNextPost=async()=>ref('/alice/status/101/photo/1');
-  controller.toast=(message)=>{throw new Error(message);};
-  await proto.navigate.call(controller,1);
-  assert.deepEqual(clicked,['next']);
-  assert.equal(controller.navigationBusy,false);
-  state.pathname='/alice/media';state.search='';
+  const viewer={isConnected:true};const clicks=[];
+  const source={isConnected:true,click(){clicks.push('next');}};
+  const ctrl=Object.assign(Object.create(proto),{
+    navigationBusy:false,navGeneration:3,originProfile:'alice',originTimeline:'alice|photo',
+    viewer,refs:[ref('/alice/status/100/photo/1'),ref('/alice/status/101/photo/1')],
+    activeIndex(){return 0;},updateViewerState(){},
+    captureGrid(){throw Error('known post must not snapshot background media grid');},
+    findLiveLink(item){return item.statusId==='101'?source:null;},
+    async tryNativeInModalNavigation(){return 'fallback';},
+    beginVisualHandoff(){return false;},
+    findCloseButton(){return {click(){
+      viewer.isConnected=false;state.pathname='/alice/media';state.search='';
+    }};},
+    waitForViewerToClose:async()=>true,
+    toast(m){throw Error(m);},
+  });
+  try {
+    await proto.navigate.call(ctrl,1);
+    assert.deepEqual(clicks,['next']);
+    assert.equal(ctrl.navigationBusy,false);
+  }finally{state.pathname=prior;state.search=priorSearch;}
 });
 test('native gallery controls with Japanese directional labels stay owned by X', () => {
   context.HTMLButtonElement = FakeElement;
@@ -1194,23 +1278,28 @@ test('native gallery controls with Japanese directional labels stay owned by X',
   assert.equal(proto.nativeGalleryArrowAvailable.call({}, viewer, -1), false);
 });
 
-test('lazy loading scrolls the visible final tile, including nested media lists', async () => {
-  state.pathname = '/alice/media';
-  const tile = makeTile('/alice/status/101/photo/1').tile;
-  const calls = [];
-  tile.scrollIntoView = (options) => calls.push(options.block);
-  state.root = new FakeElement('div');
-  state.root.tiles = [tile];
-  context.window.scrollTo = () => calls.push('window');
-  context.window.setTimeout = (fn) => setTimeout(fn, 1);
-  document.documentElement = { scrollHeight: 9000 };
-  const instance = { navGeneration: 2, refs: [ref('/alice/status/101/photo/1')], scanTiles() {
-    if (calls.length >= 4 && this.refs.length === 1) this.refs.push(ref('/alice/status/102/photo/1'));
-  }};
-  const next = await proto.loadNextPost.call(instance, '101', 2);
-  assert.equal(next.statusId, '102');
-  assert.deepEqual(calls, ['end', 'window', 'end', 'window']);
-  state.pathname = '/alice/media';
+test('new posts loaded by natural X scrolling become navigable without extension scrolling', () => {
+  const prior=state.pathname,priorRoot=state.root;
+  state.pathname='/alice/media';
+  const first=makeTile('/alice/status/101/photo/1');
+  const second=makeTile('/alice/status/102/photo/1');
+  first.tile.scrollIntoView=()=>{throw Error('extension must not auto-scroll');};
+  second.tile.scrollIntoView=()=>{throw Error('extension must not auto-scroll');};
+  state.root=new FakeElement('div');state.root.tiles=[first.tile];
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),imageSources:new Map(),
+  });
+  try{
+    proto.scanTiles.call(ctrl);
+    assert.equal(ctrl.refs.length,1);
+    assert.equal(context.XMN.adjacentPostIndex(ctrl.refs,'101',1,0),null);
+    // Only X/user-driven timeline growth is ingested; no automatic scroll.
+    state.root.tiles.push(second.tile);
+    proto.scanTiles.call(ctrl);
+    assert.equal(ctrl.refs.length,2);
+    assert.equal(context.XMN.adjacentPostIndex(ctrl.refs,'101',1,0),1);
+    assert.equal(ctrl.refs[1].href,'/alice/status/102/photo/1');
+  }finally{state.pathname=prior;state.root=priorRoot;}
 });
 test('quoted and ambiguous media links are not indexed as the parent media tile', () => {
   state.pathname='/alice/media';

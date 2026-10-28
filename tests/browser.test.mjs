@@ -158,7 +158,9 @@ document.addEventListener('keydown', e => {
       Array.from(ul.querySelectorAll('a[href]')).filter(a=>a.getAttribute('href').includes('/status/'+m[1]+'/photo/')).length);
   }
 });
+window.nativeBackgroundScrolls=0;
 window.scrollTo = () => {
+  window.nativeBackgroundScrolls++;
   if (window.testLazyLoad && !source('/alice/status/33/photo/1')) {
     window.testLazyLoad = false;
     setTimeout(()=>ul.appendChild(tile('/alice/status/33/photo/1')),160);
@@ -357,9 +359,31 @@ async function exercise() {
   await wait(450);
   result('focused input retains native keys',location.pathname.endsWith('/22/photo/1') && !inputEvent.defaultPrevented);
   window.testLazyLoad=true;
-  key('ArrowRight');
-  await wait(1500);
-  result('lazy load navigates only after new POST exists',location.pathname.endsWith('/33/photo/1') && clicked.at(-1)==='/alice/status/33/photo/1');
+  const retainedDialog=document.getElementById('modal');
+  const retainedReplies=document.getElementById('replies');
+  const scrollCount=window.nativeBackgroundScrolls;
+  const terminalKey1=key('ArrowRight');
+  await wait(480);
+  result('unknown next POST stays in modal and never scrolls the hidden X timeline',
+    terminalKey1.defaultPrevented &&
+    location.pathname.endsWith('/22/photo/1') &&
+    !source('/alice/status/33/photo/1') &&
+    window.nativeBackgroundScrolls===scrollCount &&
+    document.getElementById('modal')===retainedDialog &&
+    document.getElementById('replies')===retainedReplies);
+  // Only the user's EXPLICIT list scroll loads the new post.
+  document.querySelector('#modal button[aria-label="Close"]')?.click();
+  await wait(250);
+  window.scrollTo({top:9000,behavior:'auto'});
+  await wait(650);
+  source('/alice/status/22/photo/1').click();
+  await wait(550);
+  const userLoadedRight=key('ArrowRight');
+  await wait(850);
+  result('user-loaded next POST advances through observed native SPA link',
+    userLoadedRight.defaultPrevented &&
+    location.pathname.endsWith('/33/photo/1') &&
+    clicked.at(-1)==='/alice/status/33/photo/1');
   document.querySelector('#modal button[aria-label="Close"]').click();
   await wait(400);
   show('/alice/status/22/photo/1',false);
@@ -501,11 +525,41 @@ async function exercise() {
     !document.querySelector('.xmn-controls-layer') &&
     !document.querySelector('.xmn-nav-button'));
 
+  // Reaching the last loaded post must not close X, scroll the underlying
+  // media feed or launch an invented URL. The user may choose to load more.
+  const terminalHref='/alice/status/9999/photo/1';
+  const terminalTile=tile(terminalHref);
+  terminalTile.scrollIntoView=()=>{window.terminalBackgroundScrolls++;};
+  window.terminalBackgroundScrolls=0;
+  ul.appendChild(terminalTile);
+  await wait(650);
+  const terminalIndexed=!!terminalTile.querySelector('.xmn-tile-badge');
+  source(terminalHref).click();
+  await wait(520);
+  const terminalDialog=document.getElementById('modal');
+  const terminalReplies=document.getElementById('replies');
+  const terminalCloses=window.nativeModalCloses;
+  const terminalBefore=location.pathname;
+  const oldWindowScroll=window.scrollTo;
+  window.scrollTo=()=>{window.terminalBackgroundScrolls++;};
+  const terminalKey=key('ArrowRight');
+  await wait(420);
+  window.scrollTo=oldWindowScroll;
+  result('unknown next post never scrolls the background or guesses an URL',
+    terminalIndexed && terminalKey.defaultPrevented &&
+    window.terminalBackgroundScrolls===0 &&
+    location.pathname===terminalBefore);
+  result('unknown next post retains the exact modal and right replies pane',
+    terminalDialog===document.getElementById('modal') &&
+    terminalReplies===document.getElementById('replies') &&
+    window.nativeModalCloses===terminalCloses &&
+    !!document.querySelector('.xmn-toast'));
+
   document.body.setAttribute('data-xmn-results',records.map(r=>r.label+':'+(r.pass?'PASS':'FAIL')).join('|'));
 }
 
 </script><script src="/extension/content_script.js"></script>
-<script>exercise().catch(e=>document.body.setAttribute('data-xmn-results','EXCEPTION:'+e.message));</script>
+<script>exercise().catch(e=>document.body.setAttribute('data-xmn-results','EXCEPTION:'+e.message+'@'+String(e.stack).split('\\n').slice(0,6).join('~')));</script>
 </body></html>`;
 
 test('synthetic X inline JavaScript parses', () => {
@@ -558,7 +612,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 37, report);
+    assert.equal(report.split('|').length, 40, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
