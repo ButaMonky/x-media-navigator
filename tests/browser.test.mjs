@@ -18,6 +18,9 @@ const fixture = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><lin
 <script>
 const wait = ms => new Promise(r => setTimeout(r, ms));
 window.navEventsSeen=[];
+// Headless fixture explicitly declines the third-party API. No remote calls or
+// blocking browser confirmation should be required in native X regression QA.
+window.confirm=()=>false;
 window.navApiAvailable=!!window.navigation && typeof window.navigation.addEventListener==='function';
 if(window.navApiAvailable) {
   window.navigation.addEventListener('currententrychange', () => {
@@ -615,7 +618,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.equal(report.split('|').length, 40, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
   }
 });
 
@@ -665,6 +668,6 @@ image.src=${JSON.stringify(imageUrl)};
   }finally{
     await new Promise(resolve=>pageServer.close(resolve));
     await new Promise(resolve=>imageServer.close(resolve));
-    rmSync(dir,{recursive:true,force:true});
+    rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
   }
 });
