@@ -215,3 +215,89 @@ test('same photo CDN identity matches different X image sizes but never other im
   assert.notEqual(XMN.photoCdnIdentity(base+'?format=jpg&name=large'),
     XMN.photoCdnIdentity('https://pbs.twimg.com/media/OTHER?format=jpg&name=large'));
 });
+
+test('public media API page parses only matching-author photo links in order', () => {
+  const raw={
+    code:200,
+    results:[
+      {type:'status',id:'300',url:'https://x.com/alice/status/300',author:{screen_name:'alice'},
+        media:{all:[{type:'photo',url:'https://pbs.twimg.com/media/A?format=jpg&name=orig'},
+          {type:'photo',url:'https://pbs.twimg.com/media/B?format=jpg&name=orig'}]}},
+      {type:'status',id:'200',url:'https://x.com/alice/status/200',author:{screen_name:'alice'},
+        media:{all:[{type:'video',url:'https://video.twimg.com/ext_tw_video/video.mp4'}]}},
+      {type:'status',id:'199',url:'https://x.com/bob/status/199',author:{screen_name:'bob'},
+        media:{all:[{type:'photo',url:'https://pbs.twimg.com/media/X?format=jpg&name=orig'}]}},
+    ],
+    cursor:{bottom:'CURSOR_2',top:'CURSOR_1'},
+  };
+  const result=XMN.parsePublicMediaPage(raw,'alice');
+  assert.ok(result);
+  assert.equal(result.cursor,'CURSOR_2');
+  assert.deepEqual(Array.from(result.refs,r=>r.href),[
+    '/alice/status/300/photo/1','/alice/status/300/photo/2','/alice/status/200/video/1']);
+  assert.deepEqual(Array.from(result.photos,([key,url])=>[key,url]),[
+    ['300:photo:1','https://pbs.twimg.com/media/A?format=jpg&name=large'],
+    ['300:photo:2','https://pbs.twimg.com/media/B?format=jpg&name=large']]);
+});
+
+test('public API rejects bad CDN URLs, mixed attachments, duplicate IDs and wrong profile', () => {
+  const row=(id,photos,url='https://pbs.twimg.com/media/X?format=jpg&name=large')=>({
+    type:'status',id,url:'https://x.com/alice/status/'+id,author:{screen_name:'alice'},
+    media:{all:Array.from({length:photos},()=>({type:'photo',url}))},
+  });
+  const raw={code:200,results:[
+    row('301',1,'https://evil.example/media/X?format=jpg&name=orig'),
+    {...row('302',1),author:{screen_name:'eve'}},
+    {...row('303',1),media:{all:[
+      {type:'photo',url:'https://pbs.twimg.com/media/A?format=jpg&name=orig'},
+      {type:'video',url:'https://video.twimg.com/1.mp4'}]}},
+    row('304',5),
+    row('305',1),
+    row('305',1),
+  ],cursor:{bottom:null}};
+  const r=XMN.parsePublicMediaPage(raw,'alice');
+  assert.deepEqual(Array.from(r.refs,x=>x.statusId),['305']);
+  assert.equal(r.cursor,null);
+  assert.equal(XMN.parsePublicMediaPage({...raw,code:429},'alice'),null);
+  assert.equal(XMN.parsePublicMediaPage(raw,'invalid!'),null);
+});
+
+test('public media parser never converts a photo URL into another origin', () => {
+  const media='https://pbs.twimg.com/media/VALID?format=jpg&name=small';
+  const result=XMN.parsePublicMediaPage({
+    code:200,results:[{type:'status',id:'12345678',
+      url:'https://x.com/pignic_cafe/status/12345678',
+      author:{screen_name:'pignic_cafe'},media:{all:[{type:'photo',url:media}]}}],
+    cursor:{bottom:'abc'},
+  },'pignic_cafe');
+  assert.equal(result.refs[0].key,'12345678:photo:1');
+  assert.equal(result.photos[0][1],
+    'https://pbs.twimg.com/media/VALID?format=jpg&name=large');
+});
+
+test('FxEmbed real photo URL /media/ID.jpg?name=orig normalizes to prefetch CDN URL', () => {
+  assert.equal(XMN.normalizePublicPhotoUrl(
+    'https://pbs.twimg.com/media/HVpT9ftbsAACG4v.jpg?name=orig'),
+    'https://pbs.twimg.com/media/HVpT9ftbsAACG4v?format=jpg&name=large');
+  assert.equal(XMN.normalizePublicPhotoUrl(
+    'https://pbs.twimg.com/media/HVpT9ftbsAACG4v?name=orig&format=jpg'),
+    'https://pbs.twimg.com/media/HVpT9ftbsAACG4v?format=jpg&name=large');
+  for(const url of [
+    'https://pbs.twimg.com/profile_images/ABC.jpg?name=orig',
+    'https://attacker.net/media/ABC.jpg?name=orig',
+    'https://pbs.twimg.com/media/ABC.exe?name=orig',
+    'https://pbs.twimg.com/media/ABC.jpg?name=orig&format=webp',
+  ]) assert.equal(XMN.normalizePublicPhotoUrl(url),null);
+});
+test('actual third-party photo media payload produces a usable candidate after parsing', () => {
+  const out=XMN.parsePublicMediaPage({
+    code:200,results:[{type:'status',id:'2115352872984698984',
+      url:'https://x.com/pignic_cafe/status/2115352872984698984',
+      author:{screen_name:'pignic_cafe'},
+      media:{all:[{type:'photo',url:'https://pbs.twimg.com/media/HVpT9ftbsAACG4v.jpg?name=orig'}]}}],
+    cursor:{bottom:'NEXT'},
+  },'pignic_cafe');
+  assert.equal(out.refs.length,1);
+  assert.equal(out.photos[0][1],
+    'https://pbs.twimg.com/media/HVpT9ftbsAACG4v?format=jpg&name=large');
+});

@@ -129,6 +129,13 @@ namespace XMN {
     private preloadForPath = '';
     private nativeAdvancedPost: string | null = null;
     private rightProbeTimer: number | null = null;
+    // Read-only, no-cookie public-media continuation for the private beta.
+    // Never fetch until reaching the end of the already observed X media grid.
+    private publicApiKeys = new Set<string>();
+    private publicApiCursor: string | null = null;
+    private publicApiAnchorFound = false;
+    private publicApiExhausted = false;
+    private publicApiLoading = false;
 
     private viewer: HTMLElement | null = null;
     // Portaled controls live outside X's React-owned photo carousel. X may
@@ -165,6 +172,7 @@ namespace XMN {
     private refreshId: number;
 
     constructor() {
+      this.restorePublicMediaSession();
       // Observe actual user keyboard input only when the viewer belongs to a media-tab session.
       document.addEventListener('keydown', (event) => this.onKeyDown(event), true);
       // Preheat adjacent images when a user opens media from the grid, before
@@ -187,6 +195,244 @@ namespace XMN {
       // and media content may mount after its URL has already committed.
       this.refreshId = window.setInterval(() => this.tick(), 450);
       this.tick();
+    }
+
+    /**
+     * Transient public Post URL index only. Never store X credentials, cookies,
+     * signed-in page data, or private profile content. A full X document
+     * navigation may be required when no X-owned React media link exists.
+     */
+    private persistPublicMediaSession(): boolean {
+      try {
+        const refs = this.refs.slice(0, 450).map((ref) => ref.href);
+        const photos = [...this.imageSources].filter(([key]) =>
+          this.publicApiKeys.has(key)).slice(0, 450);
+        const ownedStatuses = new Set(this.refs.filter((ref) =>
+          this.publicApiKeys.has(ref.key)).map((ref) => ref.statusId));
+        const photoTotals = [...this.knownPhotoTotals].filter(([statusId]) =>
+          ownedStatuses.has(statusId)).slice(-128);
+        window.sessionStorage.setItem('xmn-public-media-v1', JSON.stringify({
+          profile: this.originProfile, timeline: this.originTimeline,
+          expires: Date.now() + 30 * 60 * 1000,
+          refs, apiKeys: [...this.publicApiKeys].slice(0, 450),
+          photos, photoTotals, cursor: this.publicApiCursor,
+          anchorFound: this.publicApiAnchorFound, exhausted: this.publicApiExhausted,
+        }));
+        return true;
+      } catch { return false; }
+    }
+
+    private restorePublicMediaSession(): void {
+      try {
+        const raw = window.sessionStorage?.getItem('xmn-public-media-v1');
+        if (!raw || raw.length > 120_000) return;
+        const data = JSON.parse(raw) as Record<string, unknown>;
+        if (typeof data.profile !== 'string' ||
+            !/^[a-zA-Z0-9_]{1,15}$/.test(data.profile) ||
+            typeof data.expires !== 'number' || data.expires < Date.now() ||
+            data.expires > Date.now() + 31 * 60 * 1000 ||
+            !Array.isArray(data.refs) || data.refs.length > 450 ||
+            !Array.isArray(data.apiKeys) || data.apiKeys.length > 450) return;
+        const route = mediaRefFromHref(window.location.pathname, data.profile);
+        if (!route) return; // Never activate on a different profile or X page.
+        const refs = data.refs.map((href: unknown) =>
+          typeof href === 'string' ? mediaRefFromHref(href, data.profile as string) : null);
+        if (refs.some((ref: MediaRef | null) => !ref) ||
+            !refs.some((ref: MediaRef | null) => ref?.key === route.key)) return;
+        const keys = new Set(data.apiKeys.filter((key): key is string =>
+          typeof key === 'string' && refs.some((ref: MediaRef | null) => ref?.key === key)));
+        // Restoring only API keys would strand the user when navigating
+        // BACK into the previously observed native post group. The exact
+        // status/photo route must exist in this short-lived same-tab index,
+        // and at least one validated public API ref must be present.
+        if (keys.size === 0) return;
+        this.originProfile = data.profile.toLowerCase();
+        this.originTimeline = typeof data.timeline === 'string' ? data.timeline : null;
+        this.refs = refs as MediaRef[];
+        this.indexes = new Map(this.refs.map((ref, i) => [ref.key, i]));
+        this.publicApiKeys = keys;
+        this.publicApiAnchorFound = data.anchorFound === true;
+        this.publicApiExhausted = data.exhausted === true;
+        this.publicApiCursor = typeof data.cursor === 'string' &&
+          data.cursor.length <= 1024 ? data.cursor : null;
+        this.knownPhotoTotals ??= new Map();
+        if (Array.isArray(data.photoTotals) && data.photoTotals.length <= 128) {
+          for (const item of data.photoTotals) {
+            if (!Array.isArray(item) || item.length !== 2 ||
+                typeof item[0] !== 'string' || !/^\d{1,19}$/.test(item[0]) ||
+                !Number.isInteger(item[1]) || item[1] < 1 || item[1] > 4) continue;
+            const complete = Array.from({ length: item[1] }, (_, i) =>
+              keys.has(`${item[0]}:photo:${i + 1}`)).every(Boolean);
+            if (complete) this.rememberPhotoTotal(item[0], item[1]);
+          }
+        }
+        if (Array.isArray(data.photos)) {
+          for (const item of data.photos) {
+            if (!Array.isArray(item) || item.length !== 2 ||
+                !keys.has(item[0]) || typeof item[1] !== 'string') continue;
+            if (preloadImageUrl(item[1]) === item[1])
+              this.imageSources.set(item[0], item[1]);
+          }
+        }
+      } catch { /* Storage may be disabled; never break native X rendering. */ }
+    }
+
+    /**
+     * A public, third-party API, explicitly requested by the user for this
+     * private development beta. Send ONLY the public handle; no X cookies,
+     * OAuth, referrer, bearer tokens or browsing logs.
+     */
+    private async fetchPublicMediaPage(cursor: string | null): Promise<{
+      refs: MediaRef[]; photos: [string, string][]; cursor: string | null;
+    } | null> {
+      if (!this.originProfile) return null;
+      const url = new URL('https://api.fxtwitter.com/2/profile/' +
+        this.originProfile + '/media');
+      url.searchParams.set('count', '100');
+      if (cursor) url.searchParams.set('cursor', cursor);
+      const abort = new AbortController();
+      const watchdog = window.setTimeout(() => abort.abort(), 9500);
+      try {
+        const response = await fetch(url.toString(), {
+          method: 'GET', mode: 'cors', credentials: 'omit',
+          referrerPolicy: 'no-referrer', cache: 'no-store',
+          signal: abort.signal, headers: { Accept: 'application/json' },
+        });
+        if (!response.ok) return null;
+        const size = Number(response.headers.get('content-length'));
+        if (Number.isFinite(size) && size > 4_000_000) return null;
+        const body = await response.text();
+        if (body.length > 4_000_000) return null;
+        return parsePublicMediaPage(JSON.parse(body), this.originProfile);
+      } catch { return null; } finally { window.clearTimeout(watchdog); }
+    }
+
+    /** Append only validated, chronologically older media records. */
+    private async loadPublicMediaContinuation(): Promise<boolean> {
+      if (!this.originProfile || this.publicApiLoading || document.hidden ||
+          (typeof navigator !== 'undefined' && navigator.onLine === false) ||
+          this.publicApiExhausted) return false;
+      const nativeLast = this.refs[this.refs.length - 1]?.statusId;
+      if (!nativeLast) return false;
+      const generation = this.navGeneration;
+      const profile = this.originProfile;
+      const timeline = this.originTimeline;
+      const initialPath = window.location.pathname;
+      const stillSameSession = (): boolean =>
+        generation === this.navGeneration && this.originProfile === profile &&
+        this.originTimeline === timeline &&
+        window.location.pathname === initialPath && !document.hidden;
+      this.publicApiLoading = true;
+      this.navigationBusy = true;
+      this.updateViewerState();
+      let cursor = this.publicApiCursor;
+      const pages: { refs: MediaRef[]; photos: [string, string][] }[] = [];
+      let newCursor: string | null = cursor;
+      try {
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const page = await this.fetchPublicMediaPage(cursor);
+          if (!stillSameSession() || !page) return false;
+          pages.push({ refs: page.refs, photos: page.photos });
+          newCursor = page.cursor;
+          const all = pages.flatMap((item) => item.refs);
+          const groups = [...new Set(all.map((ref) => ref.statusId))];
+          const last = groups.indexOf(nativeLast);
+          const candidates = this.publicApiAnchorFound ? groups.length :
+            last >= 0 ? groups.length - last - 1 : 0;
+          // Require 8 future posts after the native end when possible.
+          if (candidates >= 8 || !page.cursor) break;
+          if (page.cursor === cursor) return false;
+          cursor = page.cursor;
+          await pause(300); // Avoid hammering the volunteer API.
+          if (!stillSameSession()) return false;
+        }
+        if (!stillSameSession()) return false;
+        const combined = pages.flatMap((item) => item.refs);
+        if (!combined.length) return false;
+        const statusIds = [...new Set(combined.map((ref) => ref.statusId))];
+        // Snowflake status IDs must decrease in chronological order. Refuse
+        // reordered external results rather than crossing posts out-of-order.
+        if (statusIds.some((id, i) => i > 0 &&
+            id.padStart(19, '0') >= statusIds[i - 1].padStart(19, '0')))
+          return false;
+        let start = 0;
+        if (!this.publicApiAnchorFound) {
+          const last = statusIds.indexOf(nativeLast);
+          if (last < 0) return false;
+          const earlier = [...new Set(this.refs.map((ref) => ref.statusId))].slice(-2, -1);
+          if (earlier.length && !earlier.every((id) => statusIds.slice(0, last).includes(id)))
+            return false; // Provider does not match X native media list.
+          start = combined.findIndex((ref) => ref.statusId === nativeLast);
+          while (start < combined.length && combined[start].statusId === nativeLast) start++;
+        }
+        const sourceMap = new Map(pages.flatMap((item) => item.photos));
+        const oldLength = this.refs.length;
+        const oldCursor = this.publicApiCursor;
+        const oldAnchorFound = this.publicApiAnchorFound;
+        const oldExhausted = this.publicApiExhausted;
+        const oldPhotoTotals = new Map(this.knownPhotoTotals ?? []);
+        const plannedKeys = new Set<string>();
+        for (const ref of combined.slice(start)) {
+          if (!this.indexes.has(ref.key)) plannedKeys.add(ref.key);
+        }
+        // Never silently drop part of an album/page and then advance the
+        // cursor beyond those missing posts. Fail without changing the index.
+        if (this.refs.length + plannedKeys.size > 450) return false;
+        let appended = 0;
+        for (const ref of combined.slice(start)) {
+          if (this.indexes.has(ref.key)) continue;
+          this.indexes.set(ref.key, this.refs.length);
+          this.refs.push(ref);
+          this.publicApiKeys.add(ref.key);
+          const source = sourceMap.get(ref.key);
+          if (source && preloadImageUrl(source) === source)
+            this.imageSources.set(ref.key, source);
+          appended++;
+        }
+        // FxEmbed includes the full photo array per Post. Only use a
+        // confirmed 1–4 photo count when EVERY photo of that group was
+        // indexed (the 450-ref cap must never truncate the album counter).
+        const groupedPhotos = new Map<string, Set<number>>();
+        for (const ref of combined.slice(start)) {
+          if (ref.kind !== 'photo' || ref.mediaIndex === null) continue;
+          const indexes = groupedPhotos.get(ref.statusId) ?? new Set<number>();
+          indexes.add(ref.mediaIndex);
+          groupedPhotos.set(ref.statusId, indexes);
+        }
+        for (const [id, positions] of groupedPhotos) {
+          if (positions.size >= 1 && positions.size <= 4 &&
+              Array.from({ length: positions.size }, (_, i) => i + 1).every(
+                (i) => positions.has(i) &&
+                  this.publicApiKeys.has(`${id}:photo:${i}`))) {
+            this.rememberPhotoTotal(id, positions.size);
+          }
+        }
+        this.publicApiAnchorFound = true;
+        this.publicApiCursor = newCursor;
+        this.publicApiExhausted = !newCursor;
+        this.statusOrdinalCache = null;
+        this.viewerStateSnapshot = null;
+        if (appended > 0 && stillSameSession() && this.persistPublicMediaSession())
+          return true;
+        // Do not leave a half-appended public page if storage is blocked or
+        // X changed profile/tab while the asynchronous API was responding.
+        for (const ref of this.refs.splice(oldLength)) {
+          this.indexes.delete(ref.key);
+          this.publicApiKeys.delete(ref.key);
+          this.imageSources.delete(ref.key);
+        }
+        this.publicApiCursor = oldCursor;
+        this.publicApiAnchorFound = oldAnchorFound;
+        this.publicApiExhausted = oldExhausted;
+        this.knownPhotoTotals = oldPhotoTotals;
+        return false;
+      } finally {
+        if (generation === this.navGeneration && this.originProfile === profile) {
+          this.publicApiLoading = false;
+          this.navigationBusy = false;
+          this.updateViewerState();
+        }
+      }
     }
 
     /**
@@ -233,6 +479,11 @@ namespace XMN {
       this.refs = [];
       this.indexes.clear();
       this.statusOrdinalCache = null;
+      this.publicApiKeys?.clear();
+      this.publicApiCursor = null;
+      this.publicApiAnchorFound = false;
+      this.publicApiExhausted = false;
+      this.publicApiLoading = false;
       this.imageSources.clear();
       this.imageSourcesRevision++;
       this.knownPhotoTotals.clear();
@@ -1761,8 +2012,31 @@ namespace XMN {
       // the exact current modal/replies panel until X itself loads more cards
       // from a user-initiated media-timeline scroll.
       if (nextIndex === null) {
-        if (direction === 1) this.toast(
-          'ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
+        if (direction !== 1) return;
+        // This uses a separate public third-party API, not X's official API.
+        // Ask only once per tab/profile before disclosing the public handle.
+        const consentKey = 'xmn-fxembed-consent-' + this.originProfile;
+        let approved = false;
+        try { approved = window.sessionStorage.getItem(consentKey) === 'yes'; }
+        catch { /* Storage may be disabled. */ }
+        if (!approved) {
+          const message = '続きの投稿を外部サービス FxEmbed の公開APIで取得しますか？' +
+            '公開プロフィール名のみを送信し、Cookie・ログイン情報は送信しません。';
+          if (typeof window.confirm !== 'function' || !window.confirm(message)) {
+            this.toast('ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
+            return;
+          }
+          try { window.sessionStorage.setItem(consentKey, 'yes'); }
+          catch { this.toast('一時保存を使えないため外部API連続閲覧を開始できません'); return; }
+        }
+        const appended = await this.loadPublicMediaContinuation();
+        if (!appended) {
+          this.toast('公開APIで次の投稿を確認できませんでした。Xのメディア一覧で読み込んでください');
+          return;
+        }
+        // Newly verified public URL can now be navigated as a native X page,
+        // without moving the underlying media grid.
+        void this.navigate(direction);
         return;
       }
       const generation = this.navGeneration;
@@ -1772,6 +2046,18 @@ namespace XMN {
       // An old media-timeline entry may have been evicted from X's virtualized DOM.
       // Do not close the active viewer when the known destination is no longer clickable.
       if (!initialDestination) {
+        if (this.publicApiKeys?.has(this.refs[nextIndex].key)) {
+          // X's React media link is absent. Never fake a React SPA route with
+          // history.pushState: that can desync the image and reply panel.
+          // Use an ordinary X document navigation, preserving only verified
+          // PUBLIC media refs in this tab's short-lived sessionStorage.
+          if (!this.persistPublicMediaSession()) {
+            this.toast('一時保存できないため移動を中止しました');
+            return;
+          }
+          window.location.assign(this.refs[nextIndex].href);
+          return;
+        }
         this.toast('移動先が一覧から消えています。ビューアは閉じません');
         return;
       }

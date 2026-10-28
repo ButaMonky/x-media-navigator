@@ -179,6 +179,86 @@ namespace XMN {
     return matched ? matched[1] : null;
   }
 
+  /** Normalize an actual FxEmbed photo CDN URL. Its API returns
+   * `/media/ID.jpg?name=orig`, which the X DOM thumbnail normalizer (with
+   * `?format=...`) intentionally rejects. Accept ONLY an exact CDN image.
+   */
+  export function normalizePublicPhotoUrl(src: string): string | null {
+    let url: URL;
+    try { url = new URL(src); } catch { return null; }
+    if (url.protocol !== 'https:' || url.hostname !== 'pbs.twimg.com' ||
+        url.port || url.username || url.password) return null;
+    const matched = /^\/media\/([A-Za-z0-9_-]+)(?:\.(jpg|jpeg|png|webp))?$/i.exec(url.pathname);
+    if (!matched) return null;
+    const suffix = matched[2]?.toLowerCase() ?? null;
+    const format = url.searchParams.get('format')?.toLowerCase() ?? suffix;
+    if (!format || !/^(jpg|jpeg|png|webp)$/.test(format) ||
+        (suffix && format !== suffix)) return null;
+    const normalized = new URL(`https://pbs.twimg.com/media/${matched[1]}`);
+    normalized.searchParams.set('format', format);
+    normalized.searchParams.set('name', 'large');
+    return normalized.toString();
+  }
+
+  /**
+   * FxEmbed's PUBLIC media feed is third-party, not X's authenticated API.
+   * This is pure defensive parsing: never accepts external post owners or
+   * unvalidated CDN URLs as native media links.
+   */
+  export function parsePublicMediaPage(
+    input: unknown, profile: string,
+  ): { refs: MediaRef[]; photos: [string, string][]; cursor: string | null } | null {
+    if (!HANDLE_RE.test(profile) || typeof input !== 'object' || input === null) return null;
+    const data = input as Record<string, unknown>;
+    if (data.code !== 200 || !Array.isArray(data.results) || data.results.length > 100)
+      return null;
+    const handle = profile.toLowerCase();
+    const refs: MediaRef[] = [];
+    const photos: [string, string][] = [];
+    const seen = new Set<string>();
+    for (const entry of data.results) {
+      if (!entry || typeof entry !== 'object') continue;
+      const post = entry as Record<string, any>;
+      const id = post.id;
+      if (post.type !== 'status' || typeof id !== 'string' ||
+          !/^\d{1,19}$/.test(id) || seen.has(id) ||
+          typeof post.author?.screen_name !== 'string' ||
+          post.author.screen_name.toLowerCase() !== handle) continue;
+      const claimed = mediaRefFromHref(post.url, handle);
+      if (!claimed || claimed.statusId !== id || claimed.kind !== null) continue;
+      const attachments = post.media?.all;
+      if (!Array.isArray(attachments) || attachments.length < 1 || attachments.length > 4)
+        continue;
+      const photoOnly = attachments.every((asset) => asset?.type === 'photo');
+      const videoOnly = attachments.length === 1 &&
+        (attachments[0]?.type === 'video' || attachments[0]?.type === 'gif');
+      if (!photoOnly && !videoOnly) continue;
+      const urls = photoOnly
+        ? attachments.map((asset) =>
+            typeof asset.url === 'string' ? normalizePublicPhotoUrl(asset.url) : null)
+        : [];
+      if (photoOnly && urls.some((url) => !url)) continue;
+      seen.add(id);
+      if (photoOnly) {
+        for (let i = 0; i < attachments.length; i++) {
+          const ref = mediaRefFromHref(
+            `/${handle}/status/${id}/photo/${i + 1}`, handle);
+          if (!ref) continue;
+          refs.push(ref);
+          photos.push([ref.key, urls[i]!]);
+        }
+      } else {
+        const ref = mediaRefFromHref(`/${handle}/status/${id}/video/1`, handle);
+        if (ref) refs.push(ref);
+      }
+    }
+    const cursorObj = data.cursor as Record<string, unknown> | null;
+    const bottom = cursorObj?.bottom;
+    const cursor = typeof bottom === 'string' && bottom.length > 0 &&
+      bottom.length <= 1024 ? bottom : null;
+    return { refs, photos, cursor };
+  }
+
   /** Only rewrite genuine X image CDN thumbnails. No arbitrary URL/network access. */
   export function preloadImageUrl(src: string): string | null {
     let url: URL;

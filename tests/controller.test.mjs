@@ -3287,3 +3287,334 @@ test('progressive preview never opens on a different post or when X navigation a
     assert.equal(ctrl.handoff,null);
   }finally{state.pathname=previous;}
 });
+
+test('public FxEmbed continuation aligns with verified native tail, never guesses a post ID', async () => {
+  const oldPath=state.pathname,oldHidden=document.hidden,oldNav=context.navigator;
+  document.hidden=false;context.navigator={onLine:true};
+  const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1'),
+    ref('/alice/status/200/photo/1')];
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
+    publicApiKeys:new Set(),publicApiAnchorFound:false,
+    publicApiCursor:null,publicApiExhausted:false,publicApiLoading:false,
+    imageSources:new Map(), navigationBusy:false,
+    updateViewerState(){},persistPublicMediaSession(){return true;},
+    fetchPublicMediaPage:async()=>({
+      refs:[
+        ref('/alice/status/500/photo/1'),ref('/alice/status/400/photo/1'),
+        ref('/alice/status/300/photo/1'),ref('/alice/status/200/photo/1'),
+        ref('/alice/status/100/photo/1'),ref('/alice/status/90/photo/1')],
+      photos:[['100:photo:1','https://pbs.twimg.com/media/OLDER100?format=jpg&name=large']],
+      cursor:null,
+    }),
+  });
+  try {
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),true);
+    assert.deepEqual(ctrl.refs.slice(-2).map(x=>x.statusId),['100','90']);
+    assert.equal(ctrl.publicApiKeys.has('100:photo:1'),true);
+    assert.equal(ctrl.publicApiKeys.has('500:photo:1'),false,'do not append already newer posts');
+    assert.equal(ctrl.imageSources.get('100:photo:1'),
+      'https://pbs.twimg.com/media/OLDER100?format=jpg&name=large');
+    assert.equal(ctrl.navigationBusy,false);
+  } finally {state.pathname=oldPath;document.hidden=oldHidden;context.navigator=oldNav;}
+});
+
+test('wrong external API timeline does not pollute verified native order', async () => {
+  const oldHidden=document.hidden,oldNav=context.navigator;
+  document.hidden=false;context.navigator={onLine:true};
+  const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
+    publicApiKeys:new Set(),publicApiAnchorFound:false,publicApiCursor:null,
+    navigationBusy:false,publicApiExhausted:false,publicApiLoading:false,
+    imageSources:new Map(),updateViewerState(){},
+    fetchPublicMediaPage:async()=>({refs:[
+      ref('/alice/status/400/photo/1'),ref('/alice/status/299/photo/1')],
+      photos:[],cursor:null}),
+  });
+  try{
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),false);
+    assert.equal(ctrl.refs.length,2,'native timeline remains untouched');
+  }finally{document.hidden=oldHidden;context.navigator=oldNav;}
+});
+
+test('public media HTTP request sends no cookies, user data, or referrer', async () => {
+  const oldFetch=context.fetch,oldAbort=context.AbortController,
+    oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+  const calls=[];
+  context.AbortController=AbortController;
+  context.fetch=async(url,options)=>{
+    calls.push({url,options});
+    return {ok:true,headers:{get(){return null;}},
+      async text(){return JSON.stringify({code:200,results:[],cursor:{bottom:null}});}};
+  };
+  context.window.setTimeout=()=>33;context.window.clearTimeout=()=>{};
+  const ctrl=Object.assign(Object.create(proto),{originProfile:'alice'});
+  try{
+    assert.ok(await proto.fetchPublicMediaPage.call(ctrl,null));
+    assert.equal(calls.length,1);
+    assert.match(calls[0].url,/^https:\/\/api\.fxtwitter\.com\/2\/profile\/alice\/media\?count=100$/);
+    assert.equal(calls[0].options.credentials,'omit');
+    assert.equal(calls[0].options.referrerPolicy,'no-referrer');
+    assert.equal(calls[0].options.mode,'cors');
+    assert.deepEqual(Object.keys(calls[0].options.headers),['Accept']);
+  }finally{
+    context.fetch=oldFetch;context.AbortController=oldAbort;
+    context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+  }
+});
+
+test('one-time public API consent resumes last post without background scrolling', async () => {
+  const oldPath=state.pathname,oldConfirm=context.window.confirm,
+    oldStorage=context.window.sessionStorage,oldHidden=document.hidden,
+    oldNav=context.navigator;
+  const consent=new Map(),navigations=[];
+  context.window.sessionStorage={
+    getItem(k){return consent.get(k)??null;},
+    setItem(k,v){consent.set(k,String(v));},
+  };
+  context.window.confirm=()=>true;
+  state.pathname='/alice/status/200/photo/1';state.assign=href=>navigations.push(href);
+  document.hidden=false;context.navigator={onLine:true};
+  const current=ref('/alice/status/200/photo/1');
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|default',
+    refs:[current],indexes:new Map([[current.key,0]]),
+    viewer:{isConnected:true},navigationBusy:false,navGeneration:2,
+    publicApiKeys:new Set(),publicApiAnchorFound:false,publicApiCursor:null,
+    publicApiExhausted:false,publicApiLoading:false,imageSources:new Map(),
+    activeIndex(){return 0;}, updateViewerState(){},
+    findLiveLink(){return null;},toast(m){throw Error(m);},
+    fetchPublicMediaPage:async()=>({refs:[current,ref('/alice/status/100/photo/1')],
+      photos:[],cursor:null}),
+  });
+  try{
+    await proto.navigate.call(ctrl,1);
+    await Promise.resolve();await Promise.resolve();
+    assert.deepEqual(navigations,['/alice/status/100/photo/1'],
+      'API-only destination uses direct X URL, never a hidden scroll or guessed SPA');
+    assert.equal(consent.get('xmn-fxembed-consent-alice'),'yes');
+    assert.ok(consent.has('xmn-public-media-v1'),
+      'public metadata is preserved for next X document navigation in this tab');
+  }finally{
+    state.pathname=oldPath;delete state.assign;
+    context.window.confirm=oldConfirm;context.window.sessionStorage=oldStorage;
+    document.hidden=oldHidden;context.navigator=oldNav;
+  }
+});
+
+test('public media session restores exact native and API routes but never other profiles', () => {
+  const oldPath=state.pathname, oldStorage=context.window.sessionStorage;
+  const latest=ref('/alice/status/100/photo/1'),api=ref('/alice/status/90/photo/1');
+  const source='https://pbs.twimg.com/media/CACHED90?format=jpg&name=large';
+  const values=new Map([['xmn-public-media-v1',JSON.stringify({
+    profile:'alice',timeline:'alice|photo',expires:Date.now()+90000,
+    refs:[latest.href,api.href],apiKeys:[api.key],
+    photos:[[api.key,source]],cursor:'NEXT',anchorFound:true,
+  })]]);
+  context.window.sessionStorage={
+    getItem(k){return values.get(k)||null;},
+    setItem(k,v){values.set(k,String(v));},
+  };
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:null,refs:[],indexes:new Map(),publicApiKeys:new Set(),
+    imageSources:new Map(),knownPhotoTotals:new Map(),
+  });
+  try{
+    state.pathname=api.href;
+    proto.restorePublicMediaSession.call(ctrl);
+    assert.equal(ctrl.originProfile,'alice');
+    assert.equal(ctrl.refs.length,2);
+    assert.equal(ctrl.indexes.get(api.key),1);
+    assert.equal(ctrl.publicApiKeys.has(api.key),true);
+    assert.equal(ctrl.imageSources.get(api.key),source);
+    assert.equal(ctrl.publicApiCursor,'NEXT');
+    ctrl.originProfile=null;ctrl.refs=[];ctrl.indexes.clear();ctrl.publicApiKeys.clear();
+    state.pathname='/bob/status/90/photo/1';
+    proto.restorePublicMediaSession.call(ctrl);
+    assert.equal(ctrl.originProfile,null,'never restore into another profile');
+    state.pathname=latest.href;
+    proto.restorePublicMediaSession.call(ctrl);
+    assert.equal(ctrl.originProfile,'alice','back navigation to originally verified native media preserves session');
+    ctrl.originProfile=null;ctrl.refs=[];ctrl.indexes.clear();ctrl.publicApiKeys.clear();
+    values.set('xmn-public-media-v1',JSON.stringify({
+      profile:'alice',expires:Date.now()-1000,refs:[api.href],apiKeys:[api.key],
+    }));
+    state.pathname=api.href;
+    proto.restorePublicMediaSession.call(ctrl);
+    assert.equal(ctrl.originProfile,null,'expired session must not restore');
+  }finally{state.pathname=oldPath;context.window.sessionStorage=oldStorage;}
+});
+
+test('public continuation is discarded when X route changes during the API request', async () => {
+  const oldPath=state.pathname,oldHidden=document.hidden,oldNav=context.navigator;
+  state.pathname='/alice/status/200/photo/1';
+  document.hidden=false;context.navigator={onLine:true};
+  const current=ref('/alice/status/200/photo/1'),next=ref('/alice/status/100/photo/1');
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|photo',
+    refs:[current],indexes:new Map([[current.key,0]]),
+    publicApiKeys:new Set(),publicApiAnchorFound:false,publicApiCursor:null,
+    publicApiExhausted:false,publicApiLoading:false,
+    imageSources:new Map(),navGeneration:6,
+    navigationBusy:false,updateViewerState(){},
+    fetchPublicMediaPage:async()=>{state.pathname='/bob/status/1/photo/1';
+      return {refs:[current,next],photos:[],cursor:null};},
+    persistPublicMediaSession(){throw Error('must not store results after tab navigation');},
+  });
+  try {
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),false);
+    assert.deepEqual(ctrl.refs.map(r=>r.statusId),['200']);
+    assert.equal(ctrl.publicApiKeys.size,0);
+    assert.equal(ctrl.navigationBusy,false);
+  }finally{state.pathname=oldPath;document.hidden=oldHidden;context.navigator=oldNav;}
+});
+
+test('storage quota failure rolls back appended public media and leaves native refs untouched', async () => {
+  const oldPath=state.pathname,oldHidden=document.hidden,oldNav=context.navigator;
+  state.pathname='/alice/status/200/photo/1';
+  document.hidden=false;context.navigator={onLine:true};
+  const current=ref('/alice/status/200/photo/1'),next=ref('/alice/status/100/photo/1');
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|photo',
+    refs:[current],indexes:new Map([[current.key,0]]),
+    publicApiKeys:new Set(),publicApiAnchorFound:false,publicApiCursor:null,
+    publicApiExhausted:false,publicApiLoading:false,navGeneration:6,
+    imageSources:new Map(),navigationBusy:false,updateViewerState(){},
+    fetchPublicMediaPage:async()=>({refs:[current,next],
+      photos:[[next.key,'https://pbs.twimg.com/media/YES?format=jpg&name=large']],cursor:null}),
+    persistPublicMediaSession(){return false;},
+  });
+  try{
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),false);
+    assert.deepEqual(ctrl.refs.map(r=>r.statusId),['200']);
+    assert.equal(ctrl.indexes.has(next.key),false);
+    assert.equal(ctrl.publicApiKeys.size,0);
+    assert.equal(ctrl.imageSources.has(next.key),false);
+    assert.equal(ctrl.publicApiAnchorFound,false);
+    assert.equal(ctrl.publicApiCursor,null);
+    assert.equal(ctrl.navigationBusy,false);
+  }finally{state.pathname=oldPath;document.hidden=oldHidden;context.navigator=oldNav;}
+});
+
+test('external media continuation rejects API chronology inversions without editing native refs', async () => {
+  const before=state.pathname,oldHidden=document.hidden,oldNav=context.navigator;
+  state.pathname='/alice/status/300/photo/1';
+  document.hidden=false;context.navigator={onLine:true};
+  const native=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|photo',refs:native,
+    indexes:new Map(native.map((r,i)=>[r.key,i])),
+    publicApiKeys:new Set(),publicApiAnchorFound:false,
+    publicApiCursor:null,publicApiExhausted:false,publicApiLoading:false,
+    navigationBusy:false,imageSources:new Map(),updateViewerState(){},
+    fetchPublicMediaPage:async()=>({
+      refs:[native[0],native[1],
+        ref('/alice/status/200/photo/1'),
+        ref('/alice/status/250/photo/1')],
+      photos:[],cursor:null,
+    }),
+    persistPublicMediaSession(){throw Error('invalid API ordering must never persist');},
+  });
+  try{
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),false);
+    assert.equal(ctrl.refs.length,2);
+    assert.equal(ctrl.publicApiKeys.size,0);
+    assert.equal(ctrl.publicApiLoading,false);
+  }finally{state.pathname=before;document.hidden=oldHidden;context.navigator=oldNav;}
+});
+
+test('bounded URL session refuses partial albums rather than skipping cursor pages', async () => {
+  const before=state.pathname,oldHidden=document.hidden,oldNav=context.navigator;
+  const oldTimer=context.window.setTimeout;
+  // Expose a real timer for this pagination-delay scenario in the isolated VM.
+  context.window.setTimeout=(cb,ms)=>setTimeout(cb,ms);
+  const refs=Array.from({length:449},(_,i)=>ref('/alice/status/'+(1000-i)+'/photo/1'));
+  const last=refs[448];
+  state.pathname=last.href;document.hidden=false;context.navigator={onLine:true};
+  const future=[
+    ref('/alice/status/500/photo/1'),ref('/alice/status/500/photo/2')],
+    ctrl=Object.assign(Object.create(proto),{
+      originProfile:'alice',originTimeline:'alice|photo',refs,
+      indexes:new Map(refs.map((r,i)=>[r.key,i])),
+      publicApiKeys:new Set(),publicApiAnchorFound:true,
+      publicApiCursor:'old',publicApiExhausted:false,publicApiLoading:false,
+      imageSources:new Map(),navigationBusy:false,updateViewerState(){},
+      fetchPublicMediaPage:async()=>({
+        refs:future,photos:[],cursor:'new',
+      }),persistPublicMediaSession(){throw Error('over-budget continuation must not persist');},
+    });
+  try{
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),false);
+    assert.equal(ctrl.refs.length,449);
+    assert.equal(ctrl.publicApiKeys.size,0);
+    assert.equal(ctrl.publicApiCursor,'old');
+  }finally{state.pathname=before;document.hidden=oldHidden;context.navigator=oldNav;
+    context.window.setTimeout=oldTimer;}
+});
+
+test('API photo album size is carried through a short-lived page navigation', async () => {
+  const prev=state.pathname,hidden=document.hidden,nav=context.navigator;
+  const oldStore=context.window.sessionStorage;
+  document.hidden=false;context.navigator={onLine:true};
+  const initial=ref('/alice/status/200/photo/1');
+  const next1=ref('/alice/status/100/photo/1'),next2=ref('/alice/status/100/photo/2');
+  const saved=new Map();
+  context.window.sessionStorage={
+    setItem(k,v){saved.set(k,String(v));},
+    getItem(k){return saved.get(k)||null;},
+  };
+  state.pathname=initial.href;
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|photo',
+    refs:[initial],indexes:new Map([[initial.key,0]]),
+    publicApiKeys:new Set(),publicApiAnchorFound:false,publicApiCursor:null,
+    publicApiExhausted:false,publicApiLoading:false,knownPhotoTotals:new Map(),
+    imageSources:new Map(),navGeneration:3,navigationBusy:false,
+    updateViewerState(){},
+    fetchPublicMediaPage:async()=>({refs:[initial,next1,next2],photos:[],cursor:null}),
+  });
+  try{
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),true);
+    assert.equal(ctrl.knownPhotoTotals.get('100'),2);
+    const stored=JSON.parse(saved.get('xmn-public-media-v1'));
+    assert.deepEqual(stored.photoTotals.map(([id,n])=>[id,n]),[['100',2]]);
+    state.pathname=next2.href;
+    const nextCtrl=Object.assign(Object.create(proto),{
+      originProfile:null,refs:[],indexes:new Map(),
+      publicApiKeys:new Set(),imageSources:new Map(),knownPhotoTotals:new Map(),
+    });
+    proto.restorePublicMediaSession.call(nextCtrl);
+    assert.equal(nextCtrl.knownPhotoTotals.get('100'),2,
+      'gallery has proven two photos even after an actual new-page handoff');
+  }finally{state.pathname=prev;document.hidden=hidden;context.navigator=nav;
+    context.window.sessionStorage=oldStore;}
+});
+
+test('restored public session can navigate back to a previously verified native post', async () => {
+  const oldPath=state.pathname,oldAssign=state.assign;
+  const native=ref('/alice/status/200/photo/1');
+  const api=ref('/alice/status/100/photo/1');
+  const navigations=[];
+  state.pathname=api.href;
+  state.assign=(href)=>navigations.push(href);
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|default',navGeneration:2,
+    refs:[native,api],indexes:new Map([[native.key,0],[api.key,1]]),
+    publicApiKeys:new Set([api.key]),publicSessionRestored:true,
+    viewer:{isConnected:true},navigationBusy:false,
+    activeIndex(){return 1;},
+    findLiveLink(){return null;},
+    updateViewerState(){},
+    persistPublicMediaSession(){return true;},
+    toast(msg){throw Error(msg);},
+  });
+  try {
+    await proto.navigate.call(ctrl,-1);
+    assert.deepEqual(navigations,[native.href],
+      'return to a verified native URL even after the original X grid is no longer mounted');
+  } finally {
+    state.pathname=oldPath;
+    if(oldAssign===undefined)delete state.assign;else state.assign=oldAssign;
+  }
+});
