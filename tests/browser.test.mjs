@@ -671,3 +671,56 @@ image.src=${JSON.stringify(imageUrl)};
     rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
   }
 });
+
+test('full document navigation restores FxEmbed session controls without a media grid', {
+  skip: process.env.XMN_RUN_CHROMIUM !== '1' ? 'Requires Chromium' :
+    !existsSync(browser) ? 'Chromium not installed' : false,
+}, async () => {
+  const server=createServer((req,res)=>{
+    res.setHeader('content-type', req.url==='/extension/content_script.js' ?
+      'text/javascript; charset=utf-8':'text/html; charset=utf-8');
+    if(req.url==='/extension/content_script.js') return res.end(contentScript);
+    if(req.url==='/alice/media') return res.end(`<!doctype html><html><body>
+<script>
+sessionStorage.setItem('xmn-public-media-v1',JSON.stringify({
+  profile:'alice',timeline:'alice|photo',expires:Date.now()+60000,
+  refs:['/alice/status/200/photo/1','/alice/status/100/photo/1'],
+  apiKeys:['100:photo:1'],photos:[],photoTotals:[['100',1]],
+  cursor:null,anchorFound:true,exhausted:true
+}));
+location.assign('/alice/status/100/photo/1');
+</script></body></html>`);
+
+    res.end(`<!doctype html><html><body>
+<div role="dialog"><div data-testid="swipe-to-dismiss"
+ style="position:relative;width:700px;height:430px">
+ <img alt="loaded public photo" width="600" height="400"
+ src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=">
+</div><aside id="replies">Unchanged replies</aside></div>
+<script src="/extension/content_script.js"></script>
+<script>
+setTimeout(()=>{
+ const label=document.querySelector('.xmn-status')?.textContent;
+ const prev=document.querySelector('.xmn-prev');
+ const next=document.querySelector('.xmn-next');
+ document.documentElement.dataset.xmnRestoreProof=
+   label==='投稿 2 / 2' && prev && !prev.disabled && next &&
+   document.getElementById('replies') ? 'passed':'failed:'+(label||'missing');
+},1250);
+</script></body></html>`);
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+
+  const dir=mkdtempSync(join(tmpdir(),'xmn-public-session-'));
+  try {
+    const output=await runChromium(
+      'http://127.0.0.1:'+server.address().port+'/alice/media',dir);
+    assert.match(output,/data-xmn-restore-proof="passed"/,
+      'Full-page X route should retain same-tab API indexes and original back arrow');
+    assert.match(output, /Unchanged replies/,
+      'The mocked replies panel must not be discarded by the extension');
+  } finally {
+    await new Promise(resolve=>server.close(resolve));
+    rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
+  }
+});

@@ -596,6 +596,12 @@ var XMN;
             const generation = this.navGeneration;
             const profile = this.originProfile;
             const timeline = this.originTimeline;
+            // Keep the native X Photos / Videos filter when appending public media.
+            if (timeline && timeline !== `${profile}|default` &&
+                timeline !== `${profile}|photo` && timeline !== `${profile}|video`)
+                return false;
+            const mediaKind = timeline === `${profile}|photo` ? 'photo' :
+                timeline === `${profile}|video` ? 'video' : null;
             const initialPath = window.location.pathname;
             const stillSameSession = () => generation === this.navGeneration && this.originProfile === profile &&
                 this.originTimeline === timeline &&
@@ -611,7 +617,10 @@ var XMN;
                     const page = await this.fetchPublicMediaPage(cursor);
                     if (!stillSameSession() || !page)
                         return false;
-                    pages.push({ refs: page.refs, photos: page.photos });
+                    pages.push({
+                        refs: mediaKind ? page.refs.filter((ref) => ref.kind === mediaKind) : page.refs,
+                        photos: mediaKind === 'video' ? [] : page.photos,
+                    });
                     newCursor = page.cursor;
                     const all = pages.flatMap((item) => item.refs);
                     const groups = [...new Set(all.map((ref) => ref.statusId))];
@@ -906,7 +915,9 @@ var XMN;
             const timeline = XMN.mediaTimelineKey(path, window.location.search);
             if (atMedia && timeline) {
                 let scanRequired = false;
-                if (this.originProfile !== atMedia) {
+                if (this.publicSessionRestored || this.originProfile !== atMedia) {
+                    // Returning from an API-only full-page route restores a fresh X grid.
+                    // Old saved refs are not the live grid's ordering or filter authority.
                     this.resetSession();
                     this.originProfile = atMedia;
                     this.originTimeline = timeline;

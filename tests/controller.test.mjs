@@ -3618,3 +3618,50 @@ test('restored public session can navigate back to a previously verified native 
     if(oldAssign===undefined)delete state.assign;else state.assign=oldAssign;
   }
 });
+test('FxEmbed continuation keeps the original X Photos/Videos media filter', async () => {
+  const oldPath=state.pathname,oldHidden=document.hidden,oldNav=context.navigator;
+  document.hidden=false;context.navigator={onLine:true};
+  try {
+    for(const kind of ['photo','video']) {
+      const other=kind==='photo'?'video':'photo';
+      const native=[ref(`/alice/status/500/${kind}/1`),ref(`/alice/status/400/${kind}/1`)];
+      const allowed=ref(`/alice/status/300/${kind}/1`);
+      const unrelated=ref(`/alice/status/200/${other}/1`);
+      state.pathname=native[1].href;
+      const ctrl=Object.assign(Object.create(proto),{
+        originProfile:'alice',originTimeline:'alice|'+kind,
+        refs:native,indexes:new Map(native.map((r,i)=>[r.key,i])),
+        publicApiKeys:new Set(),publicApiAnchorFound:false,
+        publicApiCursor:null,publicApiExhausted:false,publicApiLoading:false,
+        imageSources:new Map(),knownPhotoTotals:new Map(),navGeneration:12,
+        navigationBusy:false,updateViewerState(){},persistPublicMediaSession(){return true;},
+        fetchPublicMediaPage:async()=>({refs:[...native,allowed,unrelated],photos:[],cursor:null}),
+      });
+      assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),true);
+      assert.deepEqual(ctrl.refs.map(r=>r.key),[native[0].key,native[1].key,allowed.key],
+        'must never append '+other+' posts to the '+kind+' filter');
+    }
+  } finally {state.pathname=oldPath;document.hidden=oldHidden;context.navigator=oldNav;}
+});
+
+test('restored API session resets stale media ordering when returning to X media tab', () => {
+  const oldPath=state.pathname,oldSearch=state.search;
+  state.pathname='/alice/media';state.search='?filter=photo';
+  let resets=0,scans=0;
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|photo',publicSessionRestored:true,
+    refs:[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')],
+    indexes:new Map(),pendingGrid:null,lastPath:'/alice/status/300/photo/1',
+    resetSession(){resets++;this.refs=[];this.indexes.clear();
+      this.publicSessionRestored=false;this.originProfile=null;},
+    ensureListObserver(){return true;},scanTiles(){scans++;},
+    syncModalObserver(){},removeViewerUI(){},
+  });
+  try {
+    proto.tick.call(ctrl);
+    assert.equal(resets,1,'stale API ordering must not be kept on a newly mounted X grid');
+    assert.equal(scans,1,'index the current native media grid after reset');
+    assert.equal(ctrl.publicSessionRestored,false);
+    assert.equal(ctrl.originTimeline,'alice|photo');
+  } finally {state.pathname=oldPath;state.search=oldSearch;}
+});
