@@ -72,3 +72,18 @@ Rejected alternatives:
 - Source baseline and origin both equal `4e4d4653c5e4f4cfd470132f488632a09e6e46c5`; public main remains `47b23d56257ee272f4adc1dea21900340e673c98`.
 - Compiled `extension/content_script.js` baseline **113,956 bytes**, new **118,079 bytes** (+4,123). CSS also grows slightly. This is a small runtime/feature overhead, NOT a smaller extension package. The optional preview Canvas is capped at 256×256×4=262,144 bytes (excluding browser object overhead) and is removed by the existing bounded handoff cleanup. Existing up-to-five `name=large` prefetches and two concurrent transfers are unchanged.
 - The live user X DOM, HTTP cache-hit rate, perceived first-paint latency, frame jank and actual fullscreen/reply-panel behavior are **NOT VERIFIED**. These require user Chrome extension Reload, X tab refresh and direct acceptance.
+
+## Confirmed private GitHub CI and fixed-folder v2.4.17 installation (2026-10-28 JST)
+
+- Implementation commit: `b67b2f1a31d184a8f8ecca7c8e3e3aa22cb46cff`. Pushed to PRIVATE `fix/prefetch-startup-v241`. GitHub `TypeScript check / verify` concluded **SUCCESS on this exact code SHA** for both the push and Draft PR #17 before deployment. No merge or public release.
+- Before replacing anything, confirmed the installed unpacked-extension manifest was **v2.4.16** and the newly built source manifest was **v2.4.17**, with a clean working tree still on the implementation SHA.
+- Exactly six old installed files were preserved and SHA256-verified at `C:\Users\Saito\Downloads\X-Media-Navigator-Backups\pre-v2417-20261028_161427`; `SHA256-OLD.txt` lists the old hashes. No ZIP generated.
+- Directly updated the original six files under `C:\Users\Saito\Downloads\X-Media-Navigator-Current`. All six installed SHA256s equal the compiled source:
+  - `content_script.js`: `4D07BD74F5EF04D4943F8D9A2017A30277AF049D241A69C37CFB0EE9B44C07A5`
+  - `manifest.json`: `D94D51AA3336D1C885139BAB92229A450A18245B39095696773759250C37C6F7`
+  - `style.css`: `A267560C8FCAA27AA890EC0550906FB4807D662EABC0AFFCCBCB1AFBAABB5713`
+  - `icon16.png`: `A6A5FBFB08884932B4F2DE8C5AE72EA33C5FDD8D29C36A7F943C472A6F765350`
+  - `icon48.png`: `131F87AEEB140C8AE516BF4B33F4F9E66EAA0C3A4A1A8D405D5EE16EC3438BC9`
+  - `icon128.png`: `C2415B4E7097B660840FC65D84C07E2D3B25F7DE9087346BD8643E8D16B1BDA0`
+- Installed manifest **2.4.17** verified. No Chrome restart, account action, cookie access, new extension permissions, background service or automatic updater; public main remains `47b23d56257ee272f4adc1dea21900340e673c98`.
+- Remaining acceptance: Reload the unpacked extension via `chrome://extensions`, refresh the X media tab, then check low-res first paint and sharp-image replacement on slow photo, wrong-photo prevention, 1–4 photo native gallery keys, 10+ posts both directions, fixed ◀▶ position and replies panel. Actual authenticated X cache traffic/first-paint timing is still **UNMEASURED**.
