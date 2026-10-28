@@ -315,6 +315,15 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
+    const DIAGNOSTIC_VERSION = '2.4.19-qa';
+    // Only numeric counts, booleans, and fixed operation labels are reported.
+    // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
+    function diagnostic(event, details = {}) {
+        try {
+            console.info(`[XMN ${DIAGNOSTIC_VERSION}] ${event}`, details);
+        }
+        catch { /* Diagnostics must never interrupt the viewer. */ }
+    }
     // Generic "Next"/"Previous" controls can belong to the POST sidebar,
     // not the photo carousel. Only photo-specific labels prove gallery arrows.
     const NATIVE_NEXT = /^(?:next\s+(?:photo|image|media)(?:\s+image)?|次の(?:画像|写真|メディア)(?:へ)?)$/i;
@@ -405,6 +414,9 @@ var XMN;
             this.publicApiAnchorFound = false;
             this.publicApiExhausted = false;
             this.publicApiLoading = false;
+            // Warm only after the user has explicitly allowed this external provider.
+            this.publicApiWarmCursor = null;
+            this.publicApiWarmTimer = null;
             // Persisted X-observed native refs stay navigable after a public API handoff.
             this.publicSessionRestored = false;
             this.viewer = null;
@@ -436,6 +448,7 @@ var XMN;
             this.navigationBusy = false;
             this.navGeneration = 0;
             this.restorePublicMediaSession();
+            diagnostic('startup', { restored: this.publicSessionRestored, indexed: this.refs.length });
             // Observe actual user keyboard input only when the viewer belongs to a media-tab session.
             document.addEventListener('keydown', (event) => this.onKeyDown(event), true);
             // Preheat adjacent images when a user opens media from the grid, before
@@ -560,6 +573,8 @@ var XMN;
             if (cursor)
                 url.searchParams.set('cursor', cursor);
             const abort = new AbortController();
+            const started = Date.now();
+            diagnostic('fxembed.request', { continuation: !!cursor });
             const watchdog = window.setTimeout(() => abort.abort(), 9500);
             try {
                 const response = await fetch(url.toString(), {
@@ -567,25 +582,86 @@ var XMN;
                     referrerPolicy: 'no-referrer', cache: 'no-store',
                     signal: abort.signal, headers: { Accept: 'application/json' },
                 });
-                if (!response.ok)
+                if (!response.ok) {
+                    diagnostic('fxembed.http_failure', { httpStatus: response.status });
                     return null;
+                }
                 const size = Number(response.headers.get('content-length'));
-                if (Number.isFinite(size) && size > 4000000)
+                if (Number.isFinite(size) && size > 4000000) {
+                    diagnostic('fxembed.rejected', { reason: 'content_length' });
                     return null;
+                }
                 const body = await response.text();
-                if (body.length > 4000000)
+                if (body.length > 4000000) {
+                    diagnostic('fxembed.rejected', { reason: 'body_length' });
                     return null;
-                return XMN.parsePublicMediaPage(JSON.parse(body), this.originProfile);
+                }
+                const page = XMN.parsePublicMediaPage(JSON.parse(body), this.originProfile);
+                if (!page) {
+                    diagnostic('fxembed.rejected', { reason: 'invalid_payload' });
+                    return null;
+                }
+                diagnostic('fxembed.page', {
+                    entries: page.refs.length, photos: page.photos.length,
+                    hasNext: !!page.cursor, elapsedMs: Date.now() - started,
+                });
+                return page;
             }
-            catch {
+            catch (error) {
+                diagnostic('fxembed.failed', {
+                    reason: error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'network_or_json',
+                });
                 return null;
             }
             finally {
                 window.clearTimeout(watchdog);
             }
         }
+        /**
+         * After explicit FxEmbed consent, warm the next cursor shortly BEFORE
+         * reaching the last indexed post. No new provider calls before consent.
+         * A failed warmup is not retried until the user requests the boundary.
+         */
+        schedulePublicMediaWarmup(currentIndex) {
+            if (currentIndex === null || !this.publicApiAnchorFound ||
+                !this.publicApiCursor || this.publicApiExhausted || this.publicApiLoading ||
+                this.navigationBusy || !this.viewer?.isConnected || document.hidden ||
+                this.publicApiWarmTimer !== null ||
+                this.publicApiWarmCursor === this.publicApiCursor || !this.originProfile)
+                return;
+            let consent = false;
+            try {
+                consent = window.sessionStorage.getItem('xmn-fxembed-consent-' + this.originProfile) === 'yes';
+            }
+            catch {
+                return;
+            }
+            if (!consent)
+                return;
+            let position = currentIndex;
+            let remaining = 0;
+            for (let n = 0; n < 4; n++) {
+                const next = XMN.adjacentPostIndex(this.refs, this.refs[position].statusId, 1, position);
+                if (next === null)
+                    break;
+                position = next;
+                remaining++;
+            }
+            if (remaining > 3)
+                return;
+            const requestedCursor = this.publicApiCursor;
+            this.publicApiWarmCursor = requestedCursor;
+            this.publicApiWarmTimer = window.setTimeout(() => {
+                this.publicApiWarmTimer = null;
+                if (this.publicApiCursor !== requestedCursor || this.publicApiLoading ||
+                    this.navigationBusy || !this.viewer?.isConnected || document.hidden)
+                    return;
+                diagnostic('fxembed.warmup', { remainingPosts: remaining });
+                void this.loadPublicMediaContinuation(true);
+            }, 400);
+        }
         /** Append only validated, chronologically older media records. */
-        async loadPublicMediaContinuation() {
+        async loadPublicMediaContinuation(background = false) {
             if (!this.originProfile || this.publicApiLoading || document.hidden ||
                 (typeof navigator !== 'undefined' && navigator.onLine === false) ||
                 this.publicApiExhausted)
@@ -607,16 +683,23 @@ var XMN;
                 this.originTimeline === timeline &&
                 window.location.pathname === initialPath && !document.hidden;
             this.publicApiLoading = true;
-            this.navigationBusy = true;
-            this.updateViewerState();
+            if (!background) {
+                this.navigationBusy = true;
+                this.updateViewerState();
+            }
+            diagnostic('fxembed.continuation_start', { background, indexed: this.refs.length });
             let cursor = this.publicApiCursor;
             const pages = [];
             let newCursor = cursor;
             try {
                 for (let attempt = 0; attempt < 4; attempt++) {
                     const page = await this.fetchPublicMediaPage(cursor);
-                    if (!stillSameSession() || !page)
+                    if (!stillSameSession() || !page) {
+                        diagnostic('fxembed.continuation_abort', {
+                            reason: !stillSameSession() ? 'route_changed' : 'request_failed',
+                        });
                         return false;
+                    }
                     pages.push({
                         refs: mediaKind ? page.refs.filter((ref) => ref.kind === mediaKind) : page.refs,
                         photos: mediaKind === 'video' ? [] : page.photos,
@@ -651,11 +734,15 @@ var XMN;
                 let start = 0;
                 if (!this.publicApiAnchorFound) {
                     const last = statusIds.indexOf(nativeLast);
-                    if (last < 0)
+                    if (last < 0) {
+                        diagnostic('fxembed.continuation_abort', { reason: 'anchor_missing' });
                         return false;
+                    }
                     const earlier = [...new Set(this.refs.map((ref) => ref.statusId))].slice(-2, -1);
-                    if (earlier.length && !earlier.every((id) => statusIds.slice(0, last).includes(id)))
+                    if (earlier.length && !earlier.every((id) => statusIds.slice(0, last).includes(id))) {
+                        diagnostic('fxembed.continuation_abort', { reason: 'timeline_mismatch' });
                         return false; // Provider does not match X native media list.
+                    }
                     start = combined.findIndex((ref) => ref.statusId === nativeLast);
                     while (start < combined.length && combined[start].statusId === nativeLast)
                         start++;
@@ -673,8 +760,10 @@ var XMN;
                 }
                 // Never silently drop part of an album/page and then advance the
                 // cursor beyond those missing posts. Fail without changing the index.
-                if (this.refs.length + plannedKeys.size > 450)
+                if (this.refs.length + plannedKeys.size > 450) {
+                    diagnostic('fxembed.continuation_abort', { reason: 'index_limit' });
                     return false;
+                }
                 let appended = 0;
                 for (const ref of combined.slice(start)) {
                     if (this.indexes.has(ref.key))
@@ -710,8 +799,15 @@ var XMN;
                 this.publicApiExhausted = !newCursor;
                 this.statusOrdinalCache = null;
                 this.viewerStateSnapshot = null;
-                if (appended > 0 && stillSameSession() && this.persistPublicMediaSession())
+                if (appended > 0 && stillSameSession() && this.persistPublicMediaSession()) {
+                    diagnostic('fxembed.continuation_ready', {
+                        added: appended, indexed: this.refs.length, hasMore: !!newCursor, background,
+                    });
                     return true;
+                }
+                diagnostic('fxembed.continuation_abort', {
+                    reason: appended === 0 ? 'no_new_entries' : 'storage_or_route',
+                });
                 // Do not leave a half-appended public page if storage is blocked or
                 // X changed profile/tab while the asynchronous API was responding.
                 for (const ref of this.refs.splice(oldLength)) {
@@ -728,7 +824,8 @@ var XMN;
             finally {
                 if (generation === this.navGeneration && this.originProfile === profile) {
                     this.publicApiLoading = false;
-                    this.navigationBusy = false;
+                    if (!background)
+                        this.navigationBusy = false;
                     this.updateViewerState();
                 }
             }
@@ -786,6 +883,10 @@ var XMN;
             this.publicApiExhausted = false;
             this.publicSessionRestored = false;
             this.publicApiLoading = false;
+            this.publicApiWarmCursor = null;
+            if (this.publicApiWarmTimer !== null)
+                window.clearTimeout(this.publicApiWarmTimer);
+            this.publicApiWarmTimer = null;
             this.imageSources.clear();
             this.imageSourcesRevision++;
             this.knownPhotoTotals.clear();
@@ -1383,6 +1484,7 @@ var XMN;
                     indicator.textContent = label;
             }
             this.viewerStateSnapshot = { viewer, key };
+            this.schedulePublicMediaWarmup?.(current);
         }
         /**
          * Prove the actual media count from accessibility metadata or the official
@@ -1945,6 +2047,10 @@ var XMN;
                         this.promoteVisualHandoff();
                     }
                     this.trimPrefetched();
+                    diagnostic('prefetch.finished', {
+                        decoded: record.ready, cached: this.prefetched.has(url), cancelled,
+                        inFlight: this.prefetchInFlight,
+                    });
                     // A pre-open click may launch the first two requests. Do not drain
                     // the remaining queue until the actual gallery is visible.
                     this.drainPrefetchQueue();
@@ -1981,6 +2087,7 @@ var XMN;
                 };
                 this.prefetched.set(url, record);
                 this.prefetchInFlight++;
+                diagnostic('prefetch.started', { inFlight: this.prefetchInFlight });
                 image.src = url;
                 if (typeof image.decode === 'function') {
                     void image.decode().then(() => finish(true)).catch(() => finish(false));
@@ -2021,6 +2128,9 @@ var XMN;
                     return null;
                 ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
                 canvas.classList.add('xmn-handoff-preview');
+                diagnostic('preview.low_thumbnail_decoded', {
+                    width: canvas.width, height: canvas.height, extraRequests: 0,
+                });
                 return canvas;
             }
             catch {
@@ -2043,6 +2153,7 @@ var XMN;
                 record.image.classList.add('xmn-handoff-image');
                 handoff.host.replaceChildren(record.image);
                 handoff.quality = 'high';
+                diagnostic('preview.promoted_to_high', { visible: handoff.shown });
                 return true;
             }
             catch {
@@ -2058,16 +2169,22 @@ var XMN;
             if (target.kind !== 'photo' || this.handoff || !this.originProfile || document.hidden)
                 return false;
             if (typeof window.matchMedia === 'function' &&
-                window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+                window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                diagnostic('preview.skipped', { reason: 'reduced_motion' });
                 return false;
+            }
             const url = this.imageSources?.get(target.key);
             const record = url ? this.prefetched?.get(url) : undefined;
             const targetPhotoIdentity = url ? XMN.photoCdnIdentity(url) : null;
-            if (!url || !targetPhotoIdentity || XMN.preloadImageUrl(url) !== url)
+            if (!url || !targetPhotoIdentity || XMN.preloadImageUrl(url) !== url) {
+                diagnostic('preview.skipped', { reason: 'verified_photo_url_unavailable' });
                 return false;
+            }
             const highReady = !!record?.ready && record.image.naturalWidth > 0;
-            if (!highReady && !link)
+            if (!highReady && !link) {
+                diagnostic('preview.skipped', { reason: 'native_thumbnail_unavailable' });
                 return false;
+            }
             let host = null;
             try {
                 host = document.createElement('div');
@@ -2087,8 +2204,10 @@ var XMN;
                     b.width > 100 && b.height > 100 &&
                     Number.isFinite(b.left) && Number.isFinite(b.top) &&
                     (typeof maxRight !== 'number' || b.right <= maxRight + 5));
-                if (!bounds)
+                if (!bounds) {
+                    diagnostic('preview.skipped', { reason: 'unsafe_photo_geometry' });
                     return false;
+                }
                 host.style.setProperty('inset', 'auto');
                 host.style.setProperty('left', `${bounds.left}px`);
                 host.style.setProperty('top', `${bounds.top}px`);
@@ -2096,13 +2215,15 @@ var XMN;
                 host.style.setProperty('height', `${bounds.height}px`);
                 const visual = highReady ? record.image
                     : this.captureLowQualityThumbnail(target, link);
-                if (!visual)
+                if (!visual) {
+                    diagnostic('preview.skipped', { reason: 'thumbnail_not_decoded' });
                     return false;
+                }
                 if (highReady)
                     visual.classList.add('xmn-handoff-image');
                 host.appendChild(visual);
                 document.body.appendChild(host);
-                const timeout = window.setTimeout(() => this.clearVisualHandoff(), 1800);
+                const timeout = window.setTimeout(() => this.clearVisualHandoff('timeout'), 1800);
                 const handoff = {
                     host,
                     targetStatus: target.statusId,
@@ -2113,6 +2234,7 @@ var XMN;
                     timeout,
                     generation: this.navGeneration,
                     shown: false,
+                    shownAt: null,
                     revealTimer: null,
                     sourceViewer: this.viewer,
                     observer: null,
@@ -2124,6 +2246,7 @@ var XMN;
                     decodedSrc: null,
                 };
                 this.handoff = handoff;
+                diagnostic('preview.prepared', { quality: handoff.quality, visible: false });
                 // Only for the short handoff window: detect the new SPA modal as
                 // soon as it mounts rather than waiting for the 450ms route poll.
                 if (typeof MutationObserver !== 'undefined') {
@@ -2142,6 +2265,7 @@ var XMN;
                 return true;
             }
             catch {
+                diagnostic('preview.skipped', { reason: 'overlay_setup_failed' });
                 // A failed MutationObserver setup can happen AFTER the overlay was
                 // attached and this.handoff assigned. Dispose both together.
                 if (host && this.handoff?.host === host)
@@ -2178,10 +2302,12 @@ var XMN;
                 // change, skip showing the blurry intermediary altogether.
                 this.promoteVisualHandoff();
                 handoff.shown = true;
+                handoff.shownAt = Date.now();
+                diagnostic('preview.visible', { quality: handoff.quality });
                 // The old modal can take most of the original 1.8s to close.
                 // Start the visible handoff window only after that close finishes.
                 window.clearTimeout(handoff.timeout);
-                handoff.timeout = window.setTimeout(() => this.clearVisualHandoff(), 1800);
+                handoff.timeout = window.setTimeout(() => this.clearVisualHandoff('timeout'), 1800);
                 handoff.host.classList.add('xmn-handoff-visible');
             }
         }
@@ -2259,7 +2385,7 @@ var XMN;
                     (handoff.decodedImage.currentSrc || handoff.decodedImage.src || '') === handoff.decodedSrc &&
                     XMN.photoCdnIdentity(handoff.decodedSrc || '') === handoff.targetPhotoIdentity;
                 if (stillVisible) {
-                    this.clearVisualHandoff();
+                    this.clearVisualHandoff('native_photo_ready');
                 }
                 else {
                     // React can recycle the image again during this 90ms paint window.
@@ -2271,10 +2397,14 @@ var XMN;
                 }
             }, 90);
         }
-        clearVisualHandoff() {
+        clearVisualHandoff(reason = 'cleanup') {
             const handoff = this.handoff;
             if (!handoff)
                 return;
+            diagnostic('preview.finished', {
+                quality: handoff.quality, reason, visible: handoff.shown,
+                visibleMs: handoff.shownAt == null ? 0 : Date.now() - handoff.shownAt,
+            });
             this.handoff = null;
             window.clearTimeout(handoff.timeout);
             if (handoff.revealTimer !== null)
@@ -2422,6 +2552,11 @@ var XMN;
             if (nextIndex === null) {
                 if (direction !== 1)
                     return;
+                if (this.publicApiLoading) {
+                    diagnostic('fxembed.boundary_waiting', { background: true });
+                    this.toast('次の投稿を公開APIから取得中です');
+                    return;
+                }
                 // This uses a separate public third-party API, not X's official API.
                 // Ask only once per tab/profile before disclosing the public handle.
                 const consentKey = 'xmn-fxembed-consent-' + this.originProfile;
@@ -2435,11 +2570,13 @@ var XMN;
                         '公開プロフィール名と接続元IP等の通信情報がFxEmbedに伝わります。' +
                         'XのCookie・ログイン情報・閲覧履歴は送りません。';
                     if (typeof window.confirm !== 'function' || !window.confirm(message)) {
+                        diagnostic('fxembed.consent_declined');
                         this.toast('ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
                         return;
                     }
                     try {
                         window.sessionStorage.setItem(consentKey, 'yes');
+                        diagnostic('fxembed.consent_granted');
                     }
                     catch {
                         this.toast('一時保存を使えないため外部API連続閲覧を開始できません');
@@ -2474,6 +2611,7 @@ var XMN;
                         this.toast('一時保存できないため移動を中止しました');
                         return;
                     }
+                    diagnostic('navigation.document_handoff', { kind: this.refs[nextIndex].kind ?? 'post' });
                     window.location.assign(this.refs[nextIndex].href);
                     return;
                 }
@@ -2504,6 +2642,7 @@ var XMN;
                     this.beginVisualHandoff(this.refs[nextIndex], initialDestination);
                     const result = await this.tryNativeInModalNavigation(this.refs[nextIndex], initialDestination, oldViewer, generation);
                     if (result === 'retained' || result === 'navigated') {
+                        diagnostic('navigation.native_spa', { retained: result === 'retained' });
                         destinationOpened = true;
                         if (this.handoff && !this.nativeSpaTargetRendered()) {
                             this.showVisualHandoff();
@@ -2574,7 +2713,9 @@ var XMN;
                 }
             }
             catch (error) {
-                console.warn('X Media Navigator navigation cancelled:', error);
+                diagnostic('navigation.failed', {
+                    reason: error instanceof Error ? error.name : 'unknown_exception',
+                });
                 this.toast('メディアの切り替えに失敗しました');
             }
             finally {

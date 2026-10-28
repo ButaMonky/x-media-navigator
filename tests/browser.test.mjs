@@ -28,6 +28,13 @@ if(window.navApiAvailable) {
   });
 }
 window.prefetchLoads=[];
+window.xmnDiagnostics=[];
+const originalXmnInfo=console.info.bind(console);
+console.info=(message,details)=>{
+  if(typeof message==='string' && message.startsWith('[XMN '))
+    window.xmnDiagnostics.push({message,details});
+  originalXmnInfo(message,details);
+};
 window.Image = function() {
   // Use a real DOM Image, but replace its payload with a local 1px fixture.
   const image = document.createElement('img');
@@ -245,9 +252,16 @@ async function exercise() {
   const previewCreated=previewCtrl.beginVisualHandoff(targetPreviewRef,targetPreviewLink);
   const previewHost=previewCtrl.handoff?.host;
   const previewCanvas=previewHost?.querySelector('canvas.xmn-handoff-preview');
+  await wait(0); // Let MutationObserver confirm the prepared overlay is still hidden.
+  if(previewCreated)previewCtrl.showVisualHandoff();
+  const lowActuallyVisible=previewCtrl.handoff?.shown===true &&
+    previewHost.classList.contains('xmn-handoff-visible') &&
+    getComputedStyle(previewHost).opacity==='1' &&
+    window.xmnDiagnostics.some(e=>e.message.includes('preview.visible') &&
+      e.details?.quality==='low');
   result('thumbnail-first canvas snapshot uses existing X tile and no new CDN request',
     previewCreated && !!previewCanvas && previewCanvas.width<=256 && previewCanvas.height<=256 &&
-    previewCtrl.handoff.quality==='low' &&
+    lowActuallyVisible && previewCtrl.handoff.quality==='low' &&
     window.prefetchLoads.length===beforePreviewRequests &&
     getComputedStyle(previewHost).pointerEvents==='none');
   const decodedHigh=document.createElement('img');

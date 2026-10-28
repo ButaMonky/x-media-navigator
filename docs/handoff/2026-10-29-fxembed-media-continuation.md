@@ -120,3 +120,16 @@ FxEmbed/FxTwitterの第三者公開API
 - 通常インストール先 `%USERPROFILE%\Downloads\X-Media-Navigator-Current` の6ファイルは、作成前後のSHA-256が全件一致。通常版v2.4.18は未変更、QA版もChromeには自動導入・自動有効化していない。
 - QAフォルダ内の `QA_README.txt` に安全な切り替え手順・28→29投稿・逆方向・返信欄・画像枚数・矢印・スクロールのチェックと、第三者APIの開示事項を記録。
 - **実Xの結果は未取得**。通常版とQA版の同時有効化は二重実行リスクがあるため避ける。利用者が認可したChrome上で別途テストし、問題がなければ統合を検討。現段階でmain、安定branch、PR #17、Web Store、通常インストールは変更不可。
+
+## 13. FxEmbed事前取得・診断ログ・Chrome QA更新（2026-10-29 継続）
+
+- ユーザー明示：開発正本は `C:\Users\Saito\Documents\x-media-navigator`。Chromeからすぐ再読み込みして検証したい。既存安定ブランチ、Draft PR #17、公開mainには触れない。
+- 正本は `src/content.ts` と `src/core.ts`、Chrome配布JSは `npm run build` で自動生成。非公開QA版を **v2.4.19** に更新し、`package.json`・`package-lock.json`・manifestを一致させた。
+- FxEmbed API連続取得：ユーザーが初回に明示同意し、初回の取得が検証成功した後だけ、**残り3投稿以内でカーソルの先読みを自動開始**。同一カーソルの再取得は抑制し、1件の読み込み処理中は重複させない。事前取得時は既存ビューアの矢印を無効にしない。遷移・保存失敗・時間切れ・異常APIは安全に中止。Cookie・認証情報・リファラーを外部APIに送信しない。
+- `[XMN 2.4.19-qa]` コンソールログ：起動、FxEmbedの同意・HTTPエラー・ページ件数・索引追加、事前取得、画像先読み開始/結果、低画質Canvas作成、低画質が**実際に可視になった瞬間**、高画質への切替、X写真の準備完了/安全タイムアウト/省略理由、SPA・通常文書遷移を別記録。**生のURL/投稿ID/ハンドル/カーソル/秘密情報は出さない。**
+- 低画質機能の範囲：Xのネイティブ画像リンクが存在するSPA/同一文書移動の引継ぎ用。FxEmbedのみで新規発見した投稿は現時点で `location.assign` を使うため、旧ページのCanvasをそのまま跨げない。ログは準備だけ(`preview.low_thumbnail_decoded`)と可視化(`preview.visible, quality:low`)を明確に分ける。
+- on-demand更新ツール：プロジェクト直下 `Update-Chrome-QA.cmd` と `tools/update-chrome-qa.ps1`。TypeScript検査、全Node回帰、Chromium合成テストの成功時のみ、既存QAフォルダをバックアップして `Downloads\X-Media-Navigator-FxEmbed-QA-20261029` の6ファイルへ反映、SHA-256を検証。更新元のブランチも検査。Chromeの拡張管理ページを開き、**拡張カードの再読み込みとXタブ更新はユーザー操作**。固定通常版 `Downloads\X-Media-Navigator-Current` は事前/事後ハッシュで不変確認。古い `AppData\Local\XMediaNavigatorUpdater\state.json` はv2.2.2で停止しており現用の自動更新機構ではない。
+- `docs/QA_FXEMBED_DIAGNOSTICS.md` にログの意味、同意、Chrome操作、API-only移動の限界、機密ログの扱いを詳述。
+- **テスト結果**：`npm test` 191件（182 PASS / 0 FAIL / 3 SKIP / 実機TODO 6）、`npm run typecheck` PASS、Chromium Edge `npm run test:browser` 4 PASS、独立MV3/CORS probe `corsFromIsolatedMV3:true` 公開データ4件、PowerShell更新スクリプトを実行してQA v2.4.19展開とJS/CSS/アイコン5件SHA一致、通常版v2.4.18の非変更を確認。
+- Chromiumの既存40シナリオのうち低画質テストを強化：既存Canvas生成だけでなく、実際のCSS可視状態と `preview.visible` コンソールイベントを確認。最初は同タスク内でMutationObserverを動かすと従来の「初期非表示」検証が失敗したため、Observer処理を1回待つテストへ修正して全件PASS。**本番Xの実機確認結果とは区別する。**
+- **未完了**：Chrome実機にQA版を手動ロード→右キーで投稿28→29、返信欄・画像枚数・◀▶位置・APIページ送り・低画質ログ発生率・実際の体感速度を観測。混合メディアは安全側で除外。GitHub CIの対象ブランチでの実行確認、公開版と安定ブランチへの統合は実機の許可が出るまで禁止。

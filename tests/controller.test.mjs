@@ -3665,3 +3665,110 @@ test('restored API session resets stale media ordering when returning to X media
     assert.equal(ctrl.originTimeline,'alice|photo');
   } finally {state.pathname=oldPath;state.search=oldSearch;}
 });
+
+test('consented FxEmbed warmup is scheduled only close to end and only once per cursor', async () => {
+  const oldPath=state.pathname,oldHidden=document.hidden,oldStore=context.window.sessionStorage;
+  const oldSet=context.window.setTimeout;
+  let granted=false,scheduled=null,requests=0;
+  document.hidden=false;
+  context.window.sessionStorage={getItem(){return granted?'yes':null;}};
+  context.window.setTimeout=(cb,delay)=>{scheduled={cb,delay};return 17;};
+  const refs=Array.from({length:8},(_,i)=>ref('/alice/status/'+(800-i*100)+'/photo/1'));
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|photo',refs,
+    viewer:{isConnected:true},publicApiAnchorFound:true,
+    publicApiCursor:'OPAQUE_A',publicApiExhausted:false,
+    publicApiLoading:false,navigationBusy:false,publicApiWarmCursor:null,
+    publicApiWarmTimer:null,
+    loadPublicMediaContinuation:async (background)=>{assert.equal(background,true);requests++;return true;},
+  });
+  try {
+    state.pathname=refs[4].href;
+    ctrl.schedulePublicMediaWarmup(4);
+    assert.equal(scheduled,null,'no API before user consent');
+    granted=true;
+    ctrl.schedulePublicMediaWarmup(1);
+    assert.equal(scheduled,null,'do not fetch with more than three posts remaining');
+    ctrl.schedulePublicMediaWarmup(4);
+
+    assert.equal(scheduled.delay,400);
+    ctrl.schedulePublicMediaWarmup(5);
+    assert.equal(ctrl.publicApiWarmCursor,'OPAQUE_A');
+    const scheduledCb=scheduled.cb;
+    scheduledCb();
+    assert.equal(requests,1,'only one API warmup is started');
+    scheduled=null;
+    ctrl.schedulePublicMediaWarmup(6);
+    assert.equal(scheduled,null,'no repeated call for the same cursor');
+    ctrl.publicApiCursor='OPAQUE_B';
+    ctrl.schedulePublicMediaWarmup(6);
+    assert.equal(scheduled.delay,400,'new cursor can be warmed');
+  }finally {
+    state.pathname=oldPath;document.hidden=oldHidden;
+    context.window.sessionStorage=oldStore;
+    context.window.setTimeout=oldSet;
+  }
+});
+
+test('background FxEmbed continuation never locks the visible gallery',async()=>{
+  const oldPath=state.pathname,oldHidden=document.hidden,oldNav=context.navigator;
+  document.hidden=false;context.navigator={onLine:true};
+  const native=[ref('/alice/status/300/photo/1'),ref('/alice/status/200/photo/1')];
+  const older=ref('/alice/status/100/photo/1');
+  const ctrl=Object.assign(Object.create(proto),{
+
+    originProfile:'alice',originTimeline:'alice|photo',
+    refs:native,indexes:new Map(native.map((r,i)=>[r.key,i])),
+    publicApiKeys:new Set(),publicApiAnchorFound:true,publicApiCursor:'CURSOR',
+    publicApiExhausted:false,publicApiLoading:false,knownPhotoTotals:new Map(),
+    imageSources:new Map(),navGeneration:5,navigationBusy:false,
+    updateViewerState(){assert.equal(this.navigationBusy,false);},
+    persistPublicMediaSession(){return true;},
+    fetchPublicMediaPage:async()=>({refs:[older],photos:[],cursor:null}),
+  });
+  try {
+    state.pathname=native[1].href;
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl,true),true);
+    assert.equal(ctrl.navigationBusy,false,'background prefetch must not disable X post arrows');
+    assert.equal(ctrl.publicApiLoading,false);
+    assert.equal(ctrl.refs.at(-1).key,older.key);
+  }finally{state.pathname=oldPath;document.hidden=oldHidden;context.navigator=oldNav;}
+});
+
+test('diagnostics identify the actual low-quality visible handoff and completion',()=>{
+  const oldConsole=context.console,oldSet=context.window.setTimeout,
+    oldClear=context.window.clearTimeout;
+  const logs=[];
+  context.console={info:(...args)=>logs.push(args)};
+  context.window.clearTimeout=()=>{};
+  context.window.setTimeout=()=>19;
+  const handoff={
+    generation:8,quality:'low',shown:false,shownAt:null,
+
+    timeout:3,revealTimer:null,observer:null,waitingImage:null,
+    waitingLoadHandler:null,host:{
+      classList:{add(){}},remove(){},contains(){return false;}
+    },
+  };
+  const ctrl=Object.assign(Object.create(proto),{
+    navGeneration:8,handoff,promoteVisualHandoff(){return false;},
+  });
+  try {
+    proto.showVisualHandoff.call(ctrl);
+    assert.equal(handoff.shown,true);
+    assert.ok(handoff.shownAt);
+    proto.clearVisualHandoff.call(ctrl,'native_photo_ready');
+    assert.equal(ctrl.handoff,null);
+    assert.ok(logs.some(([message,details])=>
+      message.includes('preview.visible') && details.quality==='low'));
+    assert.ok(logs.some(([message,details])=>
+      message.includes('preview.finished') && details.reason==='native_photo_ready'
+      && details.visible===true));
+    assert.ok(logs.every(([message,details])=>
+      !String(message+JSON.stringify(details)).includes('https://')));
+  }finally{
+    context.console=oldConsole;
+    context.window.setTimeout=oldSet;
+    context.window.clearTimeout=oldClear;
+  }
+});
