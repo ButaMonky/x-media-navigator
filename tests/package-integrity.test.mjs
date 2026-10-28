@@ -23,6 +23,22 @@ test('development manifest is a distinct, least-permission MV3 extension', () =>
   assert.deepEqual(m.content_scripts[0].matches, ['https://x.com/*', 'https://twitter.com/*']);
 });
 
+test('handoff overlay reveals immediately after modal close instead of fading from a blank panel', () => {
+  const css = get(dev, 'style.css').toString('utf8');
+  const rule = css.match(/\.xmn-visual-handoff\s*\{([^}]+)\}/)?.[1] ?? '';
+  assert.match(rule, /opacity:\s*0\s*;/,'handoff must stay hidden until safe to reveal');
+  assert.match(rule, /transition:\s*none\s*;/,'fade-in after native modal close causes a blank flash');
+});
+
+test('persistent post-arrow portal is click-through except on its buttons', () => {
+  const css = get(dev, 'style.css').toString('utf8');
+  const portalRule = css.match(/\.xmn-controls-layer\s*\{([^}]+)\}/)?.[1] ?? '';
+  assert.match(portalRule, /pointer-events:\s*none\s*!important\s*;/,
+    'do not block native X media and reply-panel interactions');
+  assert.match(css, /\.xmn-controls-layer\s+\.xmn-nav-button\s*\{\s*pointer-events:\s*auto\s*;/,
+    'only post arrows receive pointer interaction');
+});
+
 test('manifest content scripts, CSS and referenced icons exist', () => {
   const m = JSON.parse(get(dev, 'manifest.json').toString('utf8'));
   for (const item of m.content_scripts ?? []) {
@@ -51,4 +67,32 @@ test('source-of-truth is TypeScript and no browser secret is embedded', () => {
   const manifest = get(dev, 'manifest.json').toString('utf8');
   assert.ok(!manifest.includes('chrome-extension://'));
   assert.ok(!manifest.includes('localStorage'));
+});
+
+test('progressive thumbnail overlay remains bounded and never reads cross-origin pixels', () => {
+  const css = get(dev, 'style.css').toString('utf8');
+  const rule=css.match(/\.xmn-visual-handoff\s+\.xmn-handoff-preview\s*\{([^}]+)\}/)?.[1]??'';
+  assert.match(rule,/object-fit:\s*contain\s*;/,'do not stretch or crop a thumbnail');
+  assert.match(rule,/pointer-events:\s*none\s*!important\s*;/,
+    'the preview cannot intercept photo or reply-panel clicks');
+  const source=get(root, 'src/content.ts').toString('utf8');
+  const fn=source.split('private captureLowQualityThumbnail(')[1]
+    ?.split('private promoteVisualHandoff()')[0] ?? '';
+  assert.ok(fn.includes("getContext('2d'"));
+  assert.doesNotMatch(fn,/\b(?:getImageData|toDataURL|toBlob|captureStream|fetch)\s*\(/,
+    'never read/export a potentially tainted CDN image or fetch a new thumbnail');
+  assert.match(fn,/256\s*\//,'canvas preview must be memory and size bounded');
+});
+
+test('private content script never scrolls the underlying X media tab or calls paid APIs', () => {
+  const source = get(root, 'src/content.ts').toString('utf8');
+  const compiled = get(dev, 'content_script.js').toString('utf8');
+  for (const [label, body] of [['TypeScript',source],['Compiled JS',compiled]]) {
+    assert.doesNotMatch(body,/\bscrollIntoView\s*\(|\bwindow\.scrollTo\s*\(/,
+      label+' must not move the background feed when the next post is unknown');
+    assert.doesNotMatch(body,/api\.x\.com\b|Authorization:\s*Bearer|graphql\/UserMedia/i,
+      label+' must not call paid or undocumented X endpoints');
+  }
+  assert.match(source,/ここまでが読み込み済み/,
+    'unknown destinations retain X viewer and show a clear boundary explanation');
 });

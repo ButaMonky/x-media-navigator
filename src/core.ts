@@ -93,12 +93,18 @@ namespace XMN {
   export function findCurrentIndex(items: readonly MediaRef[], pathname: string, profile: string): number | null {
     const current = mediaRefFromHref(pathname, profile);
     if (!current) return null;
-    const exact = items.findIndex((item) => item.key === current.key);
-    if (exact >= 0) return exact;
-    // URLs without /photo/N can only be resolved safely when the status has one item.
-    const sameStatus = items.map((item, i) => ({ item, i })).filter(({ item }) => item.statusId === current.statusId);
-    if (sameStatus.length === 1) return sameStatus[0].i;
-    return null;
+    // One pass, no temporary O(N) map/filter arrays on large media feeds.
+    // An exact photo key always wins; status-only fallback needs one owner.
+    let onlyStatusIndex: number | null = null;
+    let ambiguousStatus = false;
+    for (let i = 0; i < items.length; i++) {
+      const ref = items[i];
+      if (ref.key === current.key) return i;
+      if (ref.statusId !== current.statusId) continue;
+      if (onlyStatusIndex === null) onlyStatusIndex = i;
+      else ambiguousStatus = true;
+    }
+    return ambiguousStatus ? null : onlyStatusIndex;
   }
 
   export interface KeyLike {
@@ -125,7 +131,9 @@ namespace XMN {
   ): Direction | null {
     const direction = postShortcutDirection(event);
     if (!direction || current?.kind !== 'photo' || current.mediaIndex === null) return null;
-    if (direction === -1) return current.mediaIndex === 1 && !nativePreviousAvailable ? -1 : null;
+    // /photo/1 is the first photo by definition. Generic X Previous buttons
+    // may navigate between POSTS, not photos, so never require an extra press.
+    if (direction === -1) return current.mediaIndex === 1 ? -1 : null;
     if (nativeNextAvailable) return null;
     return photoCount !== null && photoCount >= 1 && current.mediaIndex === photoCount ? 1 : null;
   }
@@ -156,6 +164,21 @@ namespace XMN {
     return null;
   }
 
+  /**
+   * Stable X photo identity across small/large/orig variants of the same CDN
+   * image. This does NOT download a URL or authorize an arbitrary image origin.
+   * It is used only to decide when the X viewer has rendered our target.
+   */
+  export function photoCdnIdentity(src: string): string | null {
+    let url: URL;
+    try { url = new URL(src); } catch { return null; }
+    if (url.protocol !== 'https:' || url.hostname !== 'pbs.twimg.com' ||
+        url.username !== '' || url.password !== '' || url.port !== '') return null;
+    const matched = /^\/media\/([A-Za-z0-9_-]+)(?:\.(?:jpg|jpeg|png|webp))?(?::(?:thumb|small|medium|large|orig|4096x4096))?$/i
+      .exec(url.pathname);
+    return matched ? matched[1] : null;
+  }
+
   /** Only rewrite genuine X image CDN thumbnails. No arbitrary URL/network access. */
   export function preloadImageUrl(src: string): string | null {
     let url: URL;
@@ -165,6 +188,10 @@ namespace XMN {
         !/^(jpg|jpeg|png|webp)$/i.test(url.searchParams.get('format') ?? '') ||
         !url.searchParams.has('name')) return null;
     url.searchParams.set('name', 'large');
+    // Query parameter order is not part of X's media identity. Canonicalize
+    // the same parameter set so reversed name/format order shares a prefetch
+    // queue entry instead of transferring one photo twice.
+    url.searchParams.sort();
     url.hash = '';
     return url.toString();
   }

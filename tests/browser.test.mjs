@@ -17,6 +17,13 @@ const fixture = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><lin
 <main><div data-testid="primaryColumn"><ul id="tiles"></ul></div></main>
 <script>
 const wait = ms => new Promise(r => setTimeout(r, ms));
+window.navEventsSeen=[];
+window.navApiAvailable=!!window.navigation && typeof window.navigation.addEventListener==='function';
+if(window.navApiAvailable) {
+  window.navigation.addEventListener('currententrychange', () => {
+    window.navEventsSeen.push(location.pathname+location.search);
+  });
+}
 window.prefetchLoads=[];
 window.Image = function() {
   // Use a real DOM Image, but replace its payload with a local 1px fixture.
@@ -33,13 +40,16 @@ window.Image = function() {
   image.decode=()=>Promise.resolve();
   return image;
 };
-let handoffsSeen=0, nonBlockingHandoff=true;
+let handoffsSeen=0, nonBlockingHandoff=true, noBlackBackdrop=true, hiddenUntilClose=true;
 new MutationObserver(mutations=>{
   for(const mutation of mutations){
     for(const item of mutation.addedNodes){
       if(item.nodeType===1 && item.classList.contains('xmn-visual-handoff')){
         handoffsSeen++;
-        nonBlockingHandoff=nonBlockingHandoff && getComputedStyle(item).pointerEvents==='none';
+        const style=getComputedStyle(item);
+        nonBlockingHandoff=nonBlockingHandoff && style.pointerEvents==='none';
+        noBlackBackdrop=noBlackBackdrop && style.backgroundColor!=='rgb(0, 0, 0)';
+        hiddenUntilClose=hiddenUntilClose && style.opacity==='0';
       }
     }
   }
@@ -65,18 +75,46 @@ const ambiguousTile = tile('/alice/status/888/photo/1');
 ambiguousTile.appendChild(ambiguousTile.querySelector('img'));
 const otherLink = document.createElement('a');otherLink.href='/alice/status/889/photo/1';
 ambiguousTile.prepend(otherLink);ul.appendChild(ambiguousTile);
+window.testSpaKeepModal = true;
+window.testSpaIgnoreInModal = false;
+window.testSlideTranslateX = 0;
+window.nativeModalCloses = 0;
 function show(href, withClose=true) {
-  document.getElementById('modal')?.remove();
+  const existing = document.getElementById('modal');
+  const retain = !!existing && window.testSpaKeepModal;
+  if (retain) {
+    existing.querySelectorAll('[data-testid="swipe-to-dismiss"]').forEach(node=>node.remove());
+    existing.querySelector('article[data-testid="tweet"]')?.remove();
+    existing.querySelector('#test-input')?.remove();
+    existing.querySelector('button[aria-label="Close"]')?.remove();
+  } else existing?.remove();
   history.pushState({},'',href);
-  const modal = document.createElement('div'); modal.id='modal'; modal.setAttribute('role','dialog');
+  const modal = retain ? existing : document.createElement('div');
+  modal.id='modal'; modal.setAttribute('role','dialog');
   if (withClose) {
     const close = document.createElement('button'); close.setAttribute('aria-label','Close');close.textContent='Close';
-    close.addEventListener('click', () => { modal.remove(); history.pushState({},'', '/alice/media'); });
+    close.addEventListener('click', () => { window.nativeModalCloses++; modal.remove(); history.pushState({},'', '/alice/media'); });
     modal.appendChild(close);
   }
-  const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';modal.appendChild(viewer);
+  const viewer = document.createElement('div'); viewer.dataset.testid='swipe-to-dismiss';
+  viewer.style.cssText='width:65vw; height:85vh; position:relative;';
+  if (window.testSlideTranslateX) viewer.style.transform =
+    'translateX('+window.testSlideTranslateX+'px)';
+  modal.appendChild(viewer);
+  // X's modal may include loaded avatars/other media ahead of the displayed
+  // photo. The handoff must wait for the exact target media ID.
+  const unrelatedPhoto = document.createElement('img');
+  unrelatedPhoto.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  unrelatedPhoto.style.cssText='display:block;width:35px;height:35px;';
+  Object.defineProperty(unrelatedPhoto,'currentSrc',{value:'https://pbs.twimg.com/media/WRONG?format=jpg&name=large'});
+  viewer.appendChild(unrelatedPhoto);
   const activePhoto = document.createElement('img');
   activePhoto.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  // Render like an actual large X photo, rather than a 1px unstyled fixture.
+  activePhoto.style.cssText='display:block;width:60vw;height:72vh;object-fit:contain;';
+  Object.defineProperty(activePhoto,'currentSrc',{
+    value:'https://pbs.twimg.com/media/M'+href.replace(/[^a-zA-Z0-9]/g,'_')+'?format=jpg&name=orig',
+  });
   activePhoto.alt='Current X media photo';
   viewer.appendChild(activePhoto);
   const article = document.createElement('article'); article.dataset.testid='tweet';
@@ -94,11 +132,17 @@ function show(href, withClose=true) {
   viewer.appendChild(counter);
   modal.appendChild(article);
   const input = document.createElement('input');input.id='test-input';modal.appendChild(input);
-  document.body.appendChild(modal);
+  if (!modal.querySelector('#replies')) {
+    const panel=document.createElement('section'); panel.id='replies';
+    panel.textContent='Persistent X replies pane';modal.appendChild(panel);
+  }
+  if (!modal.isConnected) document.body.appendChild(modal);
 }
 ul.addEventListener('click', e => {
   const a=e.target.closest('a[href]'); if (!a) return;
-  const href=a.getAttribute('href');e.preventDefault();clicked.push(href);show(href);
+  const href=a.getAttribute('href');e.preventDefault();
+  if (window.testSpaIgnoreInModal && document.getElementById('modal')) return;
+  clicked.push(href);show(href);
 });
 document.addEventListener('keydown', e => {
   if (e.shiftKey || !['ArrowRight','ArrowLeft'].includes(e.key)) return;
@@ -114,7 +158,9 @@ document.addEventListener('keydown', e => {
       Array.from(ul.querySelectorAll('a[href]')).filter(a=>a.getAttribute('href').includes('/status/'+m[1]+'/photo/')).length);
   }
 });
+window.nativeBackgroundScrolls=0;
 window.scrollTo = () => {
+  window.nativeBackgroundScrolls++;
   if (window.testLazyLoad && !source('/alice/status/33/photo/1')) {
     window.testLazyLoad = false;
     setTimeout(()=>ul.appendChild(tile('/alice/status/33/photo/1')),160);
@@ -132,26 +178,173 @@ async function exercise() {
   result('quoted and ambiguous grid links never generate extra media entries',
     firstTile.querySelector('.xmn-tile-badge')?.textContent==='1' &&
     !ambiguousTile.querySelector('.xmn-tile-badge'));
+  // Real DOM case: X recycles the same thumbnail <img> for a new tile while
+  // currentSrc still points to the old pixels. Do not initiate CDN traffic.
+  const reusableTile=document.createElement('li');
+  const reusableLink=document.createElement('a');
+  reusableLink.href='/alice/status/445/photo/1';
+  const reusablePhoto=document.createElement('img');
+  reusablePhoto.setAttribute('src','data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=');
+  reusableLink.appendChild(reusablePhoto);reusableTile.appendChild(reusableLink);
+  Object.defineProperty(reusablePhoto,'currentSrc',{configurable:true,
+    value:'https://pbs.twimg.com/media/OLD445?format=jpg&name=small'});
+  Object.defineProperty(reusablePhoto,'src',{configurable:true,
+    value:'https://pbs.twimg.com/media/NEW445?name=small&format=jpg'});
+  Object.defineProperty(reusablePhoto,'complete',{configurable:true,value:false});
+  Object.defineProperty(reusablePhoto,'naturalWidth',{configurable:true,value:0});
+  const sourceCtrl=Object.create(window.XMN.Controller.prototype);
+  sourceCtrl.imageSources=new Map();sourceCtrl.imageSourcesRevision=0;
+  const reusableRef=window.XMN.mediaRefFromHref(
+    reusableLink.getAttribute('href'),'alice');
+  sourceCtrl.recordTileImageSource(reusableTile,{link:reusableLink,ref:reusableRef});
+  result('recycled native image element selects new assigned CDN photo, not prior pixels',
+    sourceCtrl.imageSources.get(reusableRef.key)===
+    'https://pbs.twimg.com/media/NEW445?format=jpg&name=large');
+  const beforeClickPreload=window.prefetchLoads.length;
   source('/alice/status/11/photo/1').click();
-  await wait(620);
+  result('media tile click starts prefetch synchronously before X opens the viewer',
+    window.prefetchLoads.length > beforeClickPreload);
+  await wait(90);
+  result('adjacent prefetch starts before 350ms debounce',window.prefetchLoads.length>0);
+  await wait(530);
+  // Real Chromium visibility event wiring: cancel optional background
+  // photo work without removing existing SPA controls, then resume once.
+  const layerBeforeVisibility=document.querySelector('.xmn-controls-layer');
+  let simulatedHidden=true;
+  Object.defineProperty(document,'hidden',{configurable:true,get(){return simulatedHidden;}});
+  document.dispatchEvent(new Event('visibilitychange'));
+  const startCount=window.prefetchLoads.length;
+  await wait(160);
+  result('hidden document stops new optional requests without removing arrows',
+    window.prefetchLoads.length===startCount &&
+    document.querySelector('.xmn-controls-layer')===layerBeforeVisibility);
+  simulatedHidden=false;
+  document.dispatchEvent(new Event('visibilitychange'));
+  await wait(100);
+  delete document.hidden;
+  result('returning to visible keeps the active photo controls',
+    document.querySelector('.xmn-controls-layer')===layerBeforeVisibility &&
+    document.querySelectorAll('.xmn-controls-layer .xmn-nav-button').length===2);
+  // Progressively use an existing decoded X thumbnail (no extra CDN fetch),
+  // then switch that same overlay to an already decoded full image.
+  const targetPreviewRef=window.XMN.mediaRefFromHref('/alice/status/22/photo/1','alice');
+  const targetPreviewLink=source('/alice/status/22/photo/1');
+  const targetPreviewSrc=targetPreviewLink.querySelector('img').currentSrc;
+  const targetPreviewUrl=window.XMN.preloadImageUrl(targetPreviewSrc);
+  const previewCtrl=Object.create(window.XMN.Controller.prototype);
+  previewCtrl.originProfile='alice';
+  previewCtrl.viewer=document.querySelector('#modal [data-testid="swipe-to-dismiss"]');
+  previewCtrl.navGeneration=99;
+  previewCtrl.handoff=null;
+  previewCtrl.imageSources=new Map([[targetPreviewRef.key,targetPreviewUrl]]);
+  previewCtrl.prefetched=new Map();
+  const beforePreviewRequests=window.prefetchLoads.length;
+  const previewCreated=previewCtrl.beginVisualHandoff(targetPreviewRef,targetPreviewLink);
+  const previewHost=previewCtrl.handoff?.host;
+  const previewCanvas=previewHost?.querySelector('canvas.xmn-handoff-preview');
+  result('thumbnail-first canvas snapshot uses existing X tile and no new CDN request',
+    previewCreated && !!previewCanvas && previewCanvas.width<=256 && previewCanvas.height<=256 &&
+    previewCtrl.handoff.quality==='low' &&
+    window.prefetchLoads.length===beforePreviewRequests &&
+    getComputedStyle(previewHost).pointerEvents==='none');
+  const decodedHigh=document.createElement('img');
+  decodedHigh.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  await decodedHigh.decode();
+  previewCtrl.prefetched.set(targetPreviewUrl,{image:decodedHigh,ready:true,loading:false,bytes:4});
+  const promoted=previewCtrl.promoteVisualHandoff();
+  result('same handoff upgrades from thumbnail to full image without refetch',
+    promoted && previewCtrl.handoff.quality==='high' &&
+    previewHost.firstElementChild===decodedHigh &&
+    window.prefetchLoads.length===beforePreviewRequests);
+  previewCtrl.clearVisualHandoff();
+  result('progressive preview releases DOM and does not intercept input',
+    !document.querySelector('.xmn-visual-handoff') && previewCtrl.handoff===null);
+
   const nativeRight=key('ArrowRight');
   await wait(500);
   result('gallery first image native ArrowRight',!nativeRight.defaultPrevented && nativeMoves===1 && location.pathname.endsWith('/11/photo/2'));
+  await wait(0);
+  result('Navigation API sees a native same-document photo route commit when available',
+    !window.navApiAvailable ||
+    window.navEventsSeen.some(path=>path.endsWith('/11/photo/2')));
+  // React may discard extension-owned descendants on a native photo rerender.
+  // Post navigation controls must instead belong to a separate durable layer.
+  const galleryViewer=document.querySelector('#modal [data-testid="swipe-to-dismiss"]');
+  galleryViewer.querySelectorAll('.xmn-nav-button').forEach(el=>el.remove());
+  const controlLayer=document.querySelector('.xmn-controls-layer');
+  const durableButtons=controlLayer && [...controlLayer.querySelectorAll('.xmn-nav-button')];
+  result('both post arrows persist after X rerenders photo 2',
+    durableButtons?.length===2 &&
+    durableButtons.every(el=>el.isConnected && getComputedStyle(el).pointerEvents!=='none') &&
+    !galleryViewer.contains(controlLayer) &&
+    getComputedStyle(controlLayer).pointerEvents==='none');
+  const beforeWidth=controlLayer?.getBoundingClientRect().width||0;
+  galleryViewer.style.width='55vw';
+  window.dispatchEvent(new Event('resize'));
+  const afterWidth=controlLayer?.getBoundingClientRect().width||0;
+  result('window resize reanchors the post arrow layer to the photo pane',
+    beforeWidth>afterWidth && afterWidth>150);
+  galleryViewer.style.width='65vw';
+  window.dispatchEvent(new Event('resize'));
   result('adjacent CDN image preload initiated',window.prefetchLoads.length>0 && window.prefetchLoads[0].startsWith('https://pbs.twimg.com/media/') && window.prefetchLoads[0].includes('name=large'));
+  const originalModal=document.getElementById('modal');
+  const originalReplies=document.getElementById('replies');
+  const beforeSpaCloses=window.nativeModalCloses;
+  const arrowAnchorBefore=controlLayer?.getBoundingClientRect();
+  // X may animate a newly mounted swipe viewer sideways during SPA routing.
+  // Buttons should NOT inherit that transient motion on every POST change.
+  window.testSlideTranslateX=34;
   const boundaryRight=key('ArrowRight');
   await wait(850);
   result('last photo ArrowRight advances to next POST',boundaryRight.defaultPrevented && location.pathname.endsWith('/22/photo/1') && clicked.at(-1)==='/alice/status/22/photo/1');
-  result('predecoded SPA handoff is non-interactive and clears after viewer switch',
-    handoffsSeen>0 && nonBlockingHandoff && !document.querySelector('.xmn-visual-handoff'));
+  const afterRight=controlLayer?.getBoundingClientRect();
+  result('animated next-POST viewer cannot shift the portaled arrow pane',
+    document.querySelector('.xmn-controls-layer') === controlLayer &&
+    arrowAnchorBefore && afterRight &&
+    Math.abs(arrowAnchorBefore.left-afterRight.left)<1 &&
+    Math.abs(arrowAnchorBefore.top-afterRight.top)<1 &&
+    Math.abs(arrowAnchorBefore.width-afterRight.width)<1);
+  result('native in-modal SPA keeps dialog and right replies panel mounted',
+    originalModal===document.getElementById('modal') &&
+    originalReplies===document.getElementById('replies') &&
+    window.nativeModalCloses===beforeSpaCloses &&
+    !document.querySelector('.xmn-visual-handoff'));
+  window.testSlideTranslateX=-26;
   const boundaryLeft=key('ArrowLeft');
   await wait(850);
   result('first photo ArrowLeft returns to previous POST last image',boundaryLeft.defaultPrevented && location.pathname.endsWith('/11/photo/2') && clicked.at(-1)==='/alice/status/11/photo/2');
+  const afterLeft=controlLayer?.getBoundingClientRect();
+  result('animated previous-POST viewer does not cumulatively shift the arrows',
+    document.querySelector('.xmn-controls-layer') === controlLayer &&
+    arrowAnchorBefore && afterLeft &&
+    Math.abs(arrowAnchorBefore.left-afterLeft.left)<1 &&
+    Math.abs(arrowAnchorBefore.top-afterLeft.top)<1 &&
+    Math.abs(arrowAnchorBefore.width-afterLeft.width)<1);
+  window.testSlideTranslateX=0;
+  document.querySelector('#modal [data-testid="swipe-to-dismiss"]')?.style.removeProperty('transform');
   const nativeLeft=key('ArrowLeft');
   await wait(500);
   result('gallery second image native ArrowLeft',!nativeLeft.defaultPrevented && nativeMoves===2 && location.pathname.endsWith('/11/photo/1'));
   const modified=key('ArrowRight',true);
   await wait(350);
   result('Shift+arrow not a shortcut',!modified.defaultPrevented && location.pathname.endsWith('/11/photo/1'));
+  key('ArrowRight'); await wait(170);
+  const beforeFallbackCloses=window.nativeModalCloses;
+  window.testSpaIgnoreInModal=true;
+  const fallback=key('ArrowRight'); await wait(950);
+  window.testSpaIgnoreInModal=false;
+  result('unhandled in-modal SPA attempt falls back through one safe close',
+    fallback.defaultPrevented && location.pathname.endsWith('/22/photo/1') &&
+    window.nativeModalCloses===beforeFallbackCloses+1);
+  // A pre-decoded bridge is allowed to remain briefly while X loads the
+  // final photo. Wait for the bounded 1.8s visible-window cleanup rather
+  // than assuming every Chrome build paints within the first 950ms.
+  for (let i=0;i<15 && document.querySelector('.xmn-visual-handoff');i++) {
+    await wait(100);
+  }
+  result('fallback handoff never blackens or blocks the native UI',
+    nonBlockingHandoff && noBlackBackdrop && hiddenUntilClose &&
+    !document.querySelector('.xmn-visual-handoff'));
   document.querySelector('#modal button[aria-label="Close"]').click();
   await wait(500);
   const old=source('/alice/status/11/photo/2').closest('li');
@@ -166,16 +359,43 @@ async function exercise() {
   await wait(450);
   result('focused input retains native keys',location.pathname.endsWith('/22/photo/1') && !inputEvent.defaultPrevented);
   window.testLazyLoad=true;
-  key('ArrowRight');
-  await wait(1500);
-  result('lazy load navigates only after new POST exists',location.pathname.endsWith('/33/photo/1') && clicked.at(-1)==='/alice/status/33/photo/1');
+  const retainedDialog=document.getElementById('modal');
+  const retainedReplies=document.getElementById('replies');
+  const scrollCount=window.nativeBackgroundScrolls;
+  const terminalKey1=key('ArrowRight');
+  await wait(480);
+  result('unknown next POST stays in modal and never scrolls the hidden X timeline',
+    terminalKey1.defaultPrevented &&
+    location.pathname.endsWith('/22/photo/1') &&
+    !source('/alice/status/33/photo/1') &&
+    window.nativeBackgroundScrolls===scrollCount &&
+    document.getElementById('modal')===retainedDialog &&
+    document.getElementById('replies')===retainedReplies);
+  // Only the user's EXPLICIT list scroll loads the new post.
+  document.querySelector('#modal button[aria-label="Close"]')?.click();
+  await wait(250);
+  window.scrollTo({top:9000,behavior:'auto'});
+  await wait(650);
+  source('/alice/status/22/photo/1').click();
+  await wait(550);
+  const userLoadedRight=key('ArrowRight');
+  await wait(850);
+  result('user-loaded next POST advances through observed native SPA link',
+    userLoadedRight.defaultPrevented &&
+    location.pathname.endsWith('/33/photo/1') &&
+    clicked.at(-1)==='/alice/status/33/photo/1');
   document.querySelector('#modal button[aria-label="Close"]').click();
   await wait(400);
   show('/alice/status/22/photo/1',false);
   await wait(550);
+  const noCloseModal=document.getElementById('modal');
+  const beforeNoClose=window.nativeModalCloses;
   key('ArrowRight');
   await wait(400);
-  result('missing close button safely aborts',location.pathname.endsWith('/22/photo/1') && !!document.getElementById('modal'));
+  result('native in-modal SPA remains usable without a close control',
+    location.pathname.endsWith('/33/photo/1') &&
+    document.getElementById('modal')===noCloseModal &&
+    window.nativeModalCloses===beforeNoClose);
 
   // A previously observed destination may be removed by X's virtualized grid.
   // Preflight must preserve the current viewer rather than closing and losing it.
@@ -219,8 +439,8 @@ async function exercise() {
     withoutCounter.defaultPrevented &&
     location.pathname.endsWith('/66/photo/1') && clicked.at(-1)==='/alice/status/66/photo/1');
 
-  // With neither counter nor complete grid, a native ArrowRight is not stolen.
-  // If X did not change photo after 850ms, offer a confirmed second-arrow fallback.
+  // Without a counter, first let X process its own ArrowRight. If the
+  // displayed CDN photo remains loaded and unchanged, cross with ONE press.
   document.querySelector('#modal button[aria-label="Close"]')?.click();
   await wait(450);
   ul.appendChild(tile('/alice/status/77/photo/1'));
@@ -230,19 +450,116 @@ async function exercise() {
   document.getElementById('gallery-counter')?.remove();
   document.querySelectorAll('#modal [data-testid="tweetPhoto"]').forEach(n=>n.remove());
   const unknownFirst=key('ArrowRight');
-  await wait(1050);
-  const offeredConfirmation=document.querySelector('.xmn-toast')?.textContent.includes('もう一度') &&
-    location.pathname.endsWith('/66/photo/1') && !unknownFirst.defaultPrevented;
-  const unknownSecond=key('ArrowRight');
-  await wait(900);
-  result('unknown gallery length requires explicit second-arrow confirmation',
-    offeredConfirmation && unknownSecond.defaultPrevented &&
-    location.pathname.endsWith('/77/photo/1') && clicked.at(-1)==='/alice/status/77/photo/1');
+  await wait(1600);
+  result('unknown last photo auto-advances with one ArrowRight after native no-op',
+    !unknownFirst.defaultPrevented &&
+    location.pathname.endsWith('/77/photo/1') &&
+    clicked.at(-1)==='/alice/status/77/photo/1');
+
+  // Simulate X assigning a real CDN resource that finishes after the initial
+  // 1050ms probe. ONE right key should navigate after readiness, with no
+  // second keydown and no skipped/native unseen album photo.
+  document.querySelector('#modal button[aria-label="Close"]')?.click();
+  await wait(350);
+  ul.appendChild(tile('/alice/status/88/photo/1'));
+  await wait(350);
+  source('/alice/status/77/photo/1').click();
+  await wait(550);
+  document.getElementById('gallery-counter')?.remove();
+  document.querySelectorAll('#modal [data-testid="tweetPhoto"]').forEach(n=>n.remove());
+  const delayedPhoto=document.querySelector('#modal img[alt="Current X media photo"]');
+  let imageLoaded=false;
+  Object.defineProperty(delayedPhoto,'complete',{configurable:true,get(){return imageLoaded;}});
+  Object.defineProperty(delayedPhoto,'naturalWidth',{configurable:true,get(){return imageLoaded?1200:0;}});
+  const delayedKey=key('ArrowRight');
+  await wait(1150);
+  const notSkippedWhileUnready=location.pathname.endsWith('/77/photo/1');
+  imageLoaded=true;
+  await wait(450);
+  result('one arrow waits for slow current photo without a second keystroke',
+    !delayedKey.defaultPrevented && notSkippedWhileUnready &&
+    location.pathname.endsWith('/88/photo/1') &&
+    clicked.at(-1)==='/alice/status/88/photo/1');
+
+  // X sometimes leaves photo/1's carousel pane in the DOM but hides it,
+  // then mounts photo/2 in a second pane under the same modal.
+  document.querySelector('#modal button[aria-label="Close"]')?.click();
+  ul.appendChild(tile('/alice/status/11/photo/1'));
+  ul.appendChild(tile('/alice/status/11/photo/2'));
+  ul.appendChild(tile('/alice/status/22/photo/1'));
+  await wait(650);
+  source('/alice/status/11/photo/1').click();
+  await wait(500);
+  key('ArrowRight'); await wait(300);
+  const firstSlide=document.querySelector('#modal [data-testid="swipe-to-dismiss"]');
+  const layerBeforeSwap=document.querySelector('.xmn-controls-layer');
+  firstSlide.setAttribute('aria-hidden','true');
+  const visibleSecond=firstSlide.cloneNode(true);
+  visibleSecond.removeAttribute('aria-hidden');
+  // Real X carousel slides occupy the SAME media pane. A normal-flow
+  // sibling would be below the viewport and must correctly remain hidden.
+  const oldBounds=firstSlide.getBoundingClientRect();
+  visibleSecond.style.position='fixed';
+  visibleSecond.style.left=oldBounds.left+'px';
+  visibleSecond.style.top=oldBounds.top+'px';
+  visibleSecond.style.width=oldBounds.width+'px';
+  visibleSecond.style.height=oldBounds.height+'px';
+  firstSlide.after(visibleSecond);
+  await wait(600);
+  const afterLayer=document.querySelector('.xmn-controls-layer');
+  const selectedViewer=window.XMN.Controller.prototype.findActiveViewer.call({});
+  const layerVisible=afterLayer && getComputedStyle(afterLayer).display!=='none';
+  result('hidden photo 1 and visible photo 2 keep the same portaled post arrows',
+    afterLayer===layerBeforeSwap && selectedViewer===visibleSecond &&
+    document.querySelectorAll('.xmn-controls-layer .xmn-nav-button').length===2 &&
+    layerVisible);
+  const forwardPostButton=layerBeforeSwap?.querySelector('.xmn-next');
+  forwardPostButton?.click();
+  await wait(700);
+  result('post arrow clicked on photo 2 opens adjacent post with native SPA',
+    location.pathname.endsWith('/22/photo/1') &&
+    clicked.at(-1)==='/alice/status/22/photo/1');
+  document.querySelector('#modal button[aria-label="Close"]')?.click();
+  await wait(400);
+  result('modal close removes portaled post controls without stale click targets',
+    !document.querySelector('.xmn-controls-layer') &&
+    !document.querySelector('.xmn-nav-button'));
+
+  // Reaching the last loaded post must not close X, scroll the underlying
+  // media feed or launch an invented URL. The user may choose to load more.
+  const terminalHref='/alice/status/9999/photo/1';
+  const terminalTile=tile(terminalHref);
+  terminalTile.scrollIntoView=()=>{window.terminalBackgroundScrolls++;};
+  window.terminalBackgroundScrolls=0;
+  ul.appendChild(terminalTile);
+  await wait(650);
+  const terminalIndexed=!!terminalTile.querySelector('.xmn-tile-badge');
+  source(terminalHref).click();
+  await wait(520);
+  const terminalDialog=document.getElementById('modal');
+  const terminalReplies=document.getElementById('replies');
+  const terminalCloses=window.nativeModalCloses;
+  const terminalBefore=location.pathname;
+  const oldWindowScroll=window.scrollTo;
+  window.scrollTo=()=>{window.terminalBackgroundScrolls++;};
+  const terminalKey=key('ArrowRight');
+  await wait(420);
+  window.scrollTo=oldWindowScroll;
+  result('unknown next post never scrolls the background or guesses an URL',
+    terminalIndexed && terminalKey.defaultPrevented &&
+    window.terminalBackgroundScrolls===0 &&
+    location.pathname===terminalBefore);
+  result('unknown next post retains the exact modal and right replies pane',
+    terminalDialog===document.getElementById('modal') &&
+    terminalReplies===document.getElementById('replies') &&
+    window.nativeModalCloses===terminalCloses &&
+    !!document.querySelector('.xmn-toast'));
+
   document.body.setAttribute('data-xmn-results',records.map(r=>r.label+':'+(r.pass?'PASS':'FAIL')).join('|'));
 }
 
 </script><script src="/extension/content_script.js"></script>
-<script>exercise().catch(e=>document.body.setAttribute('data-xmn-results','EXCEPTION:'+e.message));</script>
+<script>exercise().catch(e=>document.body.setAttribute('data-xmn-results','EXCEPTION:'+e.message+'@'+String(e.stack).split('\\n').slice(0,6).join('~')));</script>
 </body></html>`;
 
 test('synthetic X inline JavaScript parses', () => {
@@ -255,11 +572,14 @@ function runChromium(url, userDataDir) {
     const args = [
       '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-background-networking', '--no-first-run',
-      '--user-data-dir=' + userDataDir, '--virtual-time-budget=19000', '--dump-dom', url,
+      '--user-data-dir=' + userDataDir, '--virtual-time-budget=33000', '--dump-dom', url,
     ];
     const child = spawn(browser, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
-    const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Chromium timed out')) }, 20000);
+    // GitHub-hosted Chrome startup can exceed the 20s wall clock even when the
+    // 19s *virtual* fixture completes successfully. Allow runner overhead;
+    // still fail on a genuinely stalled browser, rather than skipping tests.
+    const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Chromium timed out after 45s')) }, 45000);
     child.stdout.on('data', d => { stdout += d.toString('utf8'); });
     child.stderr.on('data', d => { stderr += d.toString('utf8'); });
     child.on('error', err => { clearTimeout(timeout); reject(err); });
@@ -292,9 +612,59 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 18, report);
+    assert.equal(report.split('|').length, 40, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Chromium displays a tainted cross-origin canvas without a second image request', {
+  skip: process.env.XMN_RUN_CHROMIUM !== '1' ? 'Requires Chromium' :
+    !existsSync(browser) ? 'Chromium not installed' : false,
+}, async () => {
+  let imageRequests=0;
+  const pixel = Buffer.from('R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=', 'base64');
+  const imageServer=createServer((req,res)=>{
+    if(req.url==='/thumb.gif'){
+      imageRequests++;
+      res.writeHead(200,{'content-type':'image/gif','cache-control':'public, max-age=600'});
+      res.end(pixel);
+    }else{res.writeHead(404);res.end();}
+  });
+  await new Promise(resolve=>imageServer.listen(0,'127.0.0.1',resolve));
+  const imageUrl='http://127.0.0.1:'+imageServer.address().port+'/thumb.gif';
+  const pageServer=createServer((req,res)=>{
+    res.writeHead(200,{'content-type':'text/html; charset=utf-8'});
+    res.end(`<!doctype html><html><body>
+<script>
+const image = document.createElement('img');
+image.onload=()=>{
+  const canvas=document.createElement('canvas');
+  canvas.width=1;canvas.height=1;
+  const ctx=canvas.getContext('2d');
+  ctx.drawImage(image,0,0,1,1);
+  document.body.appendChild(canvas);
+  let readBlocked=false;
+  try{ctx.getImageData(0,0,1,1);}catch(e){readBlocked=e.name==='SecurityError';}
+  document.body.dataset.canvasProof=(readBlocked && canvas.isConnected)?'passed':'failed';
+};
+image.onerror=()=>document.body.dataset.canvasProof='load-error';
+image.src=${JSON.stringify(imageUrl)};
+</script></body></html>`);
+  });
+  await new Promise(resolve=>pageServer.listen(0,'127.0.0.1',resolve));
+  const dir=mkdtempSync(join(tmpdir(),'xmn-tainted-canvas-'));
+  try {
+    const output=await runChromium(
+      'http://127.0.0.1:'+pageServer.address().port+'/test',dir);
+    assert.match(output,/data-canvas-proof="passed"/,
+      'a cross-origin tainted canvas may be displayed but its pixels cannot be read');
+    assert.equal(imageRequests,1,
+      'drawImage of an already downloaded thumbnail does not issue another request');
+  }finally{
+    await new Promise(resolve=>pageServer.close(resolve));
+    await new Promise(resolve=>imageServer.close(resolve));
+    rmSync(dir,{recursive:true,force:true});
   }
 });
