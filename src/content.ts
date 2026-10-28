@@ -106,6 +106,11 @@ namespace XMN {
     private pendingGrid: { column: Element | null; firstTiles: Element[]; firstKeys: string[] } | null = null;
     private refs: MediaRef[] = [];
     private indexes = new Map<string, number>();
+    // Append-only media ordering lets route updates reuse first-seen post
+    // ordinals instead of rebuilding a Set/array for every arrow press.
+    private statusOrdinalCache: {
+      refs: MediaRef[]; length: number; byStatus: Map<string,number>;
+    } | null = null;
     private imageSources = new Map<string, string>();
     private imageSourcesRevision = 0;
     private knownPhotoTotals = new Map<string, number>();
@@ -225,6 +230,7 @@ namespace XMN {
       this.pendingGrid = null;
       this.refs = [];
       this.indexes.clear();
+      this.statusOrdinalCache = null;
       this.imageSources.clear();
       this.imageSourcesRevision++;
       this.knownPhotoTotals.clear();
@@ -490,11 +496,17 @@ namespace XMN {
       // anchor. On long grids a second subtree query for every tile adds up.
       const otherImages = ownedImage ? null : tile.querySelectorAll<HTMLImageElement>('img[src]');
       const thumbnail = ownedImage ?? (otherImages?.length === 1 ? otherImages[0] : null);
-      // currentSrc may still be a data: placeholder immediately after a
-      // lazy src update. Try the actual src as a second, validated candidate.
-      const url = thumbnail
-        ? preloadImageUrl(thumbnail.currentSrc || '') ?? preloadImageUrl(thumbnail.src || '')
-        : null;
+      // A recycled X thumbnail may already be assigned a NEW photo in src
+      // while currentSrc still points to the old, rendered photo. For a
+      // pending load follow the newly assigned resource. Once the image is
+      // completely loaded, currentSrc is authoritative for srcset/picture
+      // candidates and may differ from a valid fallback src.
+      const displayed = thumbnail ? preloadImageUrl(thumbnail.currentSrc || '') : null;
+      const assigned = thumbnail ? preloadImageUrl(thumbnail.src || '') : null;
+      const different = assigned && displayed &&
+        photoCdnIdentity(assigned) !== photoCdnIdentity(displayed);
+      const loaded = thumbnail?.complete === true && thumbnail.naturalWidth > 0;
+      const url = different && !loaded ? assigned : displayed ?? assigned;
       if (!url || !this.imageSources || this.imageSources.get(found.ref.key) === url) return;
       this.imageSources.delete(found.ref.key);
       this.imageSources.set(found.ref.key, url);
@@ -731,6 +743,12 @@ namespace XMN {
 
     private activeIndex(): number | null {
       if (!this.originProfile) return null;
+      const route = mediaRefFromHref(window.location.pathname, this.originProfile);
+      if (!route) return null;
+      const indexed = this.indexes?.get(route.key);
+      // Never trust an index unless its stored media key still matches X's
+      // current route; virtualized grids can replace and reorder DOM tiles.
+      if (indexed !== undefined && this.refs[indexed]?.key === route.key) return indexed;
       const exact = findCurrentIndex(this.refs, window.location.pathname, this.originProfile);
       if (exact !== null) return exact;
       // A media tab may offer only one link for a post with several photos.
@@ -758,9 +776,20 @@ namespace XMN {
       if (next) next.disabled = this.navigationBusy || !currentRef;
       const indicator = controls.querySelector<HTMLElement>('.xmn-status');
       if (indicator) {
-        const statuses = Array.from(new Set(this.refs.map((ref) => ref.statusId)));
-        const index = currentRef ? statuses.indexOf(currentRef.statusId) : -1;
-        const label = index < 0 ? '投稿の位置を確認中' : `投稿 ${index + 1} / ${statuses.length}`;
+        let ordinal = this.statusOrdinalCache;
+        // Every new ref appends to the timeline. Rebuild only when the array
+        // identity or number of indexed items changes, not on each route.
+        if (!ordinal || ordinal.refs !== this.refs || ordinal.length !== this.refs.length) {
+          const byStatus = new Map<string,number>();
+          for (const ref of this.refs) {
+            if (!byStatus.has(ref.statusId)) byStatus.set(ref.statusId, byStatus.size);
+          }
+          ordinal = { refs: this.refs, length: this.refs.length, byStatus };
+          this.statusOrdinalCache = ordinal;
+        }
+        const index = currentRef ? ordinal.byStatus.get(currentRef.statusId) ?? -1 : -1;
+        const label = index < 0 ? '投稿の位置を確認中' :
+          `投稿 ${index + 1} / ${ordinal.byStatus.size}`;
         if (indicator.textContent !== label) indicator.textContent = label;
       }
       this.viewerStateSnapshot = { viewer, key };
@@ -1204,10 +1233,23 @@ namespace XMN {
 
     private trimPrefetched(): void {
       let bytes = [...this.prefetched.values()].reduce((sum, value) => sum + value.bytes, 0);
+      // prefetchWanted is ordered by usefulness (nearest next photo first).
+      // The old LRU fallback evicted that MOST useful photo whenever all
+      // decoded images were still wanted and their sum exceeded 80MiB.
+      const priorities = new Map<string, number>();
+      let order = 0;
+      for (const url of this.prefetchWanted) priorities.set(url, order++);
       while (this.prefetched.size > PREFETCH_MAX_RECORDS || bytes > PREFETCH_MAX_DECODED_BYTES) {
-        const candidates = [...this.prefetched].filter(([url, item]) =>
-          !item.loading && (!this.handoff || !this.handoff.host.contains(item.image)));
-        const victim = candidates.find(([url]) => !this.prefetchWanted.has(url)) ?? candidates[0];
+        let victim: [string, PrefetchedPhoto] | null = null;
+        let worst = -1;
+        for (const [url, item] of this.prefetched) {
+          if (item.loading || this.handoff?.host.contains(item.image)) continue;
+          // Obsolete photos are evicted before any requested photo; among
+          // requested ones the farthest future photo is evicted first.
+          // Equal-priority obsolete entries retain the oldest-first LRU rule.
+          const rank = priorities.get(url) ?? Infinity;
+          if (rank > worst) { worst = rank; victim = [url, item]; }
+        }
         if (!victim) break; // Only in-flight or currently displayed images remain.
         this.prefetched.delete(victim[0]);
         bytes -= victim[1].bytes;

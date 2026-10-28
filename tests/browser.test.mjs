@@ -176,6 +176,28 @@ async function exercise() {
   result('quoted and ambiguous grid links never generate extra media entries',
     firstTile.querySelector('.xmn-tile-badge')?.textContent==='1' &&
     !ambiguousTile.querySelector('.xmn-tile-badge'));
+  // Real DOM case: X recycles the same thumbnail <img> for a new tile while
+  // currentSrc still points to the old pixels. Do not initiate CDN traffic.
+  const reusableTile=document.createElement('li');
+  const reusableLink=document.createElement('a');
+  reusableLink.href='/alice/status/445/photo/1';
+  const reusablePhoto=document.createElement('img');
+  reusablePhoto.setAttribute('src','data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=');
+  reusableLink.appendChild(reusablePhoto);reusableTile.appendChild(reusableLink);
+  Object.defineProperty(reusablePhoto,'currentSrc',{configurable:true,
+    value:'https://pbs.twimg.com/media/OLD445?format=jpg&name=small'});
+  Object.defineProperty(reusablePhoto,'src',{configurable:true,
+    value:'https://pbs.twimg.com/media/NEW445?name=small&format=jpg'});
+  Object.defineProperty(reusablePhoto,'complete',{configurable:true,value:false});
+  Object.defineProperty(reusablePhoto,'naturalWidth',{configurable:true,value:0});
+  const sourceCtrl=Object.create(window.XMN.Controller.prototype);
+  sourceCtrl.imageSources=new Map();sourceCtrl.imageSourcesRevision=0;
+  const reusableRef=window.XMN.mediaRefFromHref(
+    reusableLink.getAttribute('href'),'alice');
+  sourceCtrl.recordTileImageSource(reusableTile,{link:reusableLink,ref:reusableRef});
+  result('recycled native image element selects new assigned CDN photo, not prior pixels',
+    sourceCtrl.imageSources.get(reusableRef.key)===
+    'https://pbs.twimg.com/media/NEW445?format=jpg&name=large');
   const beforeClickPreload=window.prefetchLoads.length;
   source('/alice/status/11/photo/1').click();
   result('media tile click starts prefetch synchronously before X opens the viewer',
@@ -501,7 +523,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
     const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
-    assert.equal(report.split('|').length, 33, report);
+    assert.equal(report.split('|').length, 34, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
     rmSync(dir, { recursive: true, force: true });

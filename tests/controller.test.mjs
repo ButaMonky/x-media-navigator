@@ -655,6 +655,104 @@ test('unchanged media DOM is not rescanned on every route poll', () => {
 });
 
 
+test('stale timeline index falls back to exact live media key without skipping posts', () => {
+  const oldPath=state.pathname;
+  const refs=[
+    ref('/alice/status/21/photo/1'),
+    ref('/alice/status/22/photo/1'),
+    ref('/alice/status/22/photo/2'),
+    ref('/alice/status/23/photo/1'),
+  ];
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',refs,
+    indexes:new Map([[refs[2].key,1]]), // simulated stale index, points to another photo
+  });
+  state.pathname=refs[2].href;
+  try {
+    assert.equal(proto.activeIndex.call(ctrl),2,'never return an index whose key disagrees with the route');
+  }finally{state.pathname=oldPath;}
+});
+
+test('ordinal cache preserves first-seen ordering for repeated post groups', () => {
+  const oldPath=state.pathname;
+  const refs=[
+    ref('/alice/status/21/photo/1'),
+    ref('/alice/status/21/photo/2'),
+    ref('/alice/status/22/photo/1'),
+    ref('/alice/status/21/photo/3'),
+    ref('/alice/status/23/photo/1'),
+  ];
+  const label={textContent:''},prev={disabled:false},next={disabled:false};
+  const viewer={querySelector(sel){
+    return sel==='.xmn-prev'?prev:sel==='.xmn-next'?next:sel==='.xmn-status'?label:null;
+  }};
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',refs,viewer,navigationBusy:false,
+    activeIndex(){return refs.findIndex(ref=>ref.href===state.pathname);},
+  });
+  try {
+    for(const [i,expected] of [[0,'投稿 1 / 3'],[2,'投稿 2 / 3'],
+        [3,'投稿 1 / 3'],[4,'投稿 3 / 3']]){
+      state.pathname=refs[i].href;
+      proto.updateViewerState.call(ctrl);
+      assert.equal(label.textContent,expected);
+    }
+  }finally{state.pathname=oldPath;}
+});
+
+test('indexed current photo on a 3000-entry media timeline avoids linear position scans', () => {
+  const previousPath=state.pathname,originalRefs=Array.from({length:3000},(_,i)=>
+    ref('/alice/status/'+(10000+i)+'/photo/1'));
+  const targetIndex=2468,target=originalRefs[targetIndex];
+  let reads=0;
+  const watched=new Proxy(originalRefs,{
+    get(arr,key,receiver){
+      if(typeof key==='string' && /^\d+$/.test(key)){
+        reads++;
+        if(reads>5) throw Error('unexpected linear scan of a pre-indexed media timeline');
+      }
+      return Reflect.get(arr,key,receiver);
+    },
+  });
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',refs:watched,indexes:new Map([[target.key,targetIndex]]),
+  });
+  state.pathname=target.href;
+  try{
+    assert.equal(proto.activeIndex.call(ctrl),targetIndex);
+    assert.ok(reads<=5);
+  }finally{state.pathname=previousPath;}
+});
+
+test('post position labels reuse ordinal lookup across route changes in a long timeline', () => {
+  const previous=state.pathname;
+  const refs=Array.from({length:2000},(_,i)=>ref('/alice/status/'+(1000+i)+'/photo/1'));
+  const prev={disabled:false},next={disabled:false},status={textContent:''};
+  const viewer={querySelector(sel){
+    return sel==='.xmn-prev'?prev:sel==='.xmn-next'?next:sel==='.xmn-status'?status:null;
+  }};
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',viewer,refs,navigationBusy:false,
+    activeIndex(){const id=Number(state.pathname.match(/status\/(\d+)/)?.[1]);return id===9999?2000:id-1000;},
+  });
+  try{
+    state.pathname=refs[0].href;
+    proto.updateViewerState.call(ctrl);
+    assert.equal(status.textContent,'投稿 1 / 2000');
+    refs.map=()=>{throw Error('duplicate list must not be rebuilt on route changes')};
+    for(const i of [1,500,999,1999]){
+      state.pathname=refs[i].href;
+      proto.updateViewerState.call(ctrl);
+      assert.equal(status.textContent,`投稿 ${i+1} / 2000`);
+    }
+    refs.push(ref('/alice/status/9999/photo/1'));
+    state.pathname=refs[2000].href;
+    proto.updateViewerState.call(ctrl);
+    assert.equal(status.textContent,'投稿 2001 / 2001',
+      'a newly indexed media entry invalidates cached ordinal count');
+  }finally{state.pathname=previous;}
+});
+
 test('unchanged modal polling reuses its status view without rescanning a long timeline', () => {
   const previous=state.pathname;
   state.pathname='/alice/status/520/photo/1';
@@ -827,6 +925,49 @@ test('active photo lookup avoids building temporary per-item objects for missing
   const ctrl=Object.assign(Object.create(proto),{originProfile:'alice',refs});
   try {assert.equal(proto.activeIndex.call(ctrl),0);}
   finally{state.pathname=previous;}
+});
+
+test('recycled tile prefetches newly assigned src rather than stale previous currentSrc', () => {
+  const entry=ref('/alice/status/222/photo/1');
+  const old='https://pbs.twimg.com/media/OLDPHOTO?format=jpg&name=small';
+  const next='https://pbs.twimg.com/media/NEWPHOTO?name=thumb&format=jpg';
+  const img={src:next,currentSrc:old,complete:false,naturalWidth:0};
+  const link={querySelector(){return img;}};
+  const tile={querySelectorAll(){throw Error('owned image must not search outside its anchor')}};
+  const ctrl=Object.assign(Object.create(proto),{imageSources:new Map(),imageSourcesRevision:0});
+  proto.recordTileImageSource.call(ctrl,tile,{link,ref:entry});
+  assert.equal(ctrl.imageSources.get(entry.key),
+    'https://pbs.twimg.com/media/NEWPHOTO?format=jpg&name=large',
+    'prefetch must not use the old visible media from a recycled tile');
+});
+
+test('late currentSrc completion does not churn image-source revision or prefetch queues', () => {
+  const entry=ref('/alice/status/224/photo/1');
+  const next='https://pbs.twimg.com/media/ASSIGNED?format=webp&name=small';
+  const image={src:next,currentSrc:'https://pbs.twimg.com/media/PREVIOUS?format=jpg&name=small',
+    complete:false,naturalWidth:0};
+  const ctrl=Object.assign(Object.create(proto),{imageSources:new Map(),imageSourcesRevision:0});
+  const found={ref:entry,link:{querySelector(){return image;}}};
+  proto.recordTileImageSource.call(ctrl,{},found);
+  assert.equal(ctrl.imageSourcesRevision,1);
+  const stored=ctrl.imageSources.get(entry.key);
+  image.currentSrc=next;image.complete=true;image.naturalWidth=900;
+  proto.recordTileImageSource.call(ctrl,{},found);
+  assert.equal(ctrl.imageSourcesRevision,1,
+    'when X finishes rendering the assigned photo, its canonical CDN URL remains unchanged');
+  assert.equal(ctrl.imageSources.get(entry.key),stored);
+});
+
+test('a loaded srcset candidate takes precedence over an unrelated fallback src', () => {
+  const entry=ref('/alice/status/223/photo/1');
+  const old='https://pbs.twimg.com/media/FALLBACK?format=jpg&name=large';
+  const current='https://pbs.twimg.com/media/ACTUAL?format=webp&name=small';
+  const img={src:old,currentSrc:current,complete:true,naturalWidth:800};
+  const ctrl=Object.assign(Object.create(proto),{imageSources:new Map(),imageSourcesRevision:0});
+  proto.recordTileImageSource.call(ctrl,{}, {link:{querySelector(){return img;}},ref:entry});
+  assert.equal(ctrl.imageSources.get(entry.key),
+    'https://pbs.twimg.com/media/ACTUAL?format=webp&name=large',
+    'use the actual loaded srcset candidate rather than an unrelated fallback');
 });
 
 test('an owned thumbnail avoids searching the surrounding tile for images again', () => {
@@ -1670,6 +1811,33 @@ test('returning to a visible media viewer recalculates prefetch even for unchang
     proto.onVisibilityChange.call(ctrl);
     assert.equal(scheduled,1,'a closed gallery must not start background downloads');
   }finally{document.hidden=oldHidden;}
+});
+
+test('decoded-memory budget evicts farthest prefetch before the nearest next photo', () => {
+  const mib=1024*1024;
+  const photo=()=>({image:{},ready:true,loading:false,bytes:35*mib});
+  const ctrl=Object.assign(Object.create(proto),{
+    prefetched:new Map([['near',photo()],['middle',photo()],['far',photo()]]),
+    prefetchWanted:new Set(['near','middle','far']),
+    handoff:null,
+  });
+  proto.trimPrefetched.call(ctrl);
+  assert.deepEqual([...ctrl.prefetched.keys()],['near','middle'],
+    'under 80MiB, keep the nearest decoded images instead of distant future photos');
+  const bytes=[...ctrl.prefetched.values()].reduce((sum,p)=>sum+p.bytes,0);
+  assert.ok(bytes<=80*mib);
+});
+
+test('decoded budget discards an obsolete cache record before any requested photo', () => {
+  const mib=1024*1024;
+  const photo=()=>({image:{},ready:true,loading:false,bytes:35*mib});
+  const ctrl=Object.assign(Object.create(proto),{
+    prefetched:new Map([['near',photo()],['obsolete',photo()],['middle',photo()]]),
+    prefetchWanted:new Set(['near','middle']),
+    handoff:null,
+  });
+  proto.trimPrefetched.call(ctrl);
+  assert.deepEqual([...ctrl.prefetched.keys()],['near','middle']);
 });
 
 test('single oversized decoded photo does not churn repeated prefetch requests', async () => {
