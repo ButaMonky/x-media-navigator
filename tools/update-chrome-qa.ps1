@@ -11,10 +11,36 @@ $stable = Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-Current'
 $backupRoot = Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-Backups'
 $files = @('manifest.json','content_script.js','background.js','style.css','icon16.png','icon48.png','icon128.png')
 $stableFiles = @('manifest.json','content_script.js','style.css','icon16.png','icon48.png','icon128.png')
+function Assert-QACommittedSource {
+  # Compare real Git content, not file timestamps. TypeScript can write LF JS
+  # on Windows with core.autocrlf=true without changing the committed blob.
+  $local = (& git -C $root rev-parse HEAD).Trim()
+  if ($LASTEXITCODE -ne 0 -or $local -notmatch '^[0-9a-f]{40}$') {
+    throw 'Cannot verify local Git commit; QA update aborted'
+  }
+  $changes = @(& git -C $root diff --name-only HEAD --)
+  if ($LASTEXITCODE -ne 0 -or $changes.Count -gt 0) {
+    throw 'Refusing QA deployment from a dirty Git working tree'
+  }
+  $untracked = @(& git -C $root ls-files --others --exclude-standard)
+  if ($LASTEXITCODE -ne 0 -or $untracked.Count -gt 0) {
+    throw 'Refusing QA deployment with untracked source files'
+  }
+  $remote = @(& git -C $root ls-remote origin ("refs/heads/" + $branch))
+  if ($LASTEXITCODE -ne 0 -or $remote.Count -ne 1) {
+    throw 'Cannot verify the source branch against private GitHub; QA update aborted'
+  }
+  $remoteSha = ($remote[0] -split '\s+')[0]
+  if ($remoteSha -ne $local) {
+    throw 'Refusing QA deployment from an unpushed or outdated Git commit'
+  }
+  return $local
+}
 $actualBranch = (& git -C $root branch --show-current).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualBranch -ne $branch) {
   throw "Refusing to deploy from branch '$actualBranch'. Expected '$branch'."
 }
+$sourceCommit = Assert-QACommittedSource
 Set-Location $root
 $sourceDir = Join-Path $root 'extension'
 $stableHashes = @{}
@@ -39,12 +65,28 @@ $env:CHROMIUM_PATH = $edge
 $env:XMN_RUN_CHROMIUM = '1'
 & npm.cmd run test:browser
 if ($LASTEXITCODE -ne 0) { throw 'Chromium tests failed: stable QA files were not touched' }
+if ((Assert-QACommittedSource) -ne $sourceCommit) {
+  throw 'QA source changed while quality tests were running'
+}
 $sourceManifest = Get-Content -LiteralPath (Join-Path $sourceDir 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
 if ($sourceManifest.version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') { throw 'Invalid numeric Chrome version' }
 if (Test-Path -LiteralPath (Join-Path $target 'manifest.json') -PathType Leaf) {
   $oldManifest = Get-Content -LiteralPath (Join-Path $target 'manifest.json') -Raw -Encoding UTF8 | ConvertFrom-Json
   if ([version]$sourceManifest.version -lt [version]$oldManifest.version) {
     throw 'Refusing to downgrade the installed QA build'
+  }
+  if ([version]$sourceManifest.version -eq [version]$oldManifest.version) {
+    foreach ($name in $files | Where-Object { $_ -ne 'manifest.json' }) {
+      $existingFile = Join-Path $target $name
+      if (!(Test-Path -LiteralPath $existingFile -PathType Leaf)) {
+        throw "Refusing same-version content change: missing installed asset $name"
+      }
+      $wantedHash = (Get-FileHash -LiteralPath (Join-Path $sourceDir $name) -Algorithm SHA256).Hash
+      $installedHash = (Get-FileHash -LiteralPath $existingFile -Algorithm SHA256).Hash
+      if ($wantedHash -ne $installedHash) {
+        throw "Refusing same-version content change: $name differs; bump the Chrome version"
+      }
+    }
   }
 }
 New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
@@ -64,10 +106,9 @@ try {
   $qaManifest.name = 'X Media Navigator (TypeScript Dev) - FxEmbed QA (UNRELEASED)'
   $qaManifest.description = 'Private FxEmbed test build. Disable other X Media Navigator installations during testing.'
   [IO.File]::WriteAllText($qaManifestPath,($qaManifest | ConvertTo-Json -Depth 16),[Text.UTF8Encoding]::new($false))
-  $commit = (& git rev-parse --short HEAD).Trim()
-  $dirty = [bool](@(& git status --porcelain).Count)
+  $commit = $sourceCommit
   $note = @"
-X Media Navigator FxEmbed QA - v$($sourceManifest.version) / source $commit (uncommitted local edits: $dirty)
+X Media Navigator FxEmbed QA - v$($sourceManifest.version) / source $commit (verified clean and GitHub-synced)
 This is an UNRELEASED test version; official main and stable install are unchanged.
 The third-party FxEmbed API receives a public profile handle and normal network metadata after your consent.
 HOW TO CHECK IN CHROME:
@@ -75,7 +116,7 @@ HOW TO CHECK IN CHROME:
 2. Once: chrome://extensions -> Developer mode -> Load unpacked -> choose THIS folder.
 3. Later: run Update-Chrome-QA.cmd in the project root, click Reload on this extension card and refresh the X tab.
 4. On X: F12 -> Console -> filter "[XMN"; confirm startup, fxembed.* and preview.* events.
-5. A "preview.low_thumbnail_decoded" entry proves preparation; "preview.visible" with quality=low proves actual display.
+5. "preview.low_thumbnail_decoded" proves preparation; "preview.visible" proves DOM reveal was requested, NOT actual screen Paint. Check the image visually.
 6. A direct document navigation cannot show the old modal's low-res handoff. It is not proof of an SPA transition.
 Do not share private HAR, cookies, tokens, raw network URLs or full browser logs.
 "@

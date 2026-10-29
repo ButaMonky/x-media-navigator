@@ -264,3 +264,12 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - R-041: label unfinished continuation `投稿 X / Y+`; terminal page remains `投稿 X / Y`. This is loaded count rather than proof of a complete X history.
 - **NOT DONE**: automatically evict/reload 450+ API pages or claim unlimited media movement. Add a committed manifest, ordered adjoining page checkpoints, storage-quota and abort safety before connecting checkpoint pages to `Controller`.
 - Full report and tests are committed to the task branch only after Node, TypeScript, synthetic Chromium, real MV3 and GitHub Actions succeed. Preserve existing stable/main, Draft PR #17 and Chrome installations.
+
+---
+
+## QA updater reproducibility / R-018 | 2026-10-29
+
+- Task `XMN-QA-REPRODUCIBILITY-20261029`: see `docs/implementation/QA-REPRODUCIBILITY.md`.
+- The previously permitted dirty Git worktree and same-version/different-content overwrite are now rejected. Source HEAD and private GitHub branch must match, before and after required tests; no new permissions or automatic browser installation.
+- The QA README records a verified source SHA and distinguishes DOM overlay reveal from actual image Paint. Static tests guard against reintroducing unsafe behavior; PowerShell parser reports zero errors.
+- Source default remains the previously authorized research branch, so the new v2.4.21 candidate is **not** automatically deployed. The installed normal v2.4.18, QA v2.4.20, stable/main and Draft PR #17 remain untouched.

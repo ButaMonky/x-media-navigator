@@ -44,3 +44,19 @@ test('user diagnostics contain named events but never log full media URLs or cur
   }
   assert.doesNotMatch(source,/diagnostic\([^\n]*(?:url\.toString\(|\.href|\.cursor)/i);
 });
+
+test('R-018 QA updater only stages an already pushed clean commit with reproducible assets',()=>{
+  const ps=get('tools/update-chrome-qa.ps1');
+  assert.match(ps,/function Assert-QACommittedSource/);
+  assert.match(ps,/git -C \$root diff --name-only HEAD --/);
+  assert.match(ps,/git -C \$root ls-files --others --exclude-standard/);
+  assert.match(ps,/git -C \$root ls-remote origin/);
+  assert.match(ps,/Refusing QA deployment from an unpushed or outdated Git commit/);
+  assert.ok((ps.match(/Assert-QACommittedSource/g)||[]).length>=3,
+    'verify committed state once before running tests and again after tests');
+  assert.match(ps,/Refusing same-version content change/);
+  assert.match(ps,/bump the Chrome version/);
+  assert.match(ps,/verified clean and GitHub-synced/);
+  assert.doesNotMatch(ps,/preview\.visible[^\n]*proves actual display/,
+    'classList reveal is not proof that real screen pixels were painted');
+});
