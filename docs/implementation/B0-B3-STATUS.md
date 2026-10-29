@@ -128,3 +128,11 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - Chrome for TestingによるWorker+Content Scriptの実起動テストはローカル独立受入。現時点ではGitHub CIの必須ジョブには追加しない（通常Google ChromeのCLIによるMV3拡張読み込みには版依存があり、Chrome for Testingの専用インストール方法をさらに設計する必要がある）。
 
 - CI品質ゲート追加後のローカル全体検査：`npm test` 224件中**215 PASS・0 FAIL・3 SKIP・実X TODO 6**、Content/Worker型検査PASS。Chromium合成4件・Chrome for Testing MV3正当経路・Edge MV3拒否経路は同じ候補版で別途PASS済み。
+
+### CI必須ブラウザ試験の初回障害と改善
+
+- 2026-10-29のGitHub Actionsコミット`8d6c8ec`、run `40825339338`：**CI失敗**。Nodeテストと型検査は成功したが、必須合成ブラウザの最長シナリオで`data-xmn-results`の完了マーカーが現れず失敗。これは`browser test skipped`ではなく、実行したChromiumがシナリオを最後まで完了できなかった記録。
+- 試験ソースの明示的`await wait(...)`は合計約28,070ms。以前の`--virtual-time-budget=33000`ではGitHub Linuxランナー上のタイマー/描画タスクに十分な余裕がない可能性がある。**根本原因の確定ではなく仮説**として扱う。
+- 対応：`tests/browser.test.mjs`の仮想時間予算を65,000msへ増やし、`tests/ci-required-browser.test.mjs`で明示的待機時間に20秒以上の余裕があることを契約化。CIの必須ブラウザゲートや検証項目は削除しない。
+- Windows Chrome for Testing 156とEdge Chromiumの両方で、変更後の4ブラウザケースは**それぞれ4/4 PASS**。ローカルNode全テストは**225件・216 PASS・0 FAIL・3 SKIP・実X TODO 6**。これらはLinux CI上の成功の代替ではなく、push後に改めてCIを検証する。
+- 障害記録はこのファイルを正本に保持。再発時はGitHub run `40825339338`と比較し、`--dump-dom`の固定仮想時間方式からCDPによる実際の完了マーカー待ちへ移行する方針。

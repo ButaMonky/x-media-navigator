@@ -589,12 +589,14 @@ function runChromium(url, userDataDir) {
     const args = [
       '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
       '--disable-background-networking', '--no-first-run',
-      '--user-data-dir=' + userDataDir, '--virtual-time-budget=33000', '--dump-dom', url,
+      // The fixture contains ~28s of explicit waits; Linux CI needs generous
+      // virtual-time headroom for image decode and navigation task queues.
+      '--user-data-dir=' + userDataDir, '--virtual-time-budget=65000', '--dump-dom', url,
     ];
     const child = spawn(browser, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
-    // GitHub-hosted Chrome startup can exceed the 20s wall clock even when the
-    // 19s *virtual* fixture completes successfully. Allow runner overhead;
+    // GitHub-hosted Chrome can take extra wall time even after the fixture's
+    // ~28s virtual waits complete. Allow browser startup and runner overhead;
     // still fail on a genuinely stalled browser, rather than skipping tests.
     const timeout = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Chromium timed out after 45s')) }, 45000);
     child.stdout.on('data', d => { stdout += d.toString('utf8'); });
