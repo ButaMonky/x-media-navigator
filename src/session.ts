@@ -16,14 +16,16 @@ namespace XMN {
   anchorFound: boolean;
   exhausted: boolean;
  }
- type StoreReply={ok?:boolean,granted?:boolean,session?:PublicSession|null};
+ type StoreReply={
+  ok?:boolean; granted?:boolean; session?:PublicSession|null; pages?:number[];
+ };
  export class SessionStore {
-  private async call(op:string,profile:string,session?:PublicSession)
+  private async call(op:string,profile:string,session?:PublicSession,page?:number)
    :Promise<StoreReply|null>{
    try {
     if(typeof chrome==='undefined'||!chrome.runtime?.sendMessage)return null;
     const data=await chrome.runtime.sendMessage({
-     kind:'xmn-store-v1',op,profile,session});
+     kind:'xmn-store-v1',op,profile,session,page});
     if(!data||typeof data!=='object')return null;
     return data as StoreReply;
    }catch{return null}
@@ -44,6 +46,25 @@ namespace XMN {
   }
   async clear(profile:string):Promise<void>{
    await this.call('session.clear',profile);
+  }
+  /** Immutable, tab-scoped snapshots for a future verified page switcher. */
+  async saveCheckpoint(page:number,data:PublicSession):Promise<boolean>{
+   if(!Number.isSafeInteger(page)||page<0||page>=64)return false;
+   return (await this.call('checkpoint.put',data.profile,data,page))?.ok===true;
+  }
+  async loadCheckpoint(profile:string,page:number):Promise<PublicSession|null>{
+   if(!Number.isSafeInteger(page)||page<0||page>=64)return null;
+   const r=await this.call('checkpoint.get',profile,undefined,page);
+   return r?.ok===true&&r.session ? r.session : null;
+  }
+  async listCheckpoints(profile:string):Promise<number[]|null>{
+   const r=await this.call('checkpoint.list',profile);
+   return r?.ok===true&&Array.isArray(r.pages) ? r.pages : null;
+  }
+  async clearCheckpoints(profile:string,page?:number):Promise<boolean>{
+   if(page!==undefined && (!Number.isSafeInteger(page)||page<0||page>=64))
+     return false;
+   return (await this.call('checkpoint.clear',profile,undefined,page))?.ok===true;
   }
  }
 /** Purge only our obsolete host-page keys; never read or migrate untrusted values. */

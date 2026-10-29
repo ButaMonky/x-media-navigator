@@ -573,12 +573,12 @@ var XMN;
 var XMN;
 (function (XMN) {
     class SessionStore {
-        async call(op, profile, session) {
+        async call(op, profile, session, page) {
             try {
                 if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage)
                     return null;
                 const data = await chrome.runtime.sendMessage({
-                    kind: 'xmn-store-v1', op, profile, session
+                    kind: 'xmn-store-v1', op, profile, session, page
                 });
                 if (!data || typeof data !== 'object')
                     return null;
@@ -604,6 +604,27 @@ var XMN;
         }
         async clear(profile) {
             await this.call('session.clear', profile);
+        }
+        /** Immutable, tab-scoped snapshots for a future verified page switcher. */
+        async saveCheckpoint(page, data) {
+            if (!Number.isSafeInteger(page) || page < 0 || page >= 64)
+                return false;
+            return (await this.call('checkpoint.put', data.profile, data, page))?.ok === true;
+        }
+        async loadCheckpoint(profile, page) {
+            if (!Number.isSafeInteger(page) || page < 0 || page >= 64)
+                return null;
+            const r = await this.call('checkpoint.get', profile, undefined, page);
+            return r?.ok === true && r.session ? r.session : null;
+        }
+        async listCheckpoints(profile) {
+            const r = await this.call('checkpoint.list', profile);
+            return r?.ok === true && Array.isArray(r.pages) ? r.pages : null;
+        }
+        async clearCheckpoints(profile, page) {
+            if (page !== undefined && (!Number.isSafeInteger(page) || page < 0 || page >= 64))
+                return false;
+            return (await this.call('checkpoint.clear', profile, undefined, page))?.ok === true;
         }
     }
     XMN.SessionStore = SessionStore;
@@ -2036,7 +2057,7 @@ var XMN;
                 return;
             // Media refs are append-only within a session; only their count,
             // current route, or navigation busy state changes the post controls.
-            const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}`;
+            const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}`;
             if (this.viewerStateSnapshot?.viewer === viewer && this.viewerStateSnapshot.key === key)
                 return;
             const current = this.activeIndex();
@@ -2064,10 +2085,16 @@ var XMN;
                     this.statusOrdinalCache = ordinal;
                 }
                 const index = currentRef ? ordinal.byStatus.get(currentRef.statusId) ?? -1 : -1;
+                // Known indexed posts are not X's complete historical total.
+                // A continuation cursor means older posts may still be obtainable.
+                const mayContinue = !!this.publicApiCursor && !this.publicApiExhausted;
                 const label = index < 0 ? '投稿の位置を確認中' :
-                    `投稿 ${index + 1} / ${ordinal.byStatus.size}`;
+                    `投稿 ${index + 1} / ${ordinal.byStatus.size}${mayContinue ? '+' : ''}`;
                 if (indicator.textContent !== label)
                     indicator.textContent = label;
+                indicator.title = mayContinue
+                    ? '現在読み込み済みの投稿数です。続きを取得できる可能性があります。'
+                    : '現在読み込み済みの投稿数です。';
             }
             this.viewerStateSnapshot = { viewer, key };
             this.schedulePublicMediaWarmup?.(current);

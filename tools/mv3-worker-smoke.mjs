@@ -30,8 +30,8 @@ writeFileSync(join(ext,'manifest.json'),JSON.stringify({
 },null,2));
 const probe=`
 (async()=>{
- const m=(op,session)=>chrome.runtime.sendMessage({
-  kind:'xmn-store-v1',op,profile:'alice',session
+ const m=(op,session,page)=>chrome.runtime.sendMessage({
+  kind:'xmn-store-v1',op,profile:'alice',session,page
  });
  if(location.pathname.endsWith('/media')){
    sessionStorage.setItem('xmn-fxembed-consent-alice','yes');
@@ -46,23 +46,39 @@ const probe=`
    const saved=await m('session.set',snapshot);
    const malformed=await m('session.set',{
     ...snapshot,refs:snapshot.refs.slice().reverse()});
+   const checkpoint=await m('checkpoint.put',snapshot,0);
+   const duplicate=await m('checkpoint.put',snapshot,0);
+   const collision=await m('checkpoint.put',{...snapshot,cursor:'INVALID_REPLACEMENT'},0);
+   const pages=await m('checkpoint.list');
+   const archived=await m('checkpoint.get',undefined,0);
    const ok=before?.granted===false&&granted?.ok===true&&
-    after?.granted===true&&saved?.ok===true&&malformed?.ok===false;
-   if(!ok)throw Error('setup');
+    after?.granted===true&&saved?.ok===true&&malformed?.ok===false&&
+    checkpoint?.ok===true&&duplicate?.ok===true&&collision?.ok===false&&
+    pages?.pages?.length===1&&pages.pages[0]===0&&
+    archived?.session?.cursor==='NEXT';
+   if(!ok)throw Error('setup flags='+[
+     before?.granted===false,granted?.ok===true,after?.granted===true,
+     saved?.ok===true,malformed?.ok===false,checkpoint?.ok===true,
+     duplicate?.ok===true,collision?.ok===false,
+     pages?.pages?.length===1,pages?.pages?.[0]===0,
+     archived?.session?.cursor==='NEXT'
+   ].join(','));
    location.assign('/alice/status/400/photo/1');
    return;
  }
  const session=await m('session.get');
  const consent=await m('consent.get');
+ const checkpoint=await m('checkpoint.get',undefined,0);
  const ok=location.pathname==='/alice/status/400/photo/1'&&
    session?.ok===true&&session?.session?.refs?.length===2&&
-   session.session.cursor==='NEXT'&&consent?.granted===true;
+   session.session.cursor==='NEXT'&&consent?.granted===true&&
+   checkpoint?.ok===true&&checkpoint?.session?.cursor==='NEXT';
  setTimeout(()=>{
    const label=document.querySelector('.xmn-status')?.textContent||'';
    const previous=document.querySelector('.xmn-prev');
    const viewer=document.querySelector('[data-testid="swipe-to-dismiss"]');
    const replies=document.getElementById('replies');
-   const visible=label==='投稿 2 / 2'&&previous&&!previous.disabled&&
+   const visible=label==='投稿 2 / 2+'&&previous&&!previous.disabled&&
      !!viewer?.isConnected&&replies?.textContent==='Original replies';
    document.documentElement.dataset.mv3WorkerResult=ok&&visible?'passed':'failed';
    document.documentElement.dataset.mv3WorkerSignals=[

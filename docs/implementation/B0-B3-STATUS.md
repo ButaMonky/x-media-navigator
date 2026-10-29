@@ -253,3 +253,14 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - B2新機能の正確な範囲は**450画像参照以内の近傍をアルバム単位で検証する先読み制限**。全履歴をディスク/クラウドへ退避して350件目より古いページを前後に自由に読み戻す本格的なチェックポイント・ページ移動はまだ実装していない。外部FxEmbed/APIの全順序を証明できたという意味でもない。
 - 継続優先：B2の双方向チェックポイントページングと再開前後のセッション所有権、B4の実X画面描画/通信/CPU・メモリ測定、B5の28件目以降・写真1〜4枚・GIF/動画・返信欄・権限/同意の本番受入。実Xにサインインしたユーザー環境での試験が済むまで、公開main・安定ブランチ・Draft PR #17・通常Chromeインストールv2.4.18・固定QA版v2.4.20は変更禁止。
 - 実装再開位置：この台帳、研究R-001〜R-044、開発正本`task/xmn-b0-b3-20261029`の最新SHAとGit cleanを照合。別作業ツリーの未保存成果を推測で上書きしない。通常チャットで続行し、本人指示がない限りWorkを利用しない。
+
+---
+
+## B2 checkpoint storage foundation / R-041 | 2026-10-29
+
+- Task `XMN-B2-CHECKPOINT-20261029`: use `docs/implementation/B2-CHECKPOINT-STORE.md` for implementation details and reentry steps.
+- From private development base `6b9a7a5bccc83538e077aef496c83b11302102b4`, add immutable, consent-gated, tab/profile-scoped checkpoint pages 0–63 under `chrome.storage.session`; strict schema, expiry, canonical replay, ordering, collision rejection, tab-close and explicit-clear cleanup. No extra Chrome permissions.
+- Add independent `SessionStore` checkpoint CRUD wrappers. Extend actual Chrome for Testing MV3 test to verify checkpoint persistence across document navigation and no alteration of prior permission/consent safeguards.
+- R-041: label unfinished continuation `投稿 X / Y+`; terminal page remains `投稿 X / Y`. This is loaded count rather than proof of a complete X history.
+- **NOT DONE**: automatically evict/reload 450+ API pages or claim unlimited media movement. Add a committed manifest, ordered adjoining page checkpoints, storage-quota and abort safety before connecting checkpoint pages to `Controller`.
+- Full report and tests are committed to the task branch only after Node, TypeScript, synthetic Chromium, real MV3 and GitHub Actions succeed. Preserve existing stable/main, Draft PR #17 and Chrome installations.

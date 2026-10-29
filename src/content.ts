@@ -1391,7 +1391,7 @@ namespace XMN {
       if (!viewer) return;
       // Media refs are append-only within a session; only their count,
       // current route, or navigation busy state changes the post controls.
-      const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}`;
+      const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}`;
       if (this.viewerStateSnapshot?.viewer === viewer && this.viewerStateSnapshot.key === key) return;
       const current = this.activeIndex();
       const controls = this.controlsHost?.isConnected ? this.controlsHost : viewer;
@@ -1415,9 +1415,15 @@ namespace XMN {
           this.statusOrdinalCache = ordinal;
         }
         const index = currentRef ? ordinal.byStatus.get(currentRef.statusId) ?? -1 : -1;
+        // Known indexed posts are not X's complete historical total.
+        // A continuation cursor means older posts may still be obtainable.
+        const mayContinue = !!this.publicApiCursor && !this.publicApiExhausted;
         const label = index < 0 ? '投稿の位置を確認中' :
-          `投稿 ${index + 1} / ${ordinal.byStatus.size}`;
+          `投稿 ${index + 1} / ${ordinal.byStatus.size}${mayContinue ? '+' : ''}`;
         if (indicator.textContent !== label) indicator.textContent = label;
+        indicator.title = mayContinue
+          ? '現在読み込み済みの投稿数です。続きを取得できる可能性があります。'
+          : '現在読み込み済みの投稿数です。';
       }
       this.viewerStateSnapshot = { viewer, key };
       this.schedulePublicMediaWarmup?.(current);

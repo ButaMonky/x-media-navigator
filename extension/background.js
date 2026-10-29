@@ -369,9 +369,16 @@ var XMN;
 var XMN;
 (function (XMN) {
     const MAX_SESSION_CHARACTERS = 120000;
+    const SESSION_FIELDS = [
+        'schema', 'profile', 'timeline', 'expires', 'refs', 'apiKeys',
+        'photos', 'photoTotals', 'cursor', 'anchorFound', 'exhausted'
+    ];
+    const canonicalSession = (value) => JSON.stringify(SESSION_FIELDS.map(key => [key, value[key]]));
     const HANDLE = /^[a-zA-Z0-9_]{1,15}$/;
     const SESSION_PREFIX = 'xmn:session:';
     const CONSENT_PREFIX = 'xmn:consent:';
+    const CHECKPOINT_PREFIX = 'xmn:checkpoint:';
+    const MAX_CHECKPOINT_PAGES = 64; // Up to ~28,800 media references in memory.
     const validTab = (sender, profile) => {
         const tab = sender.tab?.id;
         if (typeof tab !== 'number' || !Number.isSafeInteger(tab) || tab < 0 || sender.frameId !== 0 ||
@@ -396,6 +403,11 @@ var XMN;
         if (!data || typeof data !== 'object' || Array.isArray(data))
             return false;
         const x = data;
+        // Never persist unsolicited fields such as page data, access tokens or
+        // arbitrary nested objects as part of the short-lived public index.
+        if (Object.keys(x).length !== SESSION_FIELDS.length ||
+            Object.keys(x).some(key => !SESSION_FIELDS.includes(key)))
+            return false;
         const p = profile.toLowerCase();
         if (x.schema !== 1 || x.profile !== p || typeof x.expires !== 'number' ||
             !Number.isFinite(x.expires) || x.expires <= Date.now() ||
@@ -452,6 +464,58 @@ var XMN;
     }
     const sessionKey = (id) => SESSION_PREFIX + id;
     const consentKey = (id, profile) => CONSENT_PREFIX + id + ':' + profile.toLowerCase();
+    const checkpointPrefix = (id, profile) => CHECKPOINT_PREFIX + id + ':' + profile.toLowerCase() + ':';
+    const checkpointKey = (id, profile, page) => checkpointPrefix(id, profile) + page;
+    const checkpointPage = (page) => typeof page === 'number' && Number.isSafeInteger(page) &&
+        page >= 0 && page < MAX_CHECKPOINT_PAGES;
+    // A page slot is immutable. Concurrent writes to the same slot serialize;
+    // a replay is idempotent and a different payload is rejected.
+    const checkpointWrites = new Map();
+    async function storeCheckpointOnce(key, payload) {
+        const prior = checkpointWrites.get(key) ?? Promise.resolve(true);
+        const write = prior.catch(() => false).then(async () => {
+            const existing = (await chrome.storage.session.get(key))[key];
+            if (existing !== undefined) {
+                try {
+                    // Chrome may reorder object fields during storage serialization.
+                    // Equal snapshots are still idempotent; different cursor/ref data
+                    // must never replace an immutable historical page.
+                    return canonicalSession(existing) ===
+                        canonicalSession(payload);
+                }
+                catch {
+                    return false;
+                }
+            }
+            await chrome.storage.session.set({ [key]: payload });
+            return true;
+        });
+        checkpointWrites.set(key, write);
+        try {
+            return await write;
+        }
+        finally {
+            if (checkpointWrites.get(key) === write)
+                checkpointWrites.delete(key);
+        }
+    }
+    async function deleteCheckpointPages(tabId, profile, page) {
+        const prefix = checkpointPrefix(tabId, profile);
+        // A pending immutable write must finish before all pages are enumerated.
+        const pending = [...checkpointWrites.entries()]
+            .filter(([key]) => page === undefined
+            ? key.startsWith(prefix)
+            : key === checkpointKey(tabId, profile, page))
+            .map(([, write]) => write.catch(() => false));
+        if (pending.length)
+            await Promise.all(pending);
+        const keys = page === undefined
+            ? Object.keys(await chrome.storage.session.get(null))
+                .filter(key => key.startsWith(prefix))
+            : [checkpointKey(tabId, profile, page)];
+        if (keys.length)
+            await chrome.storage.session.remove(keys);
+    }
     async function handle(msg, sender) {
         if (msg.kind !== 'xmn-store-v1')
             return { ok: false };
@@ -485,8 +549,58 @@ var XMN;
             return { ok: true };
         }
         if (msg.op === 'session.clear') {
+            await deleteCheckpointPages(id, profile);
             await chrome.storage.session.remove(sessionKey(id));
             return { ok: true };
+        }
+        if (msg.op === 'checkpoint.clear') {
+            if (msg.page !== undefined && !checkpointPage(msg.page))
+                return { ok: false };
+            await deleteCheckpointPages(id, profile, msg.page);
+            return { ok: true };
+        }
+        if (msg.op === 'checkpoint.put' || msg.op === 'checkpoint.get' ||
+            msg.op === 'checkpoint.list') {
+            const consent = (await chrome.storage.session.get(consentKey(id, profile)))[consentKey(id, profile)];
+            if (consent !== true)
+                return { ok: false };
+            if (msg.op === 'checkpoint.put' || msg.op === 'checkpoint.get') {
+                if (!checkpointPage(msg.page))
+                    return { ok: false };
+                const key = checkpointKey(id, profile, msg.page);
+                if (msg.op === 'checkpoint.put') {
+                    if (!validateSession(msg.session, profile) ||
+                        msg.session.anchorFound !== true)
+                        return { ok: false };
+                    return { ok: await storeCheckpointOnce(key, msg.session) };
+                }
+                const saved = (await chrome.storage.session.get(key))[key];
+                if (saved === undefined)
+                    return { ok: true, session: null };
+                if (!validateSession(saved, profile)) {
+                    await chrome.storage.session.remove(key);
+                    return { ok: true, session: null };
+                }
+                return { ok: true, session: saved };
+            }
+            const prefix = checkpointPrefix(id, profile);
+            const stored = await chrome.storage.session.get(null);
+            const pages = [];
+            const corrupt = [];
+            for (const [key, value] of Object.entries(stored)) {
+                if (!key.startsWith(prefix))
+                    continue;
+                const raw = key.slice(prefix.length);
+                const page = Number(raw);
+                if (!/^\d+$/.test(raw) || !checkpointPage(page) ||
+                    String(page) !== raw || !validateSession(value, profile))
+                    corrupt.push(key);
+                else
+                    pages.push(page);
+            }
+            if (corrupt.length)
+                await chrome.storage.session.remove(corrupt);
+            return { ok: true, pages: pages.sort((a, b) => a - b) };
         }
         return { ok: false };
     }
@@ -500,8 +614,13 @@ var XMN;
     chrome.tabs.onRemoved.addListener(tabId => {
         // Tab IDs may be reused. Never let another tab inherit prior consent.
         void (async () => {
+            const prefix = CHECKPOINT_PREFIX + tabId + ':';
+            await Promise.all([...checkpointWrites.entries()]
+                .filter(([key]) => key.startsWith(prefix))
+                .map(([, write]) => write.catch(() => false)));
             const all = await chrome.storage.session.get(null);
-            const keys = Object.keys(all).filter(k => k === sessionKey(tabId) || k.startsWith(CONSENT_PREFIX + tabId + ':'));
+            const keys = Object.keys(all).filter(k => k === sessionKey(tabId) || k.startsWith(CONSENT_PREFIX + tabId + ':') ||
+                k.startsWith(prefix));
             if (keys.length)
                 await chrome.storage.session.remove(keys);
         })().catch(() => { });
