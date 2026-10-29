@@ -129,6 +129,12 @@ namespace XMN {
     private pendingGrid: { column: Element | null; firstTiles: Element[]; firstKeys: string[]; lastTiles?: Element[]; lastKeys?: string[]; tileCount?: number } | null = null;
     private refs: MediaRef[] = [];
     private indexes = new Map<string, number>();
+    // Validated post groups are rebuilt only when the underlying media index
+    // changes, not on each arrow or five-image prefetch.
+    private postWindowCache: {
+      refs: MediaRef[]; length: number; first: string; last: string;
+      profile: string | null; model: ValidatedMediaWindowIndex | null;
+    } | null = null;
     // Bounded, validated live DOM handles; never stored across a session reset.
     private liveLinks = new Map<string, HTMLAnchorElement>();
     // Append-only media ordering lets route updates reuse first-seen post
@@ -785,6 +791,7 @@ namespace XMN {
       this.pendingGrid = null;
       this.refs = [];
       this.indexes.clear();
+      this.postWindowCache = null;
       this.liveLinks?.clear();
       this.statusOrdinalCache = null;
       this.publicApiKeys?.clear();
@@ -1777,6 +1784,37 @@ namespace XMN {
       }, 2000);
     }
 
+    /** Read-only view for prefetch; keep the full index until safe paging lands. */
+    private verifiedPostWindow(index: number): MediaWindowView | null {
+      if (index < 0 || index >= this.refs.length) return null;
+      const first = this.refs[0]?.key ?? '';
+      const last = this.refs[this.refs.length - 1]?.key ?? '';
+      const existing = this.postWindowCache;
+      const validCache = existing && existing.refs === this.refs &&
+        existing.length === this.refs.length && existing.first === first &&
+        existing.last === last && existing.profile === this.originProfile;
+      if (validCache) {
+        if (!existing.model) return null;
+        const selected=existing.model.select(this.refs[index].statusId,450);
+        if (selected) return selected;
+      }
+      // The full timeline can be very large. First find a bounded, intact
+      // neighbourhood in O(N); validate only that <=450-ref neighbourhood.
+      // The compiled model then serves consecutive local arrows in O(window).
+      const plan = planMediaWindow(this.refs,this.refs[index].key,450);
+      const groups = plan ? groupMediaRefs(plan.refs,'combined','unknown') : null;
+      let model: ValidatedMediaWindowIndex | null = null;
+      if (groups) {
+        try { model=new ValidatedMediaWindowIndex(groups); }
+        catch { /* Invalid provenance or duplicate album: no speculative URL. */ }
+      }
+      this.postWindowCache = {
+        refs:this.refs,length:this.refs.length,first,last,
+        profile:this.originProfile,model
+      };
+      return model?.select(this.refs[index].statusId,450)??null;
+    }
+
     private preloadAdjacentImages(preopen?: { index: number; current: MediaRef }): void {
       if ((!this.viewer?.isConnected && !preopen) || !this.originProfile || document.hidden ||
           (typeof navigator !== 'undefined' && navigator.onLine === false)) return;
@@ -1785,6 +1823,16 @@ namespace XMN {
       const index = preopen?.index ?? this.activeIndex();
       const current = preopen?.current ?? mediaRefFromHref(window.location.pathname, this.originProfile);
       if (index === null || !current || this.refs[index]?.statusId !== current.statusId) return;
+      // For very long timelines, prefetch only an intact group in the
+      // validated local 450-media window, never an arbitrary remote post.
+      const windowView = this.refs.length > 450 ? this.verifiedPostWindow(index) : null;
+      if (this.refs.length > 450 && !windowView) {
+        diagnostic('prefetch.skipped',{reason:'unvalidated_media_window'});
+        return;
+      }
+      const allowedWindowKeys = windowView
+        ? new Set(windowView.posts.flatMap(group=>group.refs.map(ref=>ref.key)))
+        : null;
       this.prefetchTooLarge ??= new Set(); // Supports lightweight test controllers.
       const failureScope = preopen?.current.href ?? window.location.pathname;
       if (this.prefetchFailurePath !== failureScope) {
@@ -1833,7 +1881,10 @@ namespace XMN {
       const memory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
       const max = connection?.effectiveType === '3g' || (memory !== undefined && memory <= 4)
         ? 2 : PREFETCH_MAX_IMAGES;
-      const urls = targets.map((ref) => this.imageSources.get(ref.key)).filter((url): url is string => !!url);
+      const urls = targets
+        .filter(ref=>!allowedWindowKeys || allowedWindowKeys.has(ref.key))
+        .map((ref) => this.imageSources.get(ref.key))
+        .filter((url): url is string => !!url);
       const unique = [...new Set(urls)].slice(0, max);
       this.prefetchWanted = new Set(unique);
       // Preserve decoded nearby images instead of dropping/re-downloading them

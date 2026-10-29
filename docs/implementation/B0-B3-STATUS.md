@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | B0 | COMPLETE | 現行の回帰基盤と失敗する受入テストの固定 |
 | B1 | CODE+SYNTHETIC TEST COMPLETE / LIVE-X PENDING | 同意／セッションを拡張所有の一時状態へ |
-| B2 | CORE+REGRESSIONS COMPLETE / WINDOW INTEGRATION PENDING | 投稿群の索引、APIカーソル、長い一覧 |
+| B2 | VALIDATED PREFETCH WINDOW CONNECTED / CHECKPOINT PAGING PENDING | 投稿群の索引、APIカーソル、長い一覧 |
 | B3 | CODE+SYNTHETIC TEST COMPLETE / LIVE-X PENDING | 左右キーの単一状態管理・キャンセル |
 | B4 | PARTIAL / LIVE-X PERFORMANCE PENDING | キャッシュ・探索・デコード前の安全条件を改善。実Xでの画質・速度計測は未完了 |
 | B5 | DEFERRED | 実Xの受入試験と正式公開 |
@@ -205,3 +205,18 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 最初の合成Chromium検証では、テストがControllerメソッドを型なしのオブジェクトへ直接呼び出すため新しい`this.viewerStyleVisible()`の参照に失敗。これは実Xの不具合ではなく、既存合成テストの契約上の相違。CSS判定を独立関数へ移して解決し、**Chromium合成4件PASS**とR-024専用テストPASSを確認。
 - R-024の修正は、実XのReactで同じ透明スライド状態が発生したことを意味しない。操作時のDOM所有権の安全側対処として記録する。
 - B2モデルについては、FF-only統合規則を維持し、別ブランチを非FFのGit mergeで取り込まない。**新たな前進専用ブランチを現在の開発正本から作り、モデルの採用を独立テストで検証する**。旧版のインストール・公開は許可していない。
+
+---
+
+## B2 Window runtime integration｜2026-10-29
+
+- Starting point: `task/xmn-b0-b3-20261029` commit `9ece4e873c4abc90df14623c2bdc5083cce5ec47`; integration-only branch `task/xmn-b2-window-integration-20261029`, separate worktree. Source model from `task/xmn-b2-window-model-20261029` commit `083f3b9b2c40597e1f97f04df2db0abc058cfaf7`. Four files copied only after exact Git blob comparison (source module, stand-alone model TypeScript config, model tests, model report). No reset/stash/rebase/amend/force and no non-FF merge.
+- TypeScript production content bundle now includes `src/media-window.ts` in `tsconfig.json`. The model explicitly stores source/provenance and completeness of groups; it never calls FxEmbed or invents media URLs.
+- `Controller.verifiedPostWindow()` keeps a cache of validated whole-post groups around the currently viewed post. If `refs.length > 450`, `preloadAdjacentImages()` allows prefetch only for URLs belonging to this validated 450-reference neighbourhood. For 450 or fewer references, preserve the previous prefetch path without constructing a second model.
+- On first use, compute `planMediaWindow()` of up to 450 references from the full timeline, and validate only that selected neighbourhood with `ValidatedMediaWindowIndex`; this avoids validating/double-copying all 15,000 references at every initial prefetch. Reuse the validated neighbourhood for nearby arrows and rebuild after leaving its range or changing profile, length, head/tail or underlying array.
+- If the timeline contains noncontiguous duplicate posts or the selected neighbourhood is inconsistent, abstain from speculative CDN prefetch. Preserve the actual X viewer and native navigation; do not silently reorder or discard earlier posts.
+- **Limit**: this first integration is safe *windowed prefetch*, not full eviction/restore of the browsing timeline. `Controller.refs` still holds all previously indexed references in memory; the FxEmbed 450-reference accumulation/storage limit is unchanged. Full forward/backward checkpoint paging requires page store, cursor ownership, versioned restore and verified real X navigation.
+- Synthetic Node model: 6,000 posts (15,000 media refs), 150 new-head posts, 2,500 selection iterations. Production connection tests: cache reuse, crossing window boundary, native head insertion, bad/noncontiguous groups, prefetch isolation and short timeline compatibility.
+- Integration tests: `npm test` **254 cases: 245 PASS, 0 FAIL, 3 SKIP, 6 real-X TODO**; Edge Chromium synthetic 4 PASS, 0 FAIL; `npm run typecheck` PASS; Chrome for Testing MV3 consent/session/response PASS; Edge MV3 real-worker denied origin PASS. These are private/isolated tests, not X production acceptance.
+- Incidental repair: on the Windows integration worktree, `.github/workflows/check.yml` carries CRLF line endings. The existing CI contract erroneously expected only LF. Make `tests/ci-required-browser.test.mjs` accept both CRLF and LF for the same required `exit 1` statement. The browser gate itself was not loosened.
+- Pending: actual checkpoint-backed 450+ API paging; real X media modal, photo/video/GIF mixture and image delivery timings; public release and installed Chrome updates. Do not merge into stable/public branches without actual user acceptance.

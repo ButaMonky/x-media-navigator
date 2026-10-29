@@ -9,7 +9,7 @@ test('R-021: CI must fail if Chromium integration tests cannot run',()=>{
  assert.match(ci,/XMN_RUN_CHROMIUM=1 CHROMIUM_PATH=/,
   'the browser test must not silently skip its Chromium fixtures');
  assert.match(ci,/::error::No Chrome\/Chromium found/);
- assert.match(ci,/\n\s+exit 1\n/,
+ assert.match(ci,/\r?\n\s+exit 1\r?\n/,
   'missing a browser must end the CI job unsuccessfully');
 });
 
