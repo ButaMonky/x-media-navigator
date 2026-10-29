@@ -3812,3 +3812,28 @@ test('FxEmbed cursor may repeat exactly the previous last status before older po
     assert.equal(ctrl.publicApiKeys.has(native[1].key),false);
   }finally{state.pathname=oldPath;document.hidden=oldHidden;context.navigator=oldNav;}
 });
+
+test('R-024 same-route cached opacity-zero viewer cannot shadow visible replacement',()=>{
+  const prevPath=state.pathname, oldStyle=context.window.getComputedStyle;
+  const route='/alice/status/700/photo/2';
+  const hidden=new FakeElement('div'),visible=new FakeElement('div');
+  const ctrl=Object.create(proto);
+  ctrl.viewer=hidden;
+  ctrl.activeViewerPath=route;
+  let probes=0;
+  ctrl.findActiveViewer=()=>{probes++;return visible;};
+  state.pathname=route;
+  context.window.getComputedStyle=viewer=>({
+    display:'block',visibility:'visible',opacity:viewer===hidden?'0.000':'1'
+  });
+  try{
+    assert.equal(proto.activeViewerForRoute.call(ctrl),visible);
+    assert.equal(probes,1,'CSS-hidden cached viewer forces fresh visible-slide search');
+    ctrl.viewer=visible;
+    assert.equal(proto.activeViewerForRoute.call(ctrl),visible);
+    assert.equal(probes,1,'new visible slide remains cached for idle polls');
+    context.window.getComputedStyle=()=>({display:'block',visibility:'hidden',opacity:'1'});
+    assert.equal(proto.activeViewerForRoute.call(ctrl),visible);
+    assert.equal(probes,2,'CSS visibility also invalidates the cache');
+  }finally{state.pathname=prevPath;context.window.getComputedStyle=oldStyle;}
+});

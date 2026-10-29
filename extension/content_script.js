@@ -461,6 +461,21 @@ var XMN;
             return false;
         return !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="combobox"], [role="slider"], [role="spinbutton"], video');
     }
+    /** CSS-hidden React slides are not active even while attached. */
+    function viewerStyleVisible(viewer) {
+        if (typeof window.getComputedStyle !== 'function')
+            return true;
+        try {
+            const style = window.getComputedStyle(viewer);
+            const opacity = Number.parseFloat(style.opacity || '1');
+            return style.display !== 'none' && style.visibility !== 'hidden' &&
+                style.visibility !== 'collapse' &&
+                Number.isFinite(opacity) && opacity > 0.01;
+        }
+        catch {
+            return false;
+        }
+    }
     /** Hidden X carousel controls cannot prove a live gallery boundary. */
     function isHiddenNativeControl(control) {
         return control.getAttribute('aria-hidden') === 'true' ||
@@ -1251,10 +1266,7 @@ var XMN;
                     continue;
                 // X can fade the previous slide to opacity:0 while keeping it
                 // connected and geometrically overlapping the new photo.
-                const style = typeof window.getComputedStyle === 'function'
-                    ? window.getComputedStyle(viewer) : null;
-                if (style && (style.display === 'none' || style.visibility === 'hidden' ||
-                    style.opacity === '0'))
+                if (!viewerStyleVisible(viewer))
                     continue;
                 let area = 1;
                 if (typeof viewer.getBoundingClientRect === 'function') {
@@ -1279,7 +1291,8 @@ var XMN;
                 current.getAttribute?.('aria-hidden') !== 'true' &&
                 current.getAttribute?.('hidden') === null &&
                 current.getAttribute?.('inert') === null &&
-                !current.closest?.('[aria-hidden="true"], [hidden], [inert]'))
+                !current.closest?.('[aria-hidden="true"], [hidden], [inert]') &&
+                viewerStyleVisible(current))
                 return current;
             this.activeViewerPath = route;
             return this.findActiveViewer();
