@@ -503,6 +503,8 @@ var XMN;
             this.pendingGrid = null;
             this.refs = [];
             this.indexes = new Map();
+            // Bounded, validated live DOM handles; never stored across a session reset.
+            this.liveLinks = new Map();
             // Append-only media ordering lets route updates reuse first-seen post
             // ordinals instead of rebuilding a Set/array for every arrow press.
             this.statusOrdinalCache = null;
@@ -675,8 +677,7 @@ var XMN;
                 if (!Array.isArray(entry) || entry.length !== 2 ||
                     !keys.has(entry[0]) || typeof entry[1] !== 'string')
                     continue;
-                if (XMN.preloadImageUrl(entry[1]) === entry[1])
-                    this.imageSources.set(entry[0], entry[1]);
+                this.rememberImageSource(entry[0], entry[1]);
             }
         }
         /**
@@ -1008,6 +1009,8 @@ var XMN;
                 const oldAnchorFound = this.publicApiAnchorFound;
                 const oldExhausted = this.publicApiExhausted;
                 const oldPhotoTotals = new Map(this.knownPhotoTotals ?? []);
+                const oldImageSources = new Map(this.imageSources ?? []);
+                const oldImageRevision = this.imageSourcesRevision;
                 const plannedKeys = new Set();
                 for (const ref of newlyVerified) {
                     if (!this.indexes.has(ref.key))
@@ -1027,8 +1030,8 @@ var XMN;
                     this.refs.push(ref);
                     this.publicApiKeys.add(ref.key);
                     const source = sourceMap.get(ref.key);
-                    if (source && XMN.preloadImageUrl(source) === source)
-                        this.imageSources.set(ref.key, source);
+                    if (source)
+                        this.rememberImageSource(ref.key, source);
                     appended++;
                 }
                 // FxEmbed includes the full photo array per Post. Only use a
@@ -1058,8 +1061,12 @@ var XMN;
                 // not a retryable error. Preserve the already-verified public window.
                 if (appended === 0 && newCursor === null && stillSameSession()) {
                     this.publicApiExhausted = true;
-                    if (this.publicApiKeys.size &&
-                        (!await this.persistPublicMediaSession() || !stillSameSession())) {
+                    const saved = !this.publicApiKeys.size ||
+                        await this.persistPublicMediaSession();
+                    // A route change during storage belongs to the NEW session.
+                    if (!stillSameSession())
+                        return false;
+                    if (!saved) {
                         this.publicApiCursor = oldCursor;
                         this.publicApiAnchorFound = oldAnchorFound;
                         this.publicApiExhausted = oldExhausted;
@@ -1068,7 +1075,11 @@ var XMN;
                     diagnostic('fxembed.exhausted', { indexed: this.refs.length });
                     return false;
                 }
-                if (appended > 0 && stillSameSession() && await this.persistPublicMediaSession() && stillSameSession()) {
+                const saved = appended > 0 && stillSameSession()
+                    ? await this.persistPublicMediaSession() : false;
+                if (!stillSameSession())
+                    return false;
+                if (saved) {
                     diagnostic('fxembed.continuation_ready', {
                         added: appended, indexed: this.refs.length, hasMore: !!newCursor, background,
                     });
@@ -1089,6 +1100,10 @@ var XMN;
                 this.publicApiAnchorFound = oldAnchorFound;
                 this.publicApiExhausted = oldExhausted;
                 this.knownPhotoTotals = oldPhotoTotals;
+                this.imageSources = oldImageSources;
+                this.imageSourcesRevision = oldImageRevision;
+                if (appended === 0)
+                    this.imposePublicApiCooldown('no_new_entries');
                 return false;
             }
             finally {
@@ -1168,6 +1183,7 @@ var XMN;
             this.pendingGrid = null;
             this.refs = [];
             this.indexes.clear();
+            this.liveLinks?.clear();
             this.statusOrdinalCache = null;
             this.publicApiKeys?.clear();
             this.publicApiCursor = null;
@@ -1478,6 +1494,22 @@ var XMN;
             });
             return true;
         }
+        /** Shared bounded URL cache for X tiles, FxEmbed and restored sessions. */
+        rememberImageSource(key, url) {
+            if (!this.imageSources || XMN.preloadImageUrl(url) !== url)
+                return;
+            if (this.imageSources.get(key) === url)
+                return;
+            this.imageSources.delete(key);
+            this.imageSources.set(key, url);
+            this.imageSourcesRevision = (this.imageSourcesRevision ?? 0) + 1;
+            while (this.imageSources.size > 128) {
+                const oldest = this.imageSources.keys().next().value;
+                if (oldest === undefined)
+                    break;
+                this.imageSources.delete(oldest);
+            }
+        }
         /** Update only the changed thumbnail without rescanning the whole media grid. */
         recordTileImageSource(tile, found) {
             const ownedImage = found.link.querySelector('img[src]');
@@ -1496,17 +1528,8 @@ var XMN;
                 XMN.photoCdnIdentity(assigned) !== XMN.photoCdnIdentity(displayed);
             const loaded = thumbnail?.complete === true && thumbnail.naturalWidth > 0;
             const url = different && !loaded ? assigned : displayed ?? assigned;
-            if (!url || !this.imageSources || this.imageSources.get(found.ref.key) === url)
-                return;
-            this.imageSources.delete(found.ref.key);
-            this.imageSources.set(found.ref.key, url);
-            this.imageSourcesRevision = (this.imageSourcesRevision ?? 0) + 1;
-            while (this.imageSources.size > 128) {
-                const oldest = this.imageSources.keys().next().value;
-                if (oldest === undefined)
-                    break;
-                this.imageSources.delete(oldest);
-            }
+            if (url)
+                this.rememberImageSource(found.ref.key, url);
         }
         refreshKnownTileSource(tile) {
             if (!tile.isConnected || !this.originProfile || this.pendingGrid ||
@@ -1555,6 +1578,7 @@ var XMN;
                     continue;
                 const { ref } = found;
                 this.recordTileImageSource(tile, found);
+                this.rememberLiveLink(ref, found.link);
                 let index = this.indexes.get(ref.key);
                 if (index === undefined) {
                     index = this.refs.length;
@@ -2779,16 +2803,47 @@ var XMN;
             const matches = document.querySelectorAll(CLOSE_SELECTOR);
             return matches.length === 1 ? matches[0] : null;
         }
+        /** Keep the already observed X link, but never trust it after React recycles it. */
+        rememberLiveLink(ref, link, priority = false) {
+            this.liveLinks ?? (this.liveLinks = new Map());
+            const existing = this.liveLinks.has(ref.key);
+            if (!existing && this.liveLinks.size >= 1024 && !priority)
+                return;
+            this.liveLinks.delete(ref.key);
+            this.liveLinks.set(ref.key, link);
+            while (this.liveLinks.size > 1024) {
+                const oldest = this.liveLinks.keys().next().value;
+                if (oldest === undefined)
+                    break;
+                this.liveLinks.delete(oldest);
+            }
+        }
         findLiveLink(ref) {
             if (!this.originProfile)
                 return null;
             const column = mediaColumn();
             if (!column)
                 return null;
+            const cached = this.liveLinks?.get(ref.key);
+            if (cached?.isConnected) {
+                const tile = typeof cached.closest === 'function'
+                    ? cached.closest(TILE_SELECTOR) : null;
+                if (tile && (typeof column.contains !== 'function' || column.contains(tile))) {
+                    const owner = usableTileLink(tile, this.originProfile);
+                    if (owner?.link === cached && owner.ref.key === ref.key) {
+                        // Refresh recent-use position without inspecting the whole media grid.
+                        this.rememberLiveLink?.(ref, cached, true);
+                        return cached;
+                    }
+                }
+            }
+            this.liveLinks?.delete(ref.key);
             for (const tile of column.querySelectorAll(TILE_SELECTOR)) {
                 const found = usableTileLink(tile, this.originProfile);
-                if (found?.ref.key === ref.key && found.link.isConnected)
+                if (found?.ref.key === ref.key && found.link.isConnected) {
+                    this.rememberLiveLink?.(ref, found.link, true);
                     return found.link;
+                }
             }
             return null;
         }
