@@ -136,3 +136,10 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 対応：`tests/browser.test.mjs`の仮想時間予算を65,000msへ増やし、`tests/ci-required-browser.test.mjs`で明示的待機時間に20秒以上の余裕があることを契約化。CIの必須ブラウザゲートや検証項目は削除しない。
 - Windows Chrome for Testing 156とEdge Chromiumの両方で、変更後の4ブラウザケースは**それぞれ4/4 PASS**。ローカルNode全テストは**225件・216 PASS・0 FAIL・3 SKIP・実X TODO 6**。これらはLinux CI上の成功の代替ではなく、push後に改めてCIを検証する。
 - 障害記録はこのファイルを正本に保持。再発時はGitHub run `40825339338`と比較し、`--dump-dom`の固定仮想時間方式からCDPによる実際の完了マーカー待ちへ移行する方針。
+
+### GitHub Actionsでの最終受入
+
+- コミット`d949137e49a0aca6b98f271b697c411fb6b60bce`、GitHub Actions run **40826087029**：`TypeScript check`が**success**で完了（`gh run watch --exit-status`の終了コード0を確認）。
+- 旧失敗run **40825339338** の再発防止を目的に、`--virtual-time-budget=65000`と20秒以上の待機余裕チェックを導入した。今回のLinux CIは合格したが、CI環境ごとのゆらぎを永続的にゼロと保証するものではない。
+- この実行によって**必須ブラウザ検証をスキップせずCI成功**したことを確認。Chrome for TestingによるMV3実通信、許可外送信元拒否、全NodeテストはWindowsローカルの独立合格として別に保持する。
+- 最終ソース保存後の再開位置：B2ウィンドウ担当の独立成果を確認してから、ギャラリーへ統合する安全条件と本番X受入のゲートを設計する。公開main・安定ブランチ・既存Chromeの更新は依然保留。
