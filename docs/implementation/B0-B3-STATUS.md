@@ -231,3 +231,13 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - Test-only repair: decode synthetic high image before the handoff timer and count duplicate transfer only for the exact target CDN URL. Keep all other browser scenario assertions, including the mandatory Chromium CI gate, unchanged.
 - After local repair: npm test 254 tests (245 PASS, 0 FAIL, 3 SKIP, 6 real-X TODO); Edge/Chrome for Testing each 4/4 synthetic browser cases PASS. Linux CI remains a required acceptance gate before ff-only promotion.
 - Scope: bounded verified local PREFETCH window. Full 450+ API cursor page eviction, storage and backward restoration remain pending; stable/public Chrome installations and Draft PR #17 are unchanged.
+
+---
+
+## B2 R-030: ambiguous bare post URL safety | 2026-10-29
+
+- Work ID: XMN-B2-ROUTE-OWNER-20261029. Isolated task branch task/xmn-b2-route-guard-20261029 based on integrated development candidate ff0b2a36a6834d1af784f81674d925897005776f; no public, stable or installed QA changes.
+- Problem: Controller.activeIndex() accepted the first indexed photo when findCurrentIndex() had already rejected a bare /status/id URL with multiple indexed media. This could treat an unverified photo as the active gallery item.
+- Repair: if the URL represents a bare post and ownership is ambiguous, return null and leave native X arrow handling untouched. A single uniquely indexed media status and exact /photo/1 or /photo/2 URLs retain existing navigation. Explicit photo route with a partial single tile remains subject to separate X evidence.
+- Tests: tests/b2-route-owner.test.mjs verifies 2-media ambiguity, explicit photo ownership, a unique bare status, cross-profile rejection, and no intercepted ArrowRight. npm test 256 total / 247 PASS / 0 FAIL / 3 SKIP / 6 LIVE-X TODO; TypeScript PASS; Edge Chromium synthetic 4/4 PASS. Actual X gallery not checked.
+- Review before integration: require GitHub Actions to verify Node, TypeScript, Chromium and generated JS; only fast-forward task/xmn-b0-b3-20261029 when the main development branch and remote both still match baseline. Remain separate from stable/main and Draft PR #17.

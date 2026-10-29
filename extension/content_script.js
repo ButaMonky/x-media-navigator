@@ -2020,11 +2020,14 @@ var XMN;
             const exact = XMN.findCurrentIndex(this.refs, window.location.pathname, this.originProfile);
             if (exact !== null)
                 return exact;
-            // A media tab may offer only one link for a post with several photos.
-            const current = XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
-            // The status-only fallback is rare: avoid allocating O(N) per-tile
-            // temporary objects when a long X gallery only indexed photo/1.
-            const index = current ? this.refs.findIndex((ref) => ref.statusId === current.statusId) : -1;
+            // A bare /status/id route with several indexed photos is ambiguous.
+            // A guessed first image would change POSTS even though the displayed
+            // X media is unknown. The pure helper already accepts unique statuses.
+            if (route.kind === null)
+                return null;
+            // Explicit media URLs may still have only photo/1 observed in the grid.
+            // Retain the conservative post-group fallback for those media routes.
+            const index = this.refs.findIndex((ref) => ref.statusId === route.statusId);
             return index >= 0 ? index : null;
         }
         updateViewerState() {
