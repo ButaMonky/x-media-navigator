@@ -15,7 +15,7 @@
 | B0 | COMPLETE | 現行の回帰基盤と失敗する受入テストの固定 |
 | B1 | CODE+SYNTHETIC TEST COMPLETE / LIVE-X PENDING | 同意／セッションを拡張所有の一時状態へ |
 | B2 | CORE+REGRESSIONS COMPLETE / WINDOW INTEGRATION PENDING | 投稿群の索引、APIカーソル、長い一覧 |
-| B3 | NOT STARTED | 左右キーの単一状態管理・キャンセル |
+| B3 | CODE+SYNTHETIC TEST COMPLETE / LIVE-X PENDING | 左右キーの単一状態管理・キャンセル |
 | B4–B5 | DEFERRED | 実X未検証の画質/UI最適化、正式公開 |
 
 ## B0 証拠
@@ -56,3 +56,27 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - R-043: フィルター切替時に先頭8件だけでなく末尾・件数の差も検査する。
 - 新しい純粋関数`planMediaWindow()`は最大450メディア参照、写真1〜4枚を分断しない保持範囲を生成。**まだ実際のControllerに組み込まない**。
 - B0の受入契約8件はすべて有効化・PASS。全Node 211件中202成功/0失敗/3スキップ/本番X TODO6。実Xの28→29とReactモーダルは未受入。
+
+## B3｜左右キー・通信キャンセル・API負荷の制御
+
+- ユーザーが最終既知投稿で右キーを押したとき、既にバックグラウンドでFxEmbed続きを取得中なら、**1件だけの保留移動意図**を記録する。成功時のみ同じX URL・同じ投稿ID・同じ画像の識別子・同じセッション世代・接続されたビューアを検証して`navigate(1)`を一度だけ実行。
+- 左方向のキー・Escape・タブ非表示・セッションリセット・ルート変更で保留を解除する。失敗時は自動移動しない。
+- API由来URLへ通常文書遷移を開始したら最大10秒間二重`location.assign()`を抑制。非同期保存のあとで元の画面・ビューア・世代を再検証し、別の操作を踏んだ場合は移動しない。
+- タブが非表示になった時・別の画面へ移動した時・セッション破棄時に、取得中のFxEmbed HTTPリクエストを`AbortController`で中止。画像プリフェッチの既存中断と同じ基本原則。
+- HTTP 429・5xxでは指数的なクールダウン（上限、`Retry-After`を利用できれば尊重）。CORS・通信エラーにも短いバックオフ。正常取得時は回数をリセット。
+- 温めておくためのFxEmbed先行取得では、タイマー予約だけでカーソルを試行済みにせず、実際に起動した際に記録。実行中止・失敗時は同じカーソルを再試行可能にするが、通信クールダウン中は再接続しない。
+- JSON応答サイズは従来の`await response.text()`後の判定に加え、ReadableStreamが使えるブラウザでは受信チャンクの累積4,000,000バイト上限を適用し、越えた時点で`reader.cancel()`。stream未対応のテスト/旧ブラウザは従来互換の受信後サイズ検査。
+- 受入テストは`tests/b3-navigation.test.mjs`、`tests/b3-network.test.mjs`。保留移動の二重起動防止、ルート変更、逆キーによるキャンセル、429、タブ非表示でのAbort、ストリーム4MB境界とUTF-8分割を検証。
+- 開発候補Manifestを`2.4.21 B0-B3 candidate`へ更新。**Chromeに導入済みのQAは2.4.20、通常版は2.4.18のまま**。新候補は`task/xmn-b0-b3-20261029`のみに存在し、インストールや公開はしていない。
+- この段階は単体・合成ブラウザでの検証完了のみ。署名済み本番Xでの通信レース、動画/混合/GIFの操作、Chrome拡張Service Workerの起動/再起動、右の返信欄の見た目・体感速度は**未検証**。
+
+## B3最終検証と今回の終了条件
+
+- 独立改修ブランチの候補版：`2.4.21-dev.1`、manifest `2.4.21 B0-B3 candidate`。
+- 最終`npm test`：**219件、210 PASS、0 FAIL、3 SKIP、6 LIVE-X TODO**。B0のRED受入8項目はすべて有効化してPASS。
+- 最終Chromium合成試験：**4 PASS、0 FAIL**。独立Network/ナビゲーション6件も含め全Nodeテストで検証。
+- `npm run typecheck`：Content ScriptとService WorkerともPASS。`node --check`：配布JS2本ともPASS。`git diff --check`：PASS。
+- 本番Xの認証済みギャラリー、実DOMの返答パネル、先読み画像のCPU/メモリ・HTTPキャッシュ、Chromeでの実際のService Worker再起動は未検証。これらの未検証箇所をPASSと扱わない。
+- **後続の実装候補**：B2の450メディア参照`planMediaWindow`を`Controller`へ統合するには、Xの仮想化、ページ戻り、別タブ/複数プロフィール、APIカーソルのページ間復元を同時に保証する必要がある。研究済みの純粋関数までを保存し、現行ギャラリーの索引を破棄する変更は未実行。
+- **改修は非公開GitHubの`task/xmn-b0-b3-20261029`だけに保存**。通常版2.4.18・QA固定インストール版2.4.20・公開main・安定開発ブランチ・Draft PR #17は変更しない。
+- 今後のChrome実機受入では、通常版と候補版を同時に有効化せず、正当なユーザーがサインインしたX画面で28→29件目、左右・写真1〜4枚、動画/GIF、返信欄、API権限と同意動作、非表示・キャンセル・画像プリフェッチを確認する。

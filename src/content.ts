@@ -13,7 +13,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.20-qa';
+  const DIAGNOSTIC_VERSION = '2.4.21-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -145,6 +145,13 @@ namespace XMN {
     private publicApiAnchorFound = false;
     private publicApiExhausted = false;
     private publicApiLoading = false;
+    private publicApiAbort: AbortController|null=null;
+    private publicApiCancelReason: 'hidden'|'route_changed'|'timeout'|null=null;
+    private publicApiRetryAt=0;
+    private publicApiFailures=0;
+    // Only the most recent eligible end-of-list key may resume after warmup.
+    private pendingBoundary: {path:string;statusId:string;generation:number;photoIdentity:string|null}|null=null;
+    private pendingDocumentHandoff: {target:string;started:number;generation:number}|null=null;
     // Warm only after the user has explicitly allowed this external provider.
     private publicApiWarmCursor: string | null = null;
     private publicApiWarmTimer: number | null = null;
@@ -295,6 +302,37 @@ namespace XMN {
      * private development beta. Send ONLY the public handle; no X cookies,
      * OAuth, referrer, bearer tokens or browsing logs.
      */
+    /** Bound the wire bytes even when Content-Length is missing or incorrect. */
+    private async readBoundedPublicBody(response: Response): Promise<string|null> {
+      const maxBytes=4_000_000;
+      if(!response.body){
+        // Test fixtures and old browsers have no stream. The bound is applied
+        // immediately after text() in this compatibility fallback.
+        const text=await response.text();
+        return text.length<=maxBytes ? text : null;
+      }
+      const reader=response.body.getReader();
+      const decoder=new TextDecoder();
+      const chunks:string[]=[];
+      let bytes=0;
+      try {
+        for(;;){
+          const part=await reader.read();
+          if(part.done)break;
+          bytes+=part.value.byteLength;
+          if(bytes>maxBytes){
+            try{await reader.cancel()}catch{}
+            return null;
+          }
+          chunks.push(decoder.decode(part.value,{stream:true}));
+        }
+        chunks.push(decoder.decode());
+        return chunks.join('');
+      }finally{
+        reader.releaseLock();
+      }
+    }
+
     private async fetchPublicMediaPage(cursor: string | null): Promise<{
       refs: MediaRef[]; photos: [string, string][]; cursor: string | null;
     } | null> {
@@ -304,9 +342,14 @@ namespace XMN {
       url.searchParams.set('count', '100');
       if (cursor) url.searchParams.set('cursor', cursor);
       const abort = new AbortController();
+      this.publicApiAbort=abort;
+      this.publicApiCancelReason=null;
       const started = Date.now();
       diagnostic('fxembed.request', { continuation: !!cursor });
-      const watchdog = window.setTimeout(() => abort.abort(), 9500);
+      const watchdog = window.setTimeout(() => {
+        if(this.publicApiAbort===abort)this.publicApiCancelReason='timeout';
+        abort.abort();
+      }, 9500);
       try {
         const response = await fetch(url.toString(), {
           method: 'GET', mode: 'cors', credentials: 'omit',
@@ -315,6 +358,20 @@ namespace XMN {
         });
         if (!response.ok) {
           diagnostic('fxembed.http_failure', { httpStatus: response.status });
+          if (response.status===429 || response.status>=500){
+            this.publicApiFailures=Math.min(6,(this.publicApiFailures??0)+1);
+            const fallbackMs=Math.min(60000,1000*(2**this.publicApiFailures));
+            let retryMs=0;
+            const header=response.headers.get('retry-after');
+            if(header){
+              const seconds=Number(header);
+              const asDate=Date.parse(header);
+              retryMs=Number.isFinite(seconds)&&seconds>=0 ? seconds*1000 :
+                Number.isFinite(asDate) ? Math.max(0,asDate-Date.now()) : 0;
+            }
+            this.publicApiRetryAt=Date.now()+Math.min(120000,Math.max(fallbackMs,retryMs));
+            diagnostic('fxembed.cooldown',{retryMs:this.publicApiRetryAt-Date.now()});
+          }
           return null;
         }
         const size = Number(response.headers.get('content-length'));
@@ -322,8 +379,8 @@ namespace XMN {
           diagnostic('fxembed.rejected', { reason: 'content_length' });
           return null;
         }
-        const body = await response.text();
-        if (body.length > 4_000_000) {
+        const body = await this.readBoundedPublicBody(response);
+        if (body === null) {
           diagnostic('fxembed.rejected', { reason: 'body_length' });
           return null;
         }
@@ -332,23 +389,36 @@ namespace XMN {
           diagnostic('fxembed.rejected', { reason: 'invalid_payload' });
           return null;
         }
+        this.publicApiFailures=0;
+        this.publicApiRetryAt=0;
         diagnostic('fxembed.page', {
           entries: page.refs.length, photos: page.photos.length,
           hasNext: !!page.cursor, elapsedMs: Date.now() - started,
         });
         return page;
       } catch (error) {
+        const wasAbort=error instanceof Error && error.name==='AbortError';
+        if(!wasAbort){
+          this.publicApiFailures=Math.min(6,(this.publicApiFailures??0)+1);
+          this.publicApiRetryAt=Date.now()+Math.min(60000,1000*(2**this.publicApiFailures));
+        }
         diagnostic('fxembed.failed', {
-          reason: error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'network_or_json',
+          reason: wasAbort ? (this.publicApiCancelReason??'timeout') : 'network_or_json',
         });
         return null;
-      } finally { window.clearTimeout(watchdog); }
+      } finally {
+        window.clearTimeout(watchdog);
+        if(this.publicApiAbort===abort){
+          this.publicApiAbort=null;
+          this.publicApiCancelReason=null;
+        }
+      }
     }
 
     /**
      * After explicit FxEmbed consent, warm the next cursor shortly BEFORE
      * reaching the last indexed post. No new provider calls before consent.
-     * A failed warmup is not retried until the user requests the boundary.
+     * A cancelled timer may be retried; failed requests obey cooldown limits.
      */
     private async schedulePublicMediaWarmup(currentIndex: number | null): Promise<void> {
       if (currentIndex === null || !this.publicApiAnchorFound ||
@@ -375,13 +445,20 @@ namespace XMN {
       }
       if (remaining > 3) return;
       const requestedCursor = this.publicApiCursor;
-      this.publicApiWarmCursor = requestedCursor;
       this.publicApiWarmTimer = window.setTimeout(() => {
         this.publicApiWarmTimer = null;
         if (this.publicApiCursor !== requestedCursor || this.publicApiLoading ||
             this.navigationBusy || !this.viewer?.isConnected || document.hidden) return;
+        // Mark only an actually started call; a cancelled timer may be retried.
+        this.publicApiWarmCursor = requestedCursor;
         diagnostic('fxembed.warmup', { remainingPosts: remaining });
-        void this.loadPublicMediaContinuation(true);
+        void this.loadPublicMediaContinuation(true).then(ok=>{
+          if(!ok && this.publicApiWarmCursor===requestedCursor)
+            this.publicApiWarmCursor=null;
+        }).catch(()=>{
+          if(this.publicApiWarmCursor===requestedCursor)
+            this.publicApiWarmCursor=null;
+        });
       }, 400);
     }
 
@@ -390,6 +467,10 @@ namespace XMN {
       if (!this.originProfile || this.publicApiLoading || document.hidden ||
           (typeof navigator !== 'undefined' && navigator.onLine === false) ||
           this.publicApiExhausted) return false;
+      if(this.publicApiRetryAt>Date.now()){
+        diagnostic('fxembed.cooldown_active',{retryMs:this.publicApiRetryAt-Date.now()});
+        return false;
+      }
       const nativeLast = this.refs[this.refs.length - 1]?.statusId;
       if (!nativeLast) return false;
       const generation = this.navGeneration;
@@ -414,6 +495,7 @@ namespace XMN {
       let cursor = this.publicApiCursor;
       const pages: { refs: MediaRef[]; photos: [string, string][] }[] = [];
       let newCursor: string | null = cursor;
+      let committed=false;
       try {
         for (let attempt = 0; attempt < 4; attempt++) {
           const page = await this.fetchPublicMediaPage(cursor);
@@ -575,6 +657,7 @@ namespace XMN {
           diagnostic('fxembed.continuation_ready', {
             added: appended, indexed: this.refs.length, hasMore: !!newCursor, background,
           });
+          committed=true;
           return true;
         }
         diagnostic('fxembed.continuation_abort', {
@@ -597,6 +680,21 @@ namespace XMN {
           this.publicApiLoading = false;
           if (!background) this.navigationBusy = false;
           this.updateViewerState();
+          const intent=this.pendingBoundary;
+          this.pendingBoundary=null; // Single-use regardless of result.
+          if(committed && intent && intent.generation===this.navGeneration &&
+             intent.path===window.location.pathname &&
+             this.viewer?.isConnected && !document.hidden &&
+             this.originProfile===profile &&
+             (!intent.photoIdentity||this.currentPhotoIdentity()===intent.photoIdentity) &&
+             this.refs.some(ref=>ref.statusId===intent.statusId)) {
+            const index=this.activeIndex();
+            if(index!==null && this.refs[index].statusId===intent.statusId &&
+               adjacentPostIndex(this.refs,intent.statusId,1,index)!==null) {
+              diagnostic('fxembed.boundary_resumed');
+              void this.navigate(1);
+            }
+          }
         }
       }
     }
@@ -639,6 +737,13 @@ namespace XMN {
 
     private resetSession(): void {
       this.navGeneration++;
+      if(this.publicApiAbort){
+        this.publicApiCancelReason='route_changed';
+        this.publicApiAbort.abort();
+      }
+      this.publicApiAbort=null;
+      this.publicApiRetryAt=0;
+      this.publicApiFailures=0;
       this.controlsPaneAnchor = null;
       this.navigationBusy = false;
       this.pendingGrid = null;
@@ -651,6 +756,8 @@ namespace XMN {
       this.publicApiExhausted = false;
       this.publicSessionRestored = false;
       this.publicApiLoading = false;
+      this.pendingBoundary = null;
+      this.pendingDocumentHandoff = null;
       this.publicApiWarmCursor = null;
       if (this.publicApiWarmTimer !== null) window.clearTimeout(this.publicApiWarmTimer);
       this.publicApiWarmTimer = null;
@@ -815,6 +922,13 @@ namespace XMN {
 
       this.syncModalObserver();
       if (path !== this.lastPath) {
+        this.pendingDocumentHandoff=null;
+        if(this.publicApiAbort && this.publicApiLoading){
+          this.publicApiCancelReason='route_changed';
+          this.publicApiAbort.abort();
+        }
+        if(this.pendingBoundary && this.pendingBoundary.path!==path)
+          this.pendingBoundary=null;
         // Track proven native photo changes even if the next key is pressed
         // before the delayed fallback probe completes.
         if (this.originProfile) {
@@ -1361,6 +1475,7 @@ namespace XMN {
     }
 
     private onKeyDown(event: KeyboardEvent): void {
+      if(event.key==='ArrowLeft'||event.key==='Escape')this.pendingBoundary=null;
       if (!this.viewer?.isConnected || !this.originProfile ||
           isEditingTarget(event.target) || this.navigationBusy) return;
       const currentIndex = this.activeIndex();
@@ -1562,6 +1677,11 @@ namespace XMN {
     /** Stop obsolete background transfers; reuse decoded photos on return. */
     private onVisibilityChange(): void {
       if (document.hidden) {
+        this.pendingBoundary=null;
+        if(this.publicApiAbort){
+          this.publicApiCancelReason='hidden';
+          this.publicApiAbort.abort();
+        }
         if (this.preloadTimer !== null) window.clearTimeout(this.preloadTimer);
         this.preloadTimer = null;
         this.prefetchQueue = [];
@@ -2257,6 +2377,11 @@ namespace XMN {
       if (nextIndex === null) {
         if (direction !== 1) return;
         if (this.publicApiLoading) {
+          // One pending intent only; its path and generation are checked again
+          // after the public index is committed. Never queue multiple arrows.
+          this.pendingBoundary={path:window.location.pathname,
+            statusId:currentRef.statusId,generation:this.navGeneration,
+            photoIdentity:this.currentPhotoIdentity()};
           diagnostic('fxembed.boundary_waiting', { background: true });
           this.toast('次の投稿を公開APIから取得中です');
           return;
@@ -2313,13 +2438,31 @@ namespace XMN {
           // Never fake a React SPA route with
           // history.pushState: that can desync the image and reply panel.
           // Use an ordinary X document navigation, preserving only verified
+          // A full-document transition is asynchronous. Keep one in-flight
+          // navigation request instead of issuing duplicate location.assign calls.
+          const destination=this.refs[nextIndex].href;
+          const prior=this.pendingDocumentHandoff;
+          if(prior && prior.generation===this.navGeneration &&
+             Date.now()-prior.started<10000)return;
+          const originPath=window.location.pathname;
+          const generation=this.navGeneration;
+          this.pendingDocumentHandoff={target:destination,
+            started:Date.now(),generation};
           // The extension worker keeps validated refs in tab-scoped memory.
-          if (!await this.persistPublicMediaSession()) {
-            this.toast('一時保存できないため移動を中止しました');
+          if (!await this.persistPublicMediaSession() ||
+              originPath!==window.location.pathname ||
+              generation!==this.navGeneration || !oldViewer.isConnected) {
+            this.pendingDocumentHandoff=null;
+            this.toast('一時保存または画面状態の確認ができないため移動を中止しました');
             return;
           }
           diagnostic('navigation.document_handoff', { kind: this.refs[nextIndex].kind ?? 'post' });
-          window.location.assign(this.refs[nextIndex].href);
+          try{
+            window.location.assign(destination);
+          }catch{
+            this.pendingDocumentHandoff=null;
+            this.toast('ページ移動に失敗しました');
+          }
           return;
         }
         this.toast('移動先が一覧から消えています。ビューアは閉じません');

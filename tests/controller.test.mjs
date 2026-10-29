@@ -3683,8 +3683,9 @@ test('worker-consented FxEmbed warmup runs only near end and once per cursor',as
   assert.equal(scheduled,null,'not near end');
   await ctrl.schedulePublicMediaWarmup(4);
   assert.equal(scheduled.delay,400);
-  assert.equal(ctrl.publicApiWarmCursor,'OPAQUE_A');
+  assert.equal(ctrl.publicApiWarmCursor,null,'queued timer is not proof of a started request');
   scheduled.cb();
+  assert.equal(ctrl.publicApiWarmCursor,'OPAQUE_A');
   assert.equal(requests,1);
   scheduled=null;
   await ctrl.schedulePublicMediaWarmup(6);
