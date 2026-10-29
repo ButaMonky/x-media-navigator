@@ -1,6 +1,6 @@
 # X Media Navigator — TypeScript rebuild (private beta)
 
-> **2026-10-29 非公開QA v2.4.19**：FxEmbedの同意後ページ先読み、低画質仮表示・先読み通信の匿名診断ログ、ワンクリックQA更新を試験中。GitHubの公開main・安定Draft PR・通常インストール先は未変更。使い方は [FxEmbed QA診断と更新手順](docs/QA_FXEMBED_DIAGNOSTICS.md) を参照。プロジェクト直下の `Update-Chrome-QA.cmd` から更新する（Chromeカードの再読み込みは必要）。本番Xでの連続閲覧・視覚改善は未検証。
+> **2026-10-29 非公開QA v2.4.20**：FxEmbedの同意後ページ先読み、低画質仮表示・先読み通信の匿名診断ログ、ワンクリックQA更新を試験中。GitHubの公開main・安定Draft PR・通常インストール先は未変更。使い方は [FxEmbed QA診断と更新手順](docs/QA_FXEMBED_DIAGNOSTICS.md) を参照。プロジェクト直下の `Update-Chrome-QA.cmd` から更新する（Chromeカードの再読み込みは必要）。本番Xでの連続閲覧・視覚改善は未検証。
 
 
 X (Twitter) プロフィールのメディアタブから開いた画像・動画を、一覧順に移動する非公式Chrome拡張機能の開発版です。

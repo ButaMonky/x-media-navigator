@@ -133,3 +133,12 @@ FxEmbed/FxTwitterの第三者公開API
 - **テスト結果**：`npm test` 191件（182 PASS / 0 FAIL / 3 SKIP / 実機TODO 6）、`npm run typecheck` PASS、Chromium Edge `npm run test:browser` 4 PASS、独立MV3/CORS probe `corsFromIsolatedMV3:true` 公開データ4件、PowerShell更新スクリプトを実行してQA v2.4.19展開とJS/CSS/アイコン5件SHA一致、通常版v2.4.18の非変更を確認。
 - Chromiumの既存40シナリオのうち低画質テストを強化：既存Canvas生成だけでなく、実際のCSS可視状態と `preview.visible` コンソールイベントを確認。最初は同タスク内でMutationObserverを動かすと従来の「初期非表示」検証が失敗したため、Observer処理を1回待つテストへ修正して全件PASS。**本番Xの実機確認結果とは区別する。**
 - **未完了**：Chrome実機にQA版を手動ロード→右キーで投稿28→29、返信欄・画像枚数・◀▶位置・APIページ送り・低画質ログ発生率・実際の体感速度を観測。混合メディアは安全側で除外。GitHub CIの対象ブランチでの実行確認、公開版と安定ブランチへの統合は実機の許可が出るまで禁止。
+
+## 14. 追加研究：ページ連続性／キャッシュ（非公開QA v2.4.20）
+
+- **新しい研究正本**：`docs/research/2026-10-29-fxembed-continuity-cache-audit.md`（外部根拠、FxEmbed実測、再現テスト、修正理由、未検証項目を集約）。
+- **確認した安全問題**：アンカー照合後のAPIカーソルが索引末尾より新しい投稿を返しても、従来コードはそのまま末尾に追加できた。RED再現を行い、正しい時系列を破壊する場合は中止するガードと境界重複の許容テストを追加。
+- 公開FxEmbedを認証・Cookieなしで3ページ研究。1回目219投稿/209受理。再測定では210投稿/200受理、混合5件、`media.all`欠落5件。ページ間順序と重複の観測は現時点のサンプル限定。再現`node tools/fxembed-public-research.mjs`。
+- ローカルの独立したChromium画像キャッシュ実験では、同じバイト列の`?name=large`と`?name=orig`は別URLとして各1件ネットワーク取得、同一`large`再表示はキャッシュ命中。**X CDNの実測ではない**。再現`node tools/cache-variant-lab.mjs`。
+- 当該研究パッチは非公開QA **v2.4.20**。実Xのログイン済みモーダル、28→29投稿、HTTPキャッシュ命中率、低画質表示のユーザー体感は未検証。公開main、安定開発ブランチ、Draft PR #17へは統合しない。
+- 残る優先事項：既存450**メディア参照**上限の安全なウィンドウ化、混合メディアの正確なXリンク、実Xで`orig`/ `large`のネットワーク計測とCanvas可視ログ。

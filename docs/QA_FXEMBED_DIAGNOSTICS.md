@@ -1,4 +1,4 @@
-# X Media Navigator v2.4.19（非公開QA）：通信と画像表示の診断
+# X Media Navigator v2.4.20（非公開QA）：通信と画像表示の診断
 
 対象ソース：`C:\Users\Saito\Documents\x-media-navigator`
 

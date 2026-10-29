@@ -3772,3 +3772,54 @@ test('diagnostics identify the actual low-quality visible handoff and completion
     context.window.clearTimeout=oldClear;
   }
 });
+
+test('FxEmbed stale cursor cannot append newer posts after an older indexed tail',async()=>{
+  const oldPath=state.pathname,oldHidden=document.hidden,oldNav=context.navigator;
+  state.pathname='/alice/status/200/photo/1';
+  document.hidden=false;context.navigator={onLine:true};
+  const native=[ref('/alice/status/400/photo/1'),
+    ref('/alice/status/300/photo/1'),ref('/alice/status/200/photo/1')];
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|photo',navGeneration:7,
+    refs:[...native],indexes:new Map(native.map((r,i)=>[r.key,i])),
+    publicApiKeys:new Set(),publicApiAnchorFound:true,
+    publicApiCursor:'cursor-stale',publicApiExhausted:false,
+    publicApiLoading:false,navigationBusy:false,
+    imageSources:new Map(),knownPhotoTotals:new Map(),updateViewerState(){},
+    fetchPublicMediaPage:async()=>({
+      refs:[ref('/alice/status/250/photo/1'),ref('/alice/status/150/photo/1')],
+      photos:[],cursor:null,
+    }),
+    persistPublicMediaSession(){return true;},
+  });
+  try {
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),false);
+    assert.deepEqual(ctrl.refs.map(r=>r.statusId),['400','300','200']);
+    assert.equal(ctrl.publicApiCursor,'cursor-stale');
+    assert.equal(ctrl.publicApiKeys.size,0);
+  }finally{state.pathname=oldPath;document.hidden=oldHidden;context.navigator=oldNav;}
+});
+
+test('FxEmbed cursor may repeat exactly the previous last status before older posts',async()=>{
+  const oldPath=state.pathname,oldHidden=document.hidden,oldNav=context.navigator;
+  state.pathname='/alice/status/200/photo/1';
+  document.hidden=false;context.navigator={onLine:true};
+  const native=[ref('/alice/status/300/photo/1'),ref('/alice/status/200/photo/1')];
+  const next=ref('/alice/status/150/photo/1');
+  const ctrl=Object.assign(Object.create(proto),{
+    originProfile:'alice',originTimeline:'alice|photo',navGeneration:8,
+    refs:[...native],indexes:new Map(native.map((r,i)=>[r.key,i])),
+    publicApiKeys:new Set(),publicApiAnchorFound:true,
+    publicApiCursor:'page2',publicApiExhausted:false,publicApiLoading:false,
+    navigationBusy:false,imageSources:new Map(),knownPhotoTotals:new Map(),
+    updateViewerState(){},
+    fetchPublicMediaPage:async()=>({refs:[native[1],next],photos:[],cursor:null}),
+    persistPublicMediaSession(){return true;},
+  });
+  try{
+    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),true);
+    assert.deepEqual(ctrl.refs.map(r=>r.statusId),['300','200','150']);
+    assert.equal(ctrl.publicApiKeys.has(next.key),true);
+    assert.equal(ctrl.publicApiKeys.has(native[1].key),false);
+  }finally{state.pathname=oldPath;document.hidden=oldHidden;context.navigator=oldNav;}
+});
