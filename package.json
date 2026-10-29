@@ -4,14 +4,18 @@
   "private": true,
   "description": "TypeScript rebuild of X media profile navigation; private development",
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "check": "npm run build && node --check extension/content_script.js",
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.background.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.background.json --noEmit",
+    "check": "npm run build && node --check extension/content_script.js && node --check extension/background.js",
     "test": "npm run build && tsc -p tsconfig.core.json && node --test tests/*.test.mjs",
     "test:browser": "npm run build && node --test tests/browser.test.mjs",
     "test:navigation-isolated": "node tools/navigation-isolated-probe.mjs",
     "qa:update": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/update-chrome-qa.ps1"
   },
-  "devDependencies": { "typescript": "5.8.3" },
-  "engines": { "node": ">=20" }
+  "devDependencies": {
+    "typescript": "5.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
 }

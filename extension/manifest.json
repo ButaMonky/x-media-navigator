@@ -6,9 +6,16 @@
   "version_name": "2.4.20 FxEmbed QA",
   "content_scripts": [
     {
-      "matches": ["https://x.com/*", "https://twitter.com/*"],
-      "js": ["content_script.js"],
-      "css": ["style.css"],
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*"
+      ],
+      "js": [
+        "content_script.js"
+      ],
+      "css": [
+        "style.css"
+      ],
       "run_at": "document_idle"
     }
   ],
@@ -16,5 +23,11 @@
     "16": "icon16.png",
     "48": "icon48.png",
     "128": "icon128.png"
+  },
+  "permissions": [
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
   }
 }

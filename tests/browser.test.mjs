@@ -711,6 +711,17 @@ location.assign('/alice/status/100/photo/1');
  <img alt="loaded public photo" width="600" height="400"
  src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=">
 </div><aside id="replies">Unchanged replies</aside></div>
+<script>
+// Test-only trusted-worker stand-in: page storage never used by production code.
+window.chrome=window.chrome||{};
+window.chrome.runtime=window.chrome.runtime||{};
+window.__xmnSessionFixture=JSON.parse(sessionStorage.getItem('xmn-public-media-v1'));
+window.chrome.runtime.sendMessage=async request=>{
+ if(request.kind==='xmn-store-v1' && request.op==='session.get')
+   return {ok:true,session:window.__xmnSessionFixture};
+ return {ok:false};
+};
+</script>
 <script src="/extension/content_script.js"></script>
 <script>
 setTimeout(()=>{

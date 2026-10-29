@@ -14,7 +14,8 @@ vm.runInContext(source,ctx);
 const X=ctx.XMN,proto=X.Controller.prototype;
 const ref=(n,i=1)=>X.mediaRefFromHref('/alice/status/'+n+'/photo/'+i,'alice');
 const check=process.env.XMN_B0_VERIFY_FIXES==='1';
-const contract=(name,fn)=>test(name,{skip:!check?'B0 RED baseline; enable after implementation':false},fn);
+const fixed=new Set(['R-001']);
+const contract=(name,fn)=>test(name,{skip:!check && ![...fixed].some(id=>name.includes(id))?'B0 RED baseline; enable after implementation':false},fn);
 
 test('B0 fixtures originate from the exact compiled MV3 bundle',()=>{
  assert.equal(typeof X.parsePublicMediaPage,'function');
@@ -38,7 +39,7 @@ contract('B0 R-029: malformed cursor cannot masquerade as end',()=>{
   type:'photo',url:'https://pbs.twimg.com/media/A.jpg?name=large'}])]};
  assert.equal(X.parsePublicMediaPage(input,'alice'),null);
 });
-contract('B0 R-001: untrusted reversed restored session is rejected',()=>{
+contract('B0 R-001: untrusted reversed restored session is rejected',async()=>{
  const r=[ref(400),ref(500),ref(300)],storage=new Map([[
  'xmn-public-media-v1',JSON.stringify({profile:'alice',
    timeline:'alice|photo',expires:Date.now()+60000,
@@ -49,7 +50,7 @@ contract('B0 R-001: untrusted reversed restored session is rejected',()=>{
  const instance=Object.assign(Object.create(proto),{
   refs:[],indexes:new Map(),publicApiKeys:new Set(),
   imageSources:new Map(),knownPhotoTotals:new Map()});
- proto.restorePublicMediaSession.call(instance);
+ await proto.restorePublicMediaSession.call(instance);
  assert.notEqual(instance.publicSessionRestored,true);
 });
 

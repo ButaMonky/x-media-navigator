@@ -111,6 +111,7 @@ namespace XMN {
 
   /** Maintain a stable ordered list of media refs, never cached DOM nodes. */
   export class Controller {
+    private sessionStore: SessionStore = new SessionStore();
     private originProfile: string | null = null;
     private originTimeline: string | null = null;
     private pendingGrid: { column: Element | null; firstTiles: Element[]; firstKeys: string[] } | null = null;
@@ -185,8 +186,11 @@ namespace XMN {
     private refreshId: number;
 
     constructor() {
-      this.restorePublicMediaSession();
-      diagnostic('startup', { restored: this.publicSessionRestored, indexed: this.refs.length });
+      clearLegacyPageSession();
+      void this.restorePublicMediaSession().catch(() => {}).finally(() => {
+        diagnostic('startup', { restored: this.publicSessionRestored, indexed: this.refs.length });
+        this.tick();
+      });
       // Observe actual user keyboard input only when the viewer belongs to a media-tab session.
       document.addEventListener('keydown', (event) => this.onKeyDown(event), true);
       // Preheat adjacent images when a user opens media from the grid, before
@@ -208,7 +212,6 @@ namespace XMN {
       // Safety fallback: browsers may omit Navigation API events for X routes
       // and media content may mount after its URL has already committed.
       this.refreshId = window.setInterval(() => this.tick(), 450);
-      this.tick();
     }
 
     /**
@@ -216,80 +219,75 @@ namespace XMN {
      * signed-in page data, or private profile content. A full X document
      * navigation may be required when no X-owned React media link exists.
      */
-    private persistPublicMediaSession(): boolean {
+    /** Never publish a page-owned session or trust it on reload. */
+    private async persistPublicMediaSession(): Promise<boolean> {
       try {
-        const refs = this.refs.slice(0, 450).map((ref) => ref.href);
+        if (!this.originProfile || this.refs.length < 1 || this.refs.length > 450)
+          return false;
+        const refs = this.refs.map(ref => ref.href);
         const photos = [...this.imageSources].filter(([key]) =>
           this.publicApiKeys.has(key)).slice(0, 450);
-        const ownedStatuses = new Set(this.refs.filter((ref) =>
-          this.publicApiKeys.has(ref.key)).map((ref) => ref.statusId));
-        const photoTotals = [...this.knownPhotoTotals].filter(([statusId]) =>
-          ownedStatuses.has(statusId)).slice(-128);
-        window.sessionStorage.setItem('xmn-public-media-v1', JSON.stringify({
-          profile: this.originProfile, timeline: this.originTimeline,
+        const statuses = new Set(this.refs.filter(ref =>
+          this.publicApiKeys.has(ref.key)).map(ref => ref.statusId));
+        const photoTotals = [...this.knownPhotoTotals].filter(([id]) =>
+          statuses.has(id)).slice(-128);
+        const payload: PublicSession = {
+          schema: 1,
+          profile: this.originProfile,
+          timeline: this.originTimeline,
           expires: Date.now() + 30 * 60 * 1000,
-          refs, apiKeys: [...this.publicApiKeys].slice(0, 450),
+          refs, apiKeys: [...this.publicApiKeys],
           photos, photoTotals, cursor: this.publicApiCursor,
-          anchorFound: this.publicApiAnchorFound, exhausted: this.publicApiExhausted,
-        }));
-        return true;
+          anchorFound: this.publicApiAnchorFound,
+          exhausted: this.publicApiExhausted,
+        };
+        this.sessionStore ??= new SessionStore();
+        return await this.sessionStore.save(payload);
       } catch { return false; }
     }
 
-    private restorePublicMediaSession(): void {
-      try {
-        const raw = window.sessionStorage?.getItem('xmn-public-media-v1');
-        if (!raw || raw.length > 120_000) return;
-        const data = JSON.parse(raw) as Record<string, unknown>;
-        if (typeof data.profile !== 'string' ||
-            !/^[a-zA-Z0-9_]{1,15}$/.test(data.profile) ||
-            typeof data.expires !== 'number' || data.expires < Date.now() ||
-            data.expires > Date.now() + 31 * 60 * 1000 ||
-            !Array.isArray(data.refs) || data.refs.length > 450 ||
-            !Array.isArray(data.apiKeys) || data.apiKeys.length > 450) return;
-        const route = mediaRefFromHref(window.location.pathname, data.profile);
-        if (!route) return; // Never activate on a different profile or X page.
-        const refs = data.refs.map((href: unknown) =>
-          typeof href === 'string' ? mediaRefFromHref(href, data.profile as string) : null);
-        if (refs.some((ref: MediaRef | null) => !ref) ||
-            !refs.some((ref: MediaRef | null) => ref?.key === route.key)) return;
-        const keys = new Set(data.apiKeys.filter((key): key is string =>
-          typeof key === 'string' && refs.some((ref: MediaRef | null) => ref?.key === key)));
-        // Restoring only API keys would strand the user when navigating
-        // BACK into the previously observed native post group. The exact
-        // status/photo route must exist in this short-lived same-tab index,
-        // and at least one validated public API ref must be present.
-        if (keys.size === 0) return;
-        this.publicSessionRestored = true;
-        this.originProfile = data.profile.toLowerCase();
-        this.originTimeline = typeof data.timeline === 'string' ? data.timeline : null;
-        this.refs = refs as MediaRef[];
-        this.indexes = new Map(this.refs.map((ref, i) => [ref.key, i]));
-        this.publicApiKeys = keys;
-        this.publicApiAnchorFound = data.anchorFound === true;
-        this.publicApiExhausted = data.exhausted === true;
-        this.publicApiCursor = typeof data.cursor === 'string' &&
-          data.cursor.length <= 1024 ? data.cursor : null;
-        this.knownPhotoTotals ??= new Map();
-        if (Array.isArray(data.photoTotals) && data.photoTotals.length <= 128) {
-          for (const item of data.photoTotals) {
-            if (!Array.isArray(item) || item.length !== 2 ||
-                typeof item[0] !== 'string' || !/^\d{1,19}$/.test(item[0]) ||
-                !Number.isInteger(item[1]) || item[1] < 1 || item[1] > 4) continue;
-            const complete = Array.from({ length: item[1] }, (_, i) =>
-              keys.has(`${item[0]}:photo:${i + 1}`)).every(Boolean);
-            if (complete) this.rememberPhotoTotal(item[0], item[1]);
-          }
-        }
-        if (Array.isArray(data.photos)) {
-          for (const item of data.photos) {
-            if (!Array.isArray(item) || item.length !== 2 ||
-                !keys.has(item[0]) || typeof item[1] !== 'string') continue;
-            if (preloadImageUrl(item[1]) === item[1])
-              this.imageSources.set(item[0], item[1]);
-          }
-        }
-      } catch { /* Storage may be disabled; never break native X rendering. */ }
+    private async restorePublicMediaSession(): Promise<void> {
+      const path = window.location.pathname;
+      const match = /^\/([a-zA-Z0-9_]{1,15})\/status\/\d+/.exec(path);
+      if (!match) return;
+      const profile=match[1].toLowerCase();
+      const generation=this.navGeneration;
+      this.sessionStore ??= new SessionStore();
+      const data=await this.sessionStore.load(profile);
+      if(!data || window.location.pathname!==path ||
+         generation!==this.navGeneration || this.originProfile!==null) return;
+      const route=mediaRefFromHref(path,profile);
+      if(!route || !Array.isArray(data.refs) || !Array.isArray(data.apiKeys))return;
+      const refs=data.refs.map(href=>mediaRefFromHref(href,profile));
+      if(refs.some(ref=>!ref) || !refs.some(ref=>ref?.key===route.key))return;
+      const keys=new Set(data.apiKeys.filter(key=>typeof key==='string' &&
+        refs.some(ref=>ref?.key===key)));
+      if(keys.size===0) return;
+      this.publicSessionRestored=true;
+      this.originProfile=profile;
+      this.originTimeline=data.timeline;
+      this.refs=refs as MediaRef[];
+      this.indexes=new Map(this.refs.map((ref,i)=>[ref.key,i]));
+      this.publicApiKeys=keys;
+      this.publicApiAnchorFound=data.anchorFound===true;
+      this.publicApiExhausted=data.exhausted===true;
+      this.publicApiCursor=data.cursor;
+      this.knownPhotoTotals ??= new Map();
+      for(const item of data.photoTotals??[]){
+        if(!Array.isArray(item)||item.length!==2 ||
+           typeof item[0]!=='string'||!Number.isInteger(item[1]) ||
+           item[1]<1||item[1]>4) continue;
+        const complete=Array.from({length:item[1]},(_,i)=>
+          keys.has(item[0]+':photo:'+(i+1))).every(Boolean);
+        if(complete)this.rememberPhotoTotal(item[0],item[1]);
+      }
+      this.imageSources ??= new Map();
+      for(const entry of data.photos??[]){
+        if(!Array.isArray(entry)||entry.length!==2 ||
+           !keys.has(entry[0])||typeof entry[1]!=='string')continue;
+        if(preloadImageUrl(entry[1])===entry[1])
+          this.imageSources.set(entry[0],entry[1]);
+      }
     }
 
     /**
@@ -352,18 +350,20 @@ namespace XMN {
      * reaching the last indexed post. No new provider calls before consent.
      * A failed warmup is not retried until the user requests the boundary.
      */
-    private schedulePublicMediaWarmup(currentIndex: number | null): void {
+    private async schedulePublicMediaWarmup(currentIndex: number | null): Promise<void> {
       if (currentIndex === null || !this.publicApiAnchorFound ||
           !this.publicApiCursor || this.publicApiExhausted || this.publicApiLoading ||
           this.navigationBusy || !this.viewer?.isConnected || document.hidden ||
           this.publicApiWarmTimer !== null ||
           this.publicApiWarmCursor === this.publicApiCursor || !this.originProfile) return;
-      let consent = false;
-      try {
-        consent = window.sessionStorage.getItem(
-          'xmn-fxembed-consent-' + this.originProfile) === 'yes';
-      } catch { return; }
-      if (!consent) return;
+      const profile = this.originProfile;
+      this.sessionStore ??= new SessionStore();
+      if (!await this.sessionStore.hasConsent(profile)) return;
+      if (this.originProfile !== profile || !this.viewer?.isConnected ||
+          this.publicApiLoading || this.navigationBusy || document.hidden ||
+          !this.publicApiCursor || this.publicApiExhausted ||
+          this.publicApiWarmTimer !== null ||
+          this.publicApiWarmCursor === this.publicApiCursor) return;
       let position = currentIndex;
       let remaining = 0;
       for (let n = 0; n < 4; n++) {
@@ -521,7 +521,7 @@ namespace XMN {
         this.publicApiExhausted = !newCursor;
         this.statusOrdinalCache = null;
         this.viewerStateSnapshot = null;
-        if (appended > 0 && stillSameSession() && this.persistPublicMediaSession()) {
+        if (appended > 0 && stillSameSession() && await this.persistPublicMediaSession() && stillSameSession()) {
           diagnostic('fxembed.continuation_ready', {
             added: appended, indexed: this.refs.length, hasMore: !!newCursor, background,
           });
@@ -2176,10 +2176,14 @@ namespace XMN {
         }
         // This uses a separate public third-party API, not X's official API.
         // Ask only once per tab/profile before disclosing the public handle.
-        const consentKey = 'xmn-fxembed-consent-' + this.originProfile;
-        let approved = false;
-        try { approved = window.sessionStorage.getItem(consentKey) === 'yes'; }
-        catch { /* Storage may be disabled. */ }
+        const consentProfile = this.originProfile;
+        const consentPath = window.location.pathname;
+        const consentGeneration = this.navGeneration;
+        this.sessionStore ??= new SessionStore();
+        const approved = await this.sessionStore.hasConsent(consentProfile);
+        if (this.originProfile !== consentProfile ||
+            this.navGeneration !== consentGeneration ||
+            window.location.pathname !== consentPath || !oldViewer.isConnected) return;
         if (!approved) {
           const message = '続きの投稿を外部サービス FxEmbed の公開APIで取得しますか？' +
             '公開プロフィール名と接続元IP等の通信情報がFxEmbedに伝わります。' +
@@ -2189,11 +2193,14 @@ namespace XMN {
             this.toast('ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
             return;
           }
-          try {
-            window.sessionStorage.setItem(consentKey, 'yes');
-            diagnostic('fxembed.consent_granted');
+          if (!await this.sessionStore.grantConsent(consentProfile)) {
+            this.toast('拡張専用の一時保存を利用できないため、公開APIには接続しません');
+            return;
           }
-          catch { this.toast('一時保存を使えないため外部API連続閲覧を開始できません'); return; }
+          if (this.originProfile !== consentProfile ||
+              this.navGeneration !== consentGeneration ||
+              window.location.pathname !== consentPath || !oldViewer.isConnected) return;
+          diagnostic('fxembed.consent_granted');
         }
         const appended = await this.loadPublicMediaContinuation();
         if (!appended) {
@@ -2219,8 +2226,8 @@ namespace XMN {
           // Never fake a React SPA route with
           // history.pushState: that can desync the image and reply panel.
           // Use an ordinary X document navigation, preserving only verified
-          // PUBLIC media refs in this tab's short-lived sessionStorage.
-          if (!this.persistPublicMediaSession()) {
+          // The extension worker keeps validated refs in tab-scoped memory.
+          if (!await this.persistPublicMediaSession()) {
             this.toast('一時保存できないため移動を中止しました');
             return;
           }

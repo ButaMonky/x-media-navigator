@@ -9,7 +9,8 @@ $branch = 'handoff/fxembed-media-continuation-20261029'
 $target = Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-FxEmbed-QA-20261029'
 $stable = Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-Current'
 $backupRoot = Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-Backups'
-$files = @('manifest.json','content_script.js','style.css','icon16.png','icon48.png','icon128.png')
+$files = @('manifest.json','content_script.js','background.js','style.css','icon16.png','icon48.png','icon128.png')
+$stableFiles = @('manifest.json','content_script.js','style.css','icon16.png','icon48.png','icon128.png')
 $actualBranch = (& git -C $root branch --show-current).Trim()
 if ($LASTEXITCODE -ne 0 -or $actualBranch -ne $branch) {
   throw "Refusing to deploy from branch '$actualBranch'. Expected '$branch'."
@@ -20,9 +21,11 @@ $stableHashes = @{}
 foreach ($name in $files) {
   $sourceFile = Join-Path $sourceDir $name
   if (!(Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "Missing source: $name" }
-  $stableFile = Join-Path $stable $name
-  if (!(Test-Path -LiteralPath $stableFile -PathType Leaf)) { throw "Missing stable file: $name" }
-  $stableHashes[$name] = (Get-FileHash -LiteralPath $stableFile -Algorithm SHA256).Hash
+  if ($stableFiles -contains $name) {
+    $stableFile = Join-Path $stable $name
+    if (!(Test-Path -LiteralPath $stableFile -PathType Leaf)) { throw "Missing stable file: $name" }
+    $stableHashes[$name] = (Get-FileHash -LiteralPath $stableFile -Algorithm SHA256).Hash
+  }
 }
 
 Write-Host '[XMN] TypeScript check, Node tests, Chromium tests...' -ForegroundColor Cyan
@@ -94,7 +97,7 @@ Do not share private HAR, cookies, tokens, raw network URLs or full browser logs
     $actual = (Get-FileHash -LiteralPath (Join-Path $target $name) -Algorithm SHA256).Hash
     if ($expected -ne $actual) { throw "Installed QA hash mismatch: $name" }
   }
-  foreach ($name in $files) {
+  foreach ($name in $stableFiles) {
     $after = (Get-FileHash -LiteralPath (Join-Path $stable $name) -Algorithm SHA256).Hash
     if ($stableHashes[$name] -ne $after) { throw "Stable installation changed unexpectedly: $name" }
   }

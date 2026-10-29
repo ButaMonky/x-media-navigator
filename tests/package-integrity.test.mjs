@@ -16,9 +16,11 @@ test('development manifest is a distinct, least-permission MV3 extension', () =>
   assert.equal(m.manifest_version, 3);
   const packageVersion = JSON.parse(get(root, 'package.json').toString('utf8')).version;
   assert.equal(m.version, packageVersion.replace(/-dev\..*$/, ''));
-  for (const key of ['key', 'update_url', 'host_permissions', 'permissions', 'background']) {
+  for (const key of ['key', 'update_url', 'host_permissions']) {
     assert.equal(Object.hasOwn(m, key), false, key);
   }
+  assert.deepEqual(m.permissions,['storage']);
+  assert.deepEqual(m.background,{service_worker:'background.js'});
   assert.match(m.name, /TypeScript Dev/);
   assert.deepEqual(m.content_scripts[0].matches, ['https://x.com/*', 'https://twitter.com/*']);
 });
@@ -48,6 +50,8 @@ test('manifest content scripts, CSS and referenced icons exist', () => {
     }
     for (const css of item.css ?? []) assert.ok(existsSync(resolve(dev, css)), css);
   }
+  assert.ok(existsSync(resolve(dev,m.background.service_worker)));
+  assert.doesNotThrow(()=>new vm.Script(get(dev,m.background.service_worker).toString('utf8')));
   for (const filename of Object.values(m.icons)) assert.ok(existsSync(resolve(dev, filename)), filename);
 });
 
@@ -64,6 +68,8 @@ test('reference snapshot matches its recorded LF-normalized SHA-256 on Windows a
 test('source-of-truth is TypeScript and no browser secret is embedded', () => {
   assert.ok(existsSync(resolve(root, 'src/core.ts')));
   assert.ok(existsSync(resolve(root, 'src/content.ts')));
+  assert.ok(existsSync(resolve(root, 'src/session.ts')));
+  assert.ok(existsSync(resolve(root, 'src/background.ts')));
   const manifest = get(dev, 'manifest.json').toString('utf8');
   assert.ok(!manifest.includes('chrome-extension://'));
   assert.ok(!manifest.includes('localStorage'));

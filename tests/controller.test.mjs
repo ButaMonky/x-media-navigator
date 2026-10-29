@@ -3364,86 +3364,81 @@ test('public media HTTP request sends no cookies, user data, or referrer', async
   }
 });
 
-test('one-time public API consent resumes last post without background scrolling', async () => {
-  const oldPath=state.pathname,oldConfirm=context.window.confirm,
-    oldStorage=context.window.sessionStorage,oldHidden=document.hidden,
-    oldNav=context.navigator;
-  const consent=new Map(),navigations=[];
-  context.window.sessionStorage={
-    getItem(k){return consent.get(k)??null;},
-    setItem(k,v){consent.set(k,String(v));},
-  };
-  context.window.confirm=()=>true;
-  state.pathname='/alice/status/200/photo/1';state.assign=href=>navigations.push(href);
-  document.hidden=false;context.navigator={onLine:true};
-  const current=ref('/alice/status/200/photo/1');
-  const ctrl=Object.assign(Object.create(proto),{
-    originProfile:'alice',originTimeline:'alice|default',
-    refs:[current],indexes:new Map([[current.key,0]]),
-    viewer:{isConnected:true},navigationBusy:false,navGeneration:2,
-    publicApiKeys:new Set(),publicApiAnchorFound:false,publicApiCursor:null,
-    publicApiExhausted:false,publicApiLoading:false,imageSources:new Map(),
-    activeIndex(){return 0;}, updateViewerState(){},
-    findLiveLink(){return null;},toast(m){throw Error(m);},
-    fetchPublicMediaPage:async()=>({refs:[current,ref('/alice/status/100/photo/1')],
-      photos:[],cursor:null}),
-  });
-  try{
-    await proto.navigate.call(ctrl,1);
-    await Promise.resolve();await Promise.resolve();
-    assert.deepEqual(navigations,['/alice/status/100/photo/1'],
-      'API-only destination uses direct X URL, never a hidden scroll or guessed SPA');
-    assert.equal(consent.get('xmn-fxembed-consent-alice'),'yes');
-    assert.ok(consent.has('xmn-public-media-v1'),
-      'public metadata is preserved for next X document navigation in this tab');
-  }finally{
-    state.pathname=oldPath;delete state.assign;
-    context.window.confirm=oldConfirm;context.window.sessionStorage=oldStorage;
-    document.hidden=oldHidden;context.navigator=oldNav;
-  }
+test('one-time public API consent uses worker-owned tab state, never page storage',async()=>{
+ const prev=state.pathname,oldConfirm=context.window.confirm,hidden=document.hidden,nav=context.navigator;
+ const consent={allowed:false,stored:null,grants:0},navigations=[];
+ context.window.confirm=()=>true;
+ state.pathname='/alice/status/200/photo/1';state.assign=href=>navigations.push(href);
+ document.hidden=false;context.navigator={onLine:true};
+ const current=ref('/alice/status/200/photo/1');
+ const ctrl=Object.assign(Object.create(proto),{
+  originProfile:'alice',originTimeline:'alice|default',
+  refs:[current],indexes:new Map([[current.key,0]]),
+  viewer:{isConnected:true},navigationBusy:false,navGeneration:2,
+  publicApiKeys:new Set(),publicApiAnchorFound:false,publicApiCursor:null,
+  publicApiExhausted:false,publicApiLoading:false,imageSources:new Map(),
+  knownPhotoTotals:new Map(),activeIndex(){return 0},updateViewerState(){},
+  findLiveLink(){return null},toast(message){throw Error(message)},
+  sessionStore:{
+   async hasConsent(){return consent.allowed},
+   async grantConsent(){consent.allowed=true;consent.grants++;return true},
+   async save(data){consent.stored=data;return true}
+  },
+  fetchPublicMediaPage:async()=>({refs:[current,ref('/alice/status/100/photo/1')],
+   photos:[],cursor:null})
+ });
+ try{
+  await proto.navigate.call(ctrl,1);
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(navigations,['/alice/status/100/photo/1']);
+  assert.equal(consent.allowed,true);assert.equal(consent.grants,1);
+  assert.equal(consent.stored?.profile,'alice');
+  assert.equal(consent.stored?.refs.length,2);
+ }finally{
+  state.pathname=prev;delete state.assign;
+  context.window.confirm=oldConfirm;document.hidden=hidden;context.navigator=nav;
+ }
 });
 
-test('public media session restores exact native and API routes but never other profiles', () => {
-  const oldPath=state.pathname, oldStorage=context.window.sessionStorage;
-  const latest=ref('/alice/status/100/photo/1'),api=ref('/alice/status/90/photo/1');
-  const source='https://pbs.twimg.com/media/CACHED90?format=jpg&name=large';
-  const values=new Map([['xmn-public-media-v1',JSON.stringify({
-    profile:'alice',timeline:'alice|photo',expires:Date.now()+90000,
-    refs:[latest.href,api.href],apiKeys:[api.key],
-    photos:[[api.key,source]],cursor:'NEXT',anchorFound:true,
-  })]]);
-  context.window.sessionStorage={
-    getItem(k){return values.get(k)||null;},
-    setItem(k,v){values.set(k,String(v));},
-  };
-  const ctrl=Object.assign(Object.create(proto),{
-    originProfile:null,refs:[],indexes:new Map(),publicApiKeys:new Set(),
-    imageSources:new Map(),knownPhotoTotals:new Map(),
-  });
-  try{
-    state.pathname=api.href;
-    proto.restorePublicMediaSession.call(ctrl);
-    assert.equal(ctrl.originProfile,'alice');
-    assert.equal(ctrl.refs.length,2);
-    assert.equal(ctrl.indexes.get(api.key),1);
-    assert.equal(ctrl.publicApiKeys.has(api.key),true);
-    assert.equal(ctrl.imageSources.get(api.key),source);
-    assert.equal(ctrl.publicApiCursor,'NEXT');
-    ctrl.originProfile=null;ctrl.refs=[];ctrl.indexes.clear();ctrl.publicApiKeys.clear();
-    state.pathname='/bob/status/90/photo/1';
-    proto.restorePublicMediaSession.call(ctrl);
-    assert.equal(ctrl.originProfile,null,'never restore into another profile');
-    state.pathname=latest.href;
-    proto.restorePublicMediaSession.call(ctrl);
-    assert.equal(ctrl.originProfile,'alice','back navigation to originally verified native media preserves session');
-    ctrl.originProfile=null;ctrl.refs=[];ctrl.indexes.clear();ctrl.publicApiKeys.clear();
-    values.set('xmn-public-media-v1',JSON.stringify({
-      profile:'alice',expires:Date.now()-1000,refs:[api.href],apiKeys:[api.key],
-    }));
-    state.pathname=api.href;
-    proto.restorePublicMediaSession.call(ctrl);
-    assert.equal(ctrl.originProfile,null,'expired session must not restore');
-  }finally{state.pathname=oldPath;context.window.sessionStorage=oldStorage;}
+test('worker-owned media session restores exact routes but never another profile',async()=>{
+ const before=state.pathname;
+ const latest=ref('/alice/status/100/photo/1'),api=ref('/alice/status/90/photo/1');
+ const source='https://pbs.twimg.com/media/CACHED90?format=jpg&name=large';
+ let snapshot={
+  profile:'alice',timeline:'alice|photo',expires:Date.now()+90000,
+  refs:[latest.href,api.href],apiKeys:[api.key],
+  photos:[[api.key,source]],photoTotals:[],cursor:'NEXT',
+  anchorFound:true,exhausted:false
+ };
+ const ctrl=Object.assign(Object.create(proto),{
+  originProfile:null,navGeneration:0,refs:[],indexes:new Map(),publicApiKeys:new Set(),
+  imageSources:new Map(),knownPhotoTotals:new Map(),
+  sessionStore:{async load(profile){
+   return snapshot.profile===profile&&snapshot.expires>Date.now()?snapshot:null
+  }}
+ });
+ try{
+  state.pathname=api.href;
+  await proto.restorePublicMediaSession.call(ctrl);
+  assert.equal(ctrl.originProfile,'alice');
+  assert.equal(ctrl.refs.length,2);
+  assert.equal(ctrl.indexes.get(api.key),1);
+  assert.equal(ctrl.publicApiKeys.has(api.key),true);
+  assert.equal(ctrl.imageSources.get(api.key),source);
+  assert.equal(ctrl.publicApiCursor,'NEXT');
+  ctrl.originProfile=null;ctrl.refs=[];ctrl.indexes.clear();ctrl.publicApiKeys.clear();
+  state.pathname='/bob/status/90/photo/1';
+  await proto.restorePublicMediaSession.call(ctrl);
+  assert.equal(ctrl.originProfile,null);
+  state.pathname=latest.href;
+  await proto.restorePublicMediaSession.call(ctrl);
+  assert.equal(ctrl.originProfile,'alice');
+  ctrl.originProfile=null;ctrl.refs=[];ctrl.indexes.clear();ctrl.publicApiKeys.clear();
+  snapshot={...snapshot,expires:Date.now()-1000};
+  state.pathname=api.href;
+  await proto.restorePublicMediaSession.call(ctrl);
+  assert.equal(ctrl.originProfile,null);
+ }finally{state.pathname=before;}
 });
 
 test('public continuation is discarded when X route changes during the API request', async () => {
@@ -3553,42 +3548,37 @@ test('bounded URL session refuses partial albums rather than skipping cursor pag
     context.window.setTimeout=oldTimer;}
 });
 
-test('API photo album size is carried through a short-lived page navigation', async () => {
-  const prev=state.pathname,hidden=document.hidden,nav=context.navigator;
-  const oldStore=context.window.sessionStorage;
-  document.hidden=false;context.navigator={onLine:true};
-  const initial=ref('/alice/status/200/photo/1');
-  const next1=ref('/alice/status/100/photo/1'),next2=ref('/alice/status/100/photo/2');
-  const saved=new Map();
-  context.window.sessionStorage={
-    setItem(k,v){saved.set(k,String(v));},
-    getItem(k){return saved.get(k)||null;},
-  };
-  state.pathname=initial.href;
-  const ctrl=Object.assign(Object.create(proto),{
-    originProfile:'alice',originTimeline:'alice|photo',
-    refs:[initial],indexes:new Map([[initial.key,0]]),
-    publicApiKeys:new Set(),publicApiAnchorFound:false,publicApiCursor:null,
-    publicApiExhausted:false,publicApiLoading:false,knownPhotoTotals:new Map(),
-    imageSources:new Map(),navGeneration:3,navigationBusy:false,
-    updateViewerState(){},
-    fetchPublicMediaPage:async()=>({refs:[initial,next1,next2],photos:[],cursor:null}),
+test('API photo album size survives worker session restore after document handoff',async()=>{
+ const prev=state.pathname,hidden=document.hidden,nav=context.navigator;
+ document.hidden=false;context.navigator={onLine:true};
+ const initial=ref('/alice/status/200/photo/1');
+ const next1=ref('/alice/status/100/photo/1'),next2=ref('/alice/status/100/photo/2');
+ let saved=null;
+ state.pathname=initial.href;
+ const store={async save(data){saved=data;return true},
+   async load(profile){return saved?.profile===profile?saved:null}};
+ const ctrl=Object.assign(Object.create(proto),{
+  originProfile:'alice',originTimeline:'alice|photo',
+  refs:[initial],indexes:new Map([[initial.key,0]]),
+  publicApiKeys:new Set(),publicApiAnchorFound:false,publicApiCursor:null,
+  publicApiExhausted:false,publicApiLoading:false,knownPhotoTotals:new Map(),
+  imageSources:new Map(),navGeneration:3,navigationBusy:false,
+  sessionStore:store,updateViewerState(){},
+  fetchPublicMediaPage:async()=>({refs:[initial,next1,next2],photos:[],cursor:null})
+ });
+ try{
+  assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),true);
+  assert.equal(ctrl.knownPhotoTotals.get('100'),2);
+  assert.deepEqual(Array.from(saved.photoTotals,([id,n])=>[id,n]),[['100',2]]);
+  state.pathname=next2.href;
+  const nextCtrl=Object.assign(Object.create(proto),{
+   originProfile:null,navGeneration:0,refs:[],indexes:new Map(),
+   sessionStore:store,publicApiKeys:new Set(),
+   imageSources:new Map(),knownPhotoTotals:new Map()
   });
-  try{
-    assert.equal(await proto.loadPublicMediaContinuation.call(ctrl),true);
-    assert.equal(ctrl.knownPhotoTotals.get('100'),2);
-    const stored=JSON.parse(saved.get('xmn-public-media-v1'));
-    assert.deepEqual(stored.photoTotals.map(([id,n])=>[id,n]),[['100',2]]);
-    state.pathname=next2.href;
-    const nextCtrl=Object.assign(Object.create(proto),{
-      originProfile:null,refs:[],indexes:new Map(),
-      publicApiKeys:new Set(),imageSources:new Map(),knownPhotoTotals:new Map(),
-    });
-    proto.restorePublicMediaSession.call(nextCtrl);
-    assert.equal(nextCtrl.knownPhotoTotals.get('100'),2,
-      'gallery has proven two photos even after an actual new-page handoff');
-  }finally{state.pathname=prev;document.hidden=hidden;context.navigator=nav;
-    context.window.sessionStorage=oldStore;}
+  await proto.restorePublicMediaSession.call(nextCtrl);
+  assert.equal(nextCtrl.knownPhotoTotals.get('100'),2);
+ }finally{state.pathname=prev;document.hidden=hidden;context.navigator=nav;}
 });
 
 test('restored public session can navigate back to a previously verified native post', async () => {
@@ -3666,48 +3656,46 @@ test('restored API session resets stale media ordering when returning to X media
   } finally {state.pathname=oldPath;state.search=oldSearch;}
 });
 
-test('consented FxEmbed warmup is scheduled only close to end and only once per cursor', async () => {
-  const oldPath=state.pathname,oldHidden=document.hidden,oldStore=context.window.sessionStorage;
-  const oldSet=context.window.setTimeout;
-  let granted=false,scheduled=null,requests=0;
-  document.hidden=false;
-  context.window.sessionStorage={getItem(){return granted?'yes':null;}};
-  context.window.setTimeout=(cb,delay)=>{scheduled={cb,delay};return 17;};
-  const refs=Array.from({length:8},(_,i)=>ref('/alice/status/'+(800-i*100)+'/photo/1'));
-  const ctrl=Object.assign(Object.create(proto),{
-    originProfile:'alice',originTimeline:'alice|photo',refs,
-    viewer:{isConnected:true},publicApiAnchorFound:true,
-    publicApiCursor:'OPAQUE_A',publicApiExhausted:false,
-    publicApiLoading:false,navigationBusy:false,publicApiWarmCursor:null,
-    publicApiWarmTimer:null,
-    loadPublicMediaContinuation:async (background)=>{assert.equal(background,true);requests++;return true;},
-  });
-  try {
-    state.pathname=refs[4].href;
-    ctrl.schedulePublicMediaWarmup(4);
-    assert.equal(scheduled,null,'no API before user consent');
-    granted=true;
-    ctrl.schedulePublicMediaWarmup(1);
-    assert.equal(scheduled,null,'do not fetch with more than three posts remaining');
-    ctrl.schedulePublicMediaWarmup(4);
-
-    assert.equal(scheduled.delay,400);
-    ctrl.schedulePublicMediaWarmup(5);
-    assert.equal(ctrl.publicApiWarmCursor,'OPAQUE_A');
-    const scheduledCb=scheduled.cb;
-    scheduledCb();
-    assert.equal(requests,1,'only one API warmup is started');
-    scheduled=null;
-    ctrl.schedulePublicMediaWarmup(6);
-    assert.equal(scheduled,null,'no repeated call for the same cursor');
-    ctrl.publicApiCursor='OPAQUE_B';
-    ctrl.schedulePublicMediaWarmup(6);
-    assert.equal(scheduled.delay,400,'new cursor can be warmed');
-  }finally {
-    state.pathname=oldPath;document.hidden=oldHidden;
-    context.window.sessionStorage=oldStore;
-    context.window.setTimeout=oldSet;
+test('worker-consented FxEmbed warmup runs only near end and once per cursor',async()=>{
+ const prev=state.pathname,hidden=document.hidden,oldTimer=context.window.setTimeout;
+ let granted=false,scheduled=null,requests=0;
+ document.hidden=false;
+ context.window.setTimeout=(cb,delay)=>{scheduled={cb,delay};return 17};
+ const refs=Array.from({length:8},(_,i)=>
+   ref('/alice/status/'+(800-i*100)+'/photo/1'));
+ const ctrl=Object.assign(Object.create(proto),{
+  originProfile:'alice',originTimeline:'alice|photo',refs,
+  viewer:{isConnected:true},publicApiAnchorFound:true,
+  publicApiCursor:'OPAQUE_A',publicApiExhausted:false,
+  publicApiLoading:false,navigationBusy:false,publicApiWarmCursor:null,
+  publicApiWarmTimer:null,
+  sessionStore:{async hasConsent(){return granted}},
+  loadPublicMediaContinuation:async background=>{
+   assert.equal(background,true);requests++;return true;
   }
+ });
+ try{
+  state.pathname=refs[4].href;
+  await ctrl.schedulePublicMediaWarmup(4);
+  assert.equal(scheduled,null,'never fetch before opt-in');
+  granted=true;
+  await ctrl.schedulePublicMediaWarmup(1);
+  assert.equal(scheduled,null,'not near end');
+  await ctrl.schedulePublicMediaWarmup(4);
+  assert.equal(scheduled.delay,400);
+  assert.equal(ctrl.publicApiWarmCursor,'OPAQUE_A');
+  scheduled.cb();
+  assert.equal(requests,1);
+  scheduled=null;
+  await ctrl.schedulePublicMediaWarmup(6);
+  assert.equal(scheduled,null,'one warmup per cursor');
+  ctrl.publicApiCursor='OPAQUE_B';
+  await ctrl.schedulePublicMediaWarmup(6);
+  assert.equal(scheduled.delay,400);
+ }finally{
+  state.pathname=prev;document.hidden=hidden;
+  context.window.setTimeout=oldTimer;
+ }
 });
 
 test('background FxEmbed continuation never locks the visible gallery',async()=>{

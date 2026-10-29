@@ -25,4 +25,4 @@ jobs:
             echo "Chrome is not installed; browser integration test not run."
           fi
       - name: Verify committed compiled JS is up to date
-        run: git diff --exit-code -- extension/content_script.js
+        run: git diff --exit-code -- extension/content_script.js extension/background.js

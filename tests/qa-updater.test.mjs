@@ -14,6 +14,8 @@ test('private QA update is one-click, test-gated, backed up and does not target 
   assert.match(ps,/npm\.cmd run test:browser/);
   assert.match(ps,/X-Media-Navigator-FxEmbed-QA-20261029/);
   assert.match(ps,/Get-FileHash/);
+  assert.match(ps,/background\.js/,'the future QA must include the MV3 worker');
+  assert.match(ps,/\$stableFiles/,'existing stable install has no worker');
   assert.match(ps,/fxembed-qa-pre-/);
   assert.match(ps,/Move-Item -LiteralPath \$stage -Destination \$target/);
   assert.match(ps,/\$stableHashes/);
