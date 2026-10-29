@@ -16,7 +16,8 @@
 | B1 | CODE+SYNTHETIC TEST COMPLETE / LIVE-X PENDING | 同意／セッションを拡張所有の一時状態へ |
 | B2 | CORE+REGRESSIONS COMPLETE / WINDOW INTEGRATION PENDING | 投稿群の索引、APIカーソル、長い一覧 |
 | B3 | CODE+SYNTHETIC TEST COMPLETE / LIVE-X PENDING | 左右キーの単一状態管理・キャンセル |
-| B4–B5 | DEFERRED | 実X未検証の画質/UI最適化、正式公開 |
+| B4 | PARTIAL / LIVE-X PERFORMANCE PENDING | キャッシュ・探索・デコード前の安全条件を改善。実Xでの画質・速度計測は未完了 |
+| B5 | DEFERRED | 実Xの受入試験と正式公開 |
 
 ## B0 証拠
 
@@ -186,3 +187,11 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 既存テストの軽量モック1件は`naturalWidth`のみで高さが欠落していたため、現実の正常に読み込まれた画像と同様に`naturalHeight=600`を追加。製品側の安全条件を緩める修正はしていない。
 - **限界**：ブラウザは画像ロード中に内部でデコードすることがあるため、`img.onload`前の実RAM使用ピークを80MiB以下に保証するわけではない。今回は**拡張が行う明示的な巨大画像デコードを防ぐ修正**であり、実X/実RAMの測定は未実施。
 - テスト：`npm test` 236件中**227 PASS、0 FAIL、3 SKIP、6 LIVE-X TODO**。`npm run typecheck`PASS、Edge Chromium合成4件PASS・0 FAIL。公開版とインストール済み拡張は変更していない。
+
+### R-040 最終保存・CI結果（2026-10-29）
+
+- 実装コミット`681335d0f99800326555cac382e5f3abe058942e`は非公開`task/xmn-b0-b3-20261029`へpush済み。
+- GitHub Actions run **40842718630** は`success`。Nodeテスト、TypeScript型検査、必須Chromium試験、生成済みJSの正本一致がすべて合格。
+- 現時点の開発候補：`v2.4.21`。公開main、安定開発版、既存Draft PR #17、通常インストールv2.4.18、固定QA v2.4.20には未反映。実Xの画面描画・体感速度・大きな画像の自動デコードRAM実測は未検証。
+- 独立B2ウィンドウ作業ツリーは未コミットのため、そのファイルに触れず、次回は別担当が保存・テストを完了した証拠を照合してからController接続を検討する。
+- 補助ツールの失敗記録（作業ID`XMN-B4-20261029-DOC-CHECK`）：文書の重複行整理を試みた際、Desktop Commanderの`edit_block`がローカル依存パッケージ`fastest-levenshtein`欠落でエラーとなり、当該操作は未実行。その後、読み取り専用PowerShellで該当B0行が1件であることを確認。製品コードや研究資料への影響はなく、再実行が必要な作業もなし。
