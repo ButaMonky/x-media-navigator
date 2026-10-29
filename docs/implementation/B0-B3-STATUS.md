@@ -241,3 +241,15 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - Repair: if the URL represents a bare post and ownership is ambiguous, return null and leave native X arrow handling untouched. A single uniquely indexed media status and exact /photo/1 or /photo/2 URLs retain existing navigation. Explicit photo route with a partial single tile remains subject to separate X evidence.
 - Tests: tests/b2-route-owner.test.mjs verifies 2-media ambiguity, explicit photo ownership, a unique bare status, cross-profile rejection, and no intercepted ArrowRight. npm test 256 total / 247 PASS / 0 FAIL / 3 SKIP / 6 LIVE-X TODO; TypeScript PASS; Edge Chromium synthetic 4/4 PASS. Actual X gallery not checked.
 - Review before integration: require GitHub Actions to verify Node, TypeScript, Chromium and generated JS; only fast-forward task/xmn-b0-b3-20261029 when the main development branch and remote both still match baseline. Remain separate from stable/main and Draft PR #17.
+
+---
+
+## B2 FF-only 統合とR-030の最終受入 | 2026-10-29 JST
+
+- B2ウィンドウの独立正本：`task/xmn-b2-window-model-20261029` / `083f3b9b2c40597e1f97f04df2db0abc058cfaf7`。導入先の統合ブランチ：`task/xmn-b2-window-integration-20261029` / `ff0b2a36a6834d1af784f81674d925897005776f`。いずれも非公開GitHubに保存済み。
+- 統合ブランチのCI run **40863134069** はChromium合成のプレビュー昇格1条件のみFAIL（Node/TSはPASS）。原因候補としてテスト用の「既にdecode済み」の画像をプレビュー開始後にdecodeしていた時間競合と、対象外の先読み件数まで固定比較していたことを確認。テスト対象画像を開始前にデコードし、同じURLに対する再要求の有無だけを検査するように修正。Linux CI **40864148663** でPASS。
+- 主開発正本`task/xmn-b0-b3-20261029`は`9ece4e8`から`ff0b2a3`へ**ff-only**で統合し、Node 254件中245 PASS・0 FAIL・3 SKIP・X実機TODO 6、TypeScript PASS、Edge合成4 PASS、Chrome for Testing実MV3正当経路・Edge実MV3拒否経路PASS。主正本CI run **40864506732** はPASS。
+- R-030：Xのbare `/status/id`から画像が複数索引済みであり、実際にどの写真を表示しているか決められない場合の先頭写真推測を廃止。`findCurrentIndex()`が唯一と確定した投稿や、明示的な写真URLは以前どおり。単体テスト2件を追加し、専用修正コミット`b8472d89ca40151274cbc631511f5a75d783d817`を非公開開発正本へff-only統合。主正本CI run **40865471931** がNode・型検査・必須Chromium・生成JS一致の全てPASS。
+- B2新機能の正確な範囲は**450画像参照以内の近傍をアルバム単位で検証する先読み制限**。全履歴をディスク/クラウドへ退避して350件目より古いページを前後に自由に読み戻す本格的なチェックポイント・ページ移動はまだ実装していない。外部FxEmbed/APIの全順序を証明できたという意味でもない。
+- 継続優先：B2の双方向チェックポイントページングと再開前後のセッション所有権、B4の実X画面描画/通信/CPU・メモリ測定、B5の28件目以降・写真1〜4枚・GIF/動画・返信欄・権限/同意の本番受入。実Xにサインインしたユーザー環境での試験が済むまで、公開main・安定ブランチ・Draft PR #17・通常Chromeインストールv2.4.18・固定QA版v2.4.20は変更禁止。
+- 実装再開位置：この台帳、研究R-001〜R-044、開発正本`task/xmn-b0-b3-20261029`の最新SHAとGit cleanを照合。別作業ツリーの未保存成果を推測で上書きしない。通常チャットで続行し、本人指示がない限りWorkを利用しない。
