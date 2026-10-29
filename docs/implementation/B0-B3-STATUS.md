@@ -119,3 +119,12 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - **B5残：本番Xの受入・公開判断**。認証済みXの28→29件目、写真1〜4枚、動画・GIF・混合、返信欄、Chromeの権限ダイアログ、先読みUIを人が確認するまでは公開main・安定版・Chrome固定QAの更新禁止。
 - 開発候補は`2.4.21-dev.1`。通常版v2.4.18、インストール済みQA v2.4.20は変更しない。
 - 次の再開位置：このファイル・研究台帳・専用タスクブランチの最新Git SHAを照合してから、B2ウィンドウ担当の成果を受入条件に照らしてレビュー。実Xでまだ確認不能なUI改造は保留する。
+
+### 継続して改善した品質ゲート（R-021）
+
+- GitHub Actionsの旧設定では、Chrome/Chromiumが見つからなくても`echo`だけでCIを成功終了できた。今回`check.yml`を更新し、**Chromium合成ブラウザ試験を必須**に変更。ランナーでブラウザが見つからなければ`::error::`と`exit 1`で明示的にFAILとする。
+- GitHubのUbuntu 24.04ランナーイメージにはGoogle Chrome/Chromiumが通常含まれるが、イメージが変わった場合は**無検証成功よりも明示的失敗**を優先する。根拠：https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md
+- `tests/ci-required-browser.test.mjs`で無検証スキップを再導入できないように契約を固定。CIが実際にGitHub上で成功したかはpush後に確認し、ローカル成功と区別する。
+- Chrome for TestingによるWorker+Content Scriptの実起動テストはローカル独立受入。現時点ではGitHub CIの必須ジョブには追加しない（通常Google ChromeのCLIによるMV3拡張読み込みには版依存があり、Chrome for Testingの専用インストール方法をさらに設計する必要がある）。
+
+- CI品質ゲート追加後のローカル全体検査：`npm test` 224件中**215 PASS・0 FAIL・3 SKIP・実X TODO 6**、Content/Worker型検査PASS。Chromium合成4件・Chrome for Testing MV3正当経路・Edge MV3拒否経路は同じ候補版で別途PASS済み。
