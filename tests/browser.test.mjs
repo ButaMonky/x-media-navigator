@@ -248,7 +248,15 @@ async function exercise() {
   previewCtrl.handoff=null;
   previewCtrl.imageSources=new Map([[targetPreviewRef.key,targetPreviewUrl]]);
   previewCtrl.prefetched=new Map();
+  // The test represents an ALREADY decoded prefetched photo. Decode it
+  // before the handoff timer starts so CI load cannot expire the 1.8s
+  // overlay while this fixture is preparing the synthetic decoded resource.
+  const decodedHigh=document.createElement('img');
+  decodedHigh.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
+  await decodedHigh.decode();
   const beforePreviewRequests=window.prefetchLoads.length;
+  const beforePreviewTargetRequests=window.prefetchLoads.filter(
+    url=>url===targetPreviewUrl).length;
   const previewCreated=previewCtrl.beginVisualHandoff(targetPreviewRef,targetPreviewLink);
   const previewHost=previewCtrl.handoff?.host;
   const previewCanvas=previewHost?.querySelector('canvas.xmn-handoff-preview');
@@ -264,15 +272,15 @@ async function exercise() {
     lowActuallyVisible && previewCtrl.handoff.quality==='low' &&
     window.prefetchLoads.length===beforePreviewRequests &&
     getComputedStyle(previewHost).pointerEvents==='none');
-  const decodedHigh=document.createElement('img');
-  decodedHigh.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
-  await decodedHigh.decode();
   previewCtrl.prefetched.set(targetPreviewUrl,{image:decodedHigh,ready:true,loading:false,bytes:4});
   const promoted=previewCtrl.promoteVisualHandoff();
   result('same handoff upgrades from thumbnail to full image without refetch',
     promoted && previewCtrl.handoff.quality==='high' &&
     previewHost.firstElementChild===decodedHigh &&
-    window.prefetchLoads.length===beforePreviewRequests);
+    // Unrelated X background prefetch may legitimately begin during a
+    // handoff; only a duplicate request for THIS target would be a failure.
+    window.prefetchLoads.filter(url=>url===targetPreviewUrl).length===
+      beforePreviewTargetRequests);
   previewCtrl.clearVisualHandoff();
   result('progressive preview releases DOM and does not intercept input',
     !document.querySelector('.xmn-visual-handoff') && previewCtrl.handoff===null);

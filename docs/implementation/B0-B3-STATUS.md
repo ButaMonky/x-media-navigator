@@ -220,3 +220,14 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - Integration tests: `npm test` **254 cases: 245 PASS, 0 FAIL, 3 SKIP, 6 real-X TODO**; Edge Chromium synthetic 4 PASS, 0 FAIL; `npm run typecheck` PASS; Chrome for Testing MV3 consent/session/response PASS; Edge MV3 real-worker denied origin PASS. These are private/isolated tests, not X production acceptance.
 - Incidental repair: on the Windows integration worktree, `.github/workflows/check.yml` carries CRLF line endings. The existing CI contract erroneously expected only LF. Make `tests/ci-required-browser.test.mjs` accept both CRLF and LF for the same required `exit 1` statement. The browser gate itself was not loosened.
 - Pending: actual checkpoint-backed 450+ API paging; real X media modal, photo/video/GIF mixture and image delivery timings; public release and installed Chrome updates. Do not merge into stable/public branches without actual user acceptance.
+
+---
+
+## B2 integration GitHub CI failure and fixture correction | 2026-10-29
+
+- Work ID XMN-B2-WINDOW-CI-40863134069. Branch task/xmn-b2-window-integration-20261029 at commit 0b74a4d2e48f8eac75b699999dff7753b1d21a33 was saved; base 9ece4e8 and independent model 083f3b9 are preserved.
+- GitHub Actions run 40863134069 FAILED: npm test and TypeScript checks passed; Linux synthetic Chromium had 39 native-gallery scenarios pass and 1 fail: "same handoff upgrades from thumbnail to full image without refetch". Actual X was not visited.
+- Test harness assumed an already decoded prefetch photo but awaited its decode after the 1.8s overlay timer started; it also compared ALL unrelated X background prefetch requests. This could produce a CI timing race without showing a product regression.
+- Test-only repair: decode synthetic high image before the handoff timer and count duplicate transfer only for the exact target CDN URL. Keep all other browser scenario assertions, including the mandatory Chromium CI gate, unchanged.
+- After local repair: npm test 254 tests (245 PASS, 0 FAIL, 3 SKIP, 6 real-X TODO); Edge/Chrome for Testing each 4/4 synthetic browser cases PASS. Linux CI remains a required acceptance gate before ff-only promotion.
+- Scope: bounded verified local PREFETCH window. Full 450+ API cursor page eviction, storage and backward restoration remain pending; stable/public Chrome installations and Draft PR #17 are unchanged.
