@@ -80,3 +80,42 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - **後続の実装候補**：B2の450メディア参照`planMediaWindow`を`Controller`へ統合するには、Xの仮想化、ページ戻り、別タブ/複数プロフィール、APIカーソルのページ間復元を同時に保証する必要がある。研究済みの純粋関数までを保存し、現行ギャラリーの索引を破棄する変更は未実行。
 - **改修は非公開GitHubの`task/xmn-b0-b3-20261029`だけに保存**。通常版2.4.18・QA固定インストール版2.4.20・公開main・安定開発ブランチ・Draft PR #17は変更しない。
 - 今後のChrome実機受入では、通常版と候補版を同時に有効化せず、正当なユーザーがサインインしたX画面で28→29件目、左右・写真1〜4枚、動画/GIF、返信欄、API権限と同意動作、非表示・キャンセル・画像プリフェッチを確認する。
+
+## 続行チェックポイント｜MV3ブラウザ検証・B3追加保護・B4計測正確性
+
+- **実Chromium・B1正当な通信**：別の検証ブランチ`58bb9b2`で確立した`tools/mv3-worker-smoke.mjs`を、内容ハッシュを確認してこの候補へ取り込んだ。Chrome for Testing 156による再試験では、製品Content Scriptと実MV3 Workerの通信、ページ所有`sessionStorage`の偽同意無視、拡張専用同意、正しいセッション保存、不正順序の拒否、別HTTP文書への移動後の復元、元の返信欄の維持、投稿コントロールをすべて確認。
+- **実Chromium・B1送信元拒否**：`tools/b1-worker-cdp-probe.mjs`では**実際の製品Workerを無改変で読み込み**、独立Edge Chromiumのlocalhost拡張からメッセージ送信。Workerは外部元を`{ok:false}`として拒否。実MV3 Worker対象の起動とContent Script送信をCDPの実時間で確認。
+- いずれも使い捨ての拡張・プロファイル・localhostのみ。**X本番・認証情報・Cookie・HAR・通常Chromeのプロファイルには接触していない**。テスト後は起動したブラウザだけを終了。
+- 最初の`--virtual-time-budget --dump-dom`によるネガティブ試行は`waiting`で終了し判定不能だったため、CDPでWorkerの非同期応答を実時間観測する試験へ切り替えた。**最初の判定不能を製品の失敗と数えない**。
+- B3追加：不正な公開API JSON・4MB超応答・前進しないカーソル・非連続投稿群・アンカー不一致・フィルター不一致についても短い指数バックオフを適用。先行取得は再試行禁止時刻より前にスケジュールしない。正常応答時に失敗回数を解消。
+- B3の新規回帰テスト：`tests/b3-network.test.mjs`に不正JSONと同値カーソルの再通信防止を追加。既存429と異常受信のテストは維持。
+- B4で安全に修正可能な**計測の順序のみ**修正：`preview.visible`のログは`classList.add('xmn-handoff-visible')`が成功してから発行。失敗時は`preview.skipped reveal_failed`を出してオーバーレイを破棄する。`tests/b4-reveal-diagnostics.test.mjs`で成功/失敗を検証。
+- `preview.visible`は**DOMクラス付与の成功**であって、GPU画面描画の確証ではない。B4の本番Xの画質・速度改善・UI変更は依然保留。
+- 再現コマンド：`npm run test:mv3`（Chrome for Testing）／`npm run test:mv3:reject`（Edge ChromiumまたはCHROMIUM_PATH指定）。試験は製品コードの公開や既存Chromeインストールを一切必要としない。
+
+## 続行検証｜2026-10-29、B1/B3強化およびB4診断の修正
+
+- 再開元：`ffa54907a34d153717a271e68933b63540dfc4fe`、独立タスクブランチ`task/xmn-b0-b3-20261029`。
+- B1の実MV3起動・正当な通信について、他の検証ブランチの**既に検査済みのスクリプト**（出典`58bb9b2`）をハッシュ照合して採用。Chrome for TestingにてContent Scriptの起動、同意・セッションの拡張所有保存、別文書後の復元、旧ページ偽同意の無視、返信欄と戻る矢印維持を確認。
+- 追加の`tools/b1-worker-cdp-probe.mjs`は**無改変の製品Worker**をlocalhostへロードし、許可外送信元を拒否する結果を実MV3＋CDPで確認。`--dump-dom`の仮想時刻でWorker応答を観測できなかった初回試行は**INCONCLUSIVE**であり、後から実時間CDP試験に切り替えて成功。
+- 成功した2種類の独立ブラウザテストは`npm run test:mv3`、`npm run test:mv3:reject`から再実施可能。ブラウザは各自の一時プロフィールだけを起動し、終了時に対象プロセス・一時ディレクトリを削除。X本番にはアクセスしていない。
+- B3追加修正：HTTP 429/5xx以外にも**不正なJSONスキーマ、サイズ超過、同値カーソル、非連続投稿、アンカー/タイムライン不一致**を短時間のクールダウン対象にする。不要なVolunteer APIリクエストを抑えるが、正当な応答まで無期限停止させない。新規回帰テスト2件で確認。
+- B4の安全な計測修正：`showVisualHandoff()`が`preview.visible`を**DOM表示クラス適用成功後**に記録。DOM追加の例外時には誤った可視ログを出さず、オーバーレイを破棄する。回帰テスト2件追加。**実画面のPaint成功や高速化率はこのログでは証明できない**。
+
+### このチェックポイントの試験結果
+
+- `npm test`：**223件、214 PASS、0 FAIL、3 SKIP、実X TODO 6**。
+- `npm run typecheck`：Content Script/Service WorkerともにPASS。
+- `XMN_RUN_CHROMIUM=1 npm run test:browser`：**4 PASS、0 FAIL**。
+- `npm run test:mv3`：Chrome for Testing 156／WorkerとContent Scriptの正当な通信・移動後の復元／**PASS**。
+- `npm run test:mv3:reject`：独立Edge Chromium／実Workerの無許可送信元拒否／**PASS**。
+- `git diff --check`・ビルド生成JSの整合性・配布版Manifestの検査を再確認してからコミットする。
+- 一時の調査コマンドでPowerShell`Select -Object`の入力ミスが発生したが、研究対象のファイル変更なしで修正し再実行済み。旧`--dump-dom` Worker検証の未確定結果も本節へ記録した。
+
+### 継続・判断待ち
+
+- **B2残：450参照の実閲覧ウィンドウ適用**。`planMediaWindow()`は独立テスト済みだが、現在閲覧している投稿群を破棄せず、カーソル/戻る/フィルター切替を守る実接続はまだ未実装。別の作業ツリー`task/xmn-b2-window-model-20261029`では独立モジュールを研究中のため、同じファイルを競合編集しない。
+- **B4残：実描画・実HTTP通信の測定**。Canvas描画の1フレーム、画像デコード、CPUメモリ、Xの`large/orig`転送などを実Xで測る必要がある。今回の診断修正を「画面が高速になった」と言い換えない。
+- **B5残：本番Xの受入・公開判断**。認証済みXの28→29件目、写真1〜4枚、動画・GIF・混合、返信欄、Chromeの権限ダイアログ、先読みUIを人が確認するまでは公開main・安定版・Chrome固定QAの更新禁止。
+- 開発候補は`2.4.21-dev.1`。通常版v2.4.18、インストール済みQA v2.4.20は変更しない。
+- 次の再開位置：このファイル・研究台帳・専用タスクブランチの最新Git SHAを照合してから、B2ウィンドウ担当の成果を受入条件に照らしてレビュー。実Xでまだ確認不能なUI改造は保留する。

@@ -88,3 +88,32 @@ test('B3 correctly reassembles bounded UTF-8 streamed JSON',async()=>{
  assert.equal(await proto.readBoundedPublicBody.call(ctl,{
   body:{getReader:()=>reader}}),value);
 });
+
+test('B3 malformed successful HTTP payload causes a bounded cooldown',async()=>{
+ const ctl=make();let calls=0;
+ context.fetch=async()=>{
+  calls++;
+  return {ok:true,status:200,headers:{get:()=>null},body:null,
+   async text(){return JSON.stringify({code:200,results:[],cursor:{}})}};
+ };
+ try{
+  assert.equal(await proto.fetchPublicMediaPage.call(ctl,null),null);
+  assert.equal(calls,1);
+  assert.ok(ctl.publicApiRetryAt>Date.now()+1000,'invalid data must not hammer provider');
+  assert.equal(await proto.loadPublicMediaContinuation.call(ctl,true),false);
+  assert.equal(calls,1,'cooldown stops repeated query');
+ }finally{delete context.fetch;}
+});
+test('B3 nonadvancing pagination cursor imposes backoff',async()=>{
+ const ctl=Object.assign(make(),{
+  navGeneration:4,publicApiCursor:'STUCK',publicApiAnchorFound:true,
+  indexes:new Map(),publicApiKeys:new Set(),imageSources:new Map(),
+  knownPhotoTotals:new Map(),updateViewerState(){},
+  fetchPublicMediaPage:async()=>({
+   refs:[ref(300),ref(200)],photos:[],cursor:'STUCK'
+  })
+ });
+ document.hidden=false;location.pathname='/alice/status/400/photo/1';
+ assert.equal(await proto.loadPublicMediaContinuation.call(ctl,true),false);
+ assert.ok(ctl.publicApiRetryAt>Date.now());
+});

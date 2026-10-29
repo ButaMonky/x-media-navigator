@@ -719,6 +719,14 @@ var XMN;
                 reader.releaseLock();
             }
         }
+        /** Throttle malformed public payloads as well as HTTP rate limits. */
+        imposePublicApiCooldown(reason, providerRetryMs = 0) {
+            this.publicApiFailures = Math.min(6, (this.publicApiFailures ?? 0) + 1);
+            const fallback = Math.min(60000, 1000 * (2 ** this.publicApiFailures));
+            const advised = Number.isFinite(providerRetryMs) && providerRetryMs > 0 ? providerRetryMs : 0;
+            this.publicApiRetryAt = Date.now() + Math.min(120000, Math.max(fallback, advised));
+            diagnostic('fxembed.cooldown', { reason, retryMs: this.publicApiRetryAt - Date.now() });
+        }
         async fetchPublicMediaPage(cursor) {
             if (!this.originProfile)
                 return null;
@@ -746,8 +754,6 @@ var XMN;
                 if (!response.ok) {
                     diagnostic('fxembed.http_failure', { httpStatus: response.status });
                     if (response.status === 429 || response.status >= 500) {
-                        this.publicApiFailures = Math.min(6, (this.publicApiFailures ?? 0) + 1);
-                        const fallbackMs = Math.min(60000, 1000 * (2 ** this.publicApiFailures));
                         let retryMs = 0;
                         const header = response.headers.get('retry-after');
                         if (header) {
@@ -756,24 +762,26 @@ var XMN;
                             retryMs = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 :
                                 Number.isFinite(asDate) ? Math.max(0, asDate - Date.now()) : 0;
                         }
-                        this.publicApiRetryAt = Date.now() + Math.min(120000, Math.max(fallbackMs, retryMs));
-                        diagnostic('fxembed.cooldown', { retryMs: this.publicApiRetryAt - Date.now() });
+                        this.imposePublicApiCooldown('http_' + response.status, retryMs);
                     }
                     return null;
                 }
                 const size = Number(response.headers.get('content-length'));
                 if (Number.isFinite(size) && size > 4000000) {
                     diagnostic('fxembed.rejected', { reason: 'content_length' });
+                    this.imposePublicApiCooldown('content_length');
                     return null;
                 }
                 const body = await this.readBoundedPublicBody(response);
                 if (body === null) {
                     diagnostic('fxembed.rejected', { reason: 'body_length' });
+                    this.imposePublicApiCooldown('body_length');
                     return null;
                 }
                 const page = XMN.parsePublicMediaPage(JSON.parse(body), this.originProfile);
                 if (!page) {
                     diagnostic('fxembed.rejected', { reason: 'invalid_payload' });
+                    this.imposePublicApiCooldown('invalid_payload');
                     return null;
                 }
                 this.publicApiFailures = 0;
@@ -786,10 +794,8 @@ var XMN;
             }
             catch (error) {
                 const wasAbort = error instanceof Error && error.name === 'AbortError';
-                if (!wasAbort) {
-                    this.publicApiFailures = Math.min(6, (this.publicApiFailures ?? 0) + 1);
-                    this.publicApiRetryAt = Date.now() + Math.min(60000, 1000 * (2 ** this.publicApiFailures));
-                }
+                if (!wasAbort || this.publicApiCancelReason === 'timeout')
+                    this.imposePublicApiCooldown(wasAbort ? 'timeout' : 'network_or_json');
                 diagnostic('fxembed.failed', {
                     reason: wasAbort ? (this.publicApiCancelReason ?? 'timeout') : 'network_or_json',
                 });
@@ -813,7 +819,8 @@ var XMN;
                 !this.publicApiCursor || this.publicApiExhausted || this.publicApiLoading ||
                 this.navigationBusy || !this.viewer?.isConnected || document.hidden ||
                 this.publicApiWarmTimer !== null ||
-                this.publicApiWarmCursor === this.publicApiCursor || !this.originProfile)
+                this.publicApiWarmCursor === this.publicApiCursor || !this.originProfile ||
+                this.publicApiRetryAt > Date.now())
                 return;
             const profile = this.originProfile;
             this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
@@ -823,7 +830,8 @@ var XMN;
                 this.publicApiLoading || this.navigationBusy || document.hidden ||
                 !this.publicApiCursor || this.publicApiExhausted ||
                 this.publicApiWarmTimer !== null ||
-                this.publicApiWarmCursor === this.publicApiCursor)
+                this.publicApiWarmCursor === this.publicApiCursor ||
+                this.publicApiRetryAt > Date.now())
                 return;
             let position = currentIndex;
             let remaining = 0;
@@ -902,6 +910,7 @@ var XMN;
                     // Cursor progress is mandatory even if the page already has enough posts.
                     if (cursor && page.cursor === cursor) {
                         diagnostic('fxembed.continuation_abort', { reason: 'cursor_not_advanced' });
+                        this.imposePublicApiCooldown('cursor_not_advanced');
                         return false;
                     }
                     pages.push({
@@ -939,6 +948,7 @@ var XMN;
                     if (seenGroups.has(ref.statusId) || (previousGroup &&
                         ref.statusId.padStart(19, '0') >= previousGroup.padStart(19, '0'))) {
                         diagnostic('fxembed.continuation_abort', { reason: 'noncontiguous_post_group' });
+                        this.imposePublicApiCooldown('noncontiguous_post_group');
                         return false;
                     }
                     seenGroups.add(ref.statusId);
@@ -963,11 +973,13 @@ var XMN;
                     const last = statusIds.indexOf(nativeLast);
                     if (last < 0) {
                         diagnostic('fxembed.continuation_abort', { reason: 'anchor_missing' });
+                        this.imposePublicApiCooldown('anchor_missing');
                         return false;
                     }
                     const earlier = [...new Set(this.refs.map((ref) => ref.statusId))].slice(-2, -1);
                     if (earlier.length && !earlier.every((id) => statusIds.slice(0, last).includes(id))) {
                         diagnostic('fxembed.continuation_abort', { reason: 'timeline_mismatch' });
+                        this.imposePublicApiCooldown('timeline_mismatch');
                         return false; // Provider does not match X native media list.
                     }
                     start = combined.findIndex((ref) => ref.statusId === nativeLast);
@@ -2633,6 +2645,16 @@ var XMN;
                 // If the decoded full-size photo became ready during the SPA route
                 // change, skip showing the blurry intermediary altogether.
                 this.promoteVisualHandoff();
+                // The event means the DOM reveal instruction succeeded, not that the
+                // browser has already painted a visible frame.
+                try {
+                    handoff.host.classList.add('xmn-handoff-visible');
+                }
+                catch {
+                    diagnostic('preview.skipped', { reason: 'reveal_failed' });
+                    this.clearVisualHandoff();
+                    return;
+                }
                 handoff.shown = true;
                 handoff.shownAt = Date.now();
                 diagnostic('preview.visible', { quality: handoff.quality });
@@ -2640,7 +2662,6 @@ var XMN;
                 // Start the visible handoff window only after that close finishes.
                 window.clearTimeout(handoff.timeout);
                 handoff.timeout = window.setTimeout(() => this.clearVisualHandoff('timeout'), 1800);
-                handoff.host.classList.add('xmn-handoff-visible');
             }
         }
         finishVisualHandoff(viewer) {
