@@ -62,3 +62,13 @@
   Node構文エラーが発生。ソース変更前に停止したため、
   一時スクリプトだけ修正・再実行し、修正スクリプトは削除。
 - どちらも公開版・既存作業ツリー・Chrome環境に影響なし。
+
+## GitHub保存・クラウドCI
+
+- 修正コミット: `9fe6a0e3f93d1c85ddbebdb6ed87a10d5d76515d`
+  （`task/xmn-b5-qa-synthetic-20261030`へpush済み）。
+- GitHub Actions `TypeScript check`: run `40915164292` **SUCCESS**。
+  同runは非公開タスクブランチのpushを対象にし、
+  実Xでの検証を意味しない。
+- 本成果はFF-onlyの主開発候補へは未統合。
+  同時進行中のB2ページング実装の未保存変更を保持している。
