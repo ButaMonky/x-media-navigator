@@ -494,7 +494,7 @@ var XMN;
         // In older grids, the image sits outside its link. A single owner is still safe.
         return explicit ?? possibilities[0] ?? null;
     }
-    /** Maintain a stable ordered list of media refs, never cached DOM nodes. */
+    /** Store canonical media refs; ephemeral DOM handles are bounded and revalidated. */
     class Controller {
         constructor() {
             this.sessionStore = new XMN.SessionStore();

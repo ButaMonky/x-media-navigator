@@ -167,3 +167,10 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - `npm run test:mv3:reject`：独立Edge Chromiumで、製品Workerの拒否対象を実際に拒否できることを確認しPASS。
 - 退行防止：`tests/b4-image-source-cache.test.mjs`と`tests/b4-live-link-cache.test.mjs`の合計9件で、キャッシュ境界・URL更新・失効DOM・保存失敗時の巻き戻し・非同期セッション切替を確認。
 - **残る課題**：実Xでの体感速度は未測定。単一巨大画像のデコード開始前にメモリ上限を保証する問題（R-040）は未修正。B2の保持範囲モデルを本体の長い索引へ接続する問題（R-006）も別担当の未コミット成果との競合を避け、今回保留した。
+
+### 生成物一致CIの失敗と復旧（2026-10-29）
+
+- 追加改善コミット`e5bdff4d2cb31bd1ee1f51da3385447457bd77f1`、GitHub Actions run **40841499514** は**FAIL**。Nodeテスト・型検査・必須Chromium合成テストはPASSしたが、最後の`git diff --exit-code -- extension/content_script.js extension/background.js`で失敗。
+- GitHubの実ログを精査したところ、差分は`Controller`の説明コメント**1行のみ**。TypeScriptの説明は新しい内容なのに、生成済み`extension/content_script.js`に古いコメントが残っていた。Windows/Linux固有の改行差ではなく、正本とコンパイル済み生成物の同期漏れ。
+- `npm run build`を再実行し、生成JSへの差分が**コメント1行のみ**であること、`git diff --check`に問題がないことを確認。**既存テストを緩和せず**生成JSを正本と一致させ、再push後にGitHub CIを確認する。
+- 再開位置：今回の生成物同期コミットと最新CIが完了後、B2ウィンドウ別担当の独立成果・未コミット状態を再確認する。公開版／通常QAへの反映は引き続き保留。
