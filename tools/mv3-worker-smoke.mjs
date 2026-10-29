@@ -1,6 +1,6 @@
 import {createServer} from 'node:http';
 import {spawn} from 'node:child_process';
-import {mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync, copyFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 const root=resolve('.');
@@ -20,11 +20,13 @@ if(worker.split(before).length!==2){
  throw Error('Worker origin guard changed');
 }
 writeFileSync(join(ext,'background.js'),worker.replace(before,after));
+copyFileSync(join(root,'extension/content_script.js'),join(ext,'content_script.js'));
+copyFileSync(join(root,'extension/style.css'),join(ext,'style.css'));
 writeFileSync(join(ext,'manifest.json'),JSON.stringify({
  manifest_version:3,name:'XMN B1 isolated worker QA',version:'1.0.0',
  permissions:['storage'],background:{service_worker:'background.js'},
- content_scripts:[{matches:['http://127.0.0.1/*'],js:['probe.js'],
- run_at:'document_idle'}]
+ content_scripts:[{matches:['http://127.0.0.1/*'],js:['content_script.js','probe.js'],
+ css:['style.css'],run_at:'document_idle'}]
 },null,2));
 const probe=`
 (async()=>{
@@ -32,6 +34,7 @@ const probe=`
   kind:'xmn-store-v1',op,profile:'alice',session
  });
  if(location.pathname.endsWith('/media')){
+   sessionStorage.setItem('xmn-fxembed-consent-alice','yes');
    const before=await m('consent.get');
    const granted=await m('consent.set');
    const after=await m('consent.get');
@@ -54,11 +57,19 @@ const probe=`
  const ok=location.pathname==='/alice/status/400/photo/1'&&
    session?.ok===true&&session?.session?.refs?.length===2&&
    session.session.cursor==='NEXT'&&consent?.granted===true;
- document.documentElement.dataset.mv3WorkerResult=ok?'passed':'failed';
- document.documentElement.dataset.mv3WorkerSignals=[
-  !!session?.ok,session?.session?.refs?.length||0,!!consent?.granted,
-  location.pathname.includes('/status/')
- ].join(',');
+ setTimeout(()=>{
+   const label=document.querySelector('.xmn-status')?.textContent||'';
+   const previous=document.querySelector('.xmn-prev');
+   const viewer=document.querySelector('[data-testid="swipe-to-dismiss"]');
+   const replies=document.getElementById('replies');
+   const visible=label==='投稿 2 / 2'&&previous&&!previous.disabled&&
+     !!viewer?.isConnected&&replies?.textContent==='Original replies';
+   document.documentElement.dataset.mv3WorkerResult=ok&&visible?'passed':'failed';
+   document.documentElement.dataset.mv3WorkerSignals=[
+    !!session?.ok,session?.session?.refs?.length||0,!!consent?.granted,
+    !!visible,label
+   ].join(',');
+ },1300);
 })().catch(e=>{
  document.documentElement.dataset.mv3WorkerResult='error';
  document.documentElement.dataset.mv3WorkerError=e?.message||'unknown';
@@ -66,7 +77,19 @@ const probe=`
 writeFileSync(join(ext,'probe.js'),probe);
 const server=createServer((req,res)=>{
  res.setHeader('content-type','text/html; charset=utf-8');
- res.end('<!doctype html><html><head><title>B1 worker synthetic</title></head><body><script>sessionStorage.setItem("xmn-fxembed-consent-alice","yes")</script>isolated probe</body></html>');
+ if(req.url?.includes('/status/400/')){
+   res.end(`<!doctype html><html><head><title>B1 modal fixture</title></head><body>
+    <main><div data-testid="primaryColumn"></div></main>
+    <div role="dialog"><button data-testid="app-bar-close" aria-label="Close">Close</button>
+     <div data-testid="swipe-to-dismiss" style="width:690px;height:420px">
+      <img width="600" height="400" alt="fixture photo"
+       src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=">
+     </div><aside id="replies">Original replies</aside>
+    </div>
+    </body></html>`);
+ }else{
+   res.end('<!doctype html><html><head><title>B1 first page</title></head><body><main><div data-testid="primaryColumn"></div></main></body></html>');
+ }
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const port=server.address().port;
