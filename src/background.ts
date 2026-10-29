@@ -3,7 +3,7 @@
 type Sender = { tab?: { id?: number }, frameId?: number, url?: string };
 type Message = {
   kind?: string; op?: string; profile?: string; session?: unknown;
-  page?: unknown; manifest?: unknown;
+  page?: unknown; manifest?: unknown; href?: unknown;
 };
 declare const chrome: {
  runtime: { onMessage: { addListener(cb: (
@@ -207,6 +207,52 @@ namespace XMN {
        if(msg.op==='session.clear')remove.push(sessionKey(id));
        await chrome.storage.session.remove(remove);
        return {ok:true};
+     });
+   }
+   if(msg.op==='checkpoint.find'){
+     // A historical page may be selected only by the exact public media URL
+     // already displayed in this TOP-FRAME X tab. No cross-post lookup.
+     if(typeof msg.href!=='string'||msg.href.length>128)return {ok:false};
+     const ref=mediaRefFromHref(msg.href,profile);
+     if(!ref||ref.kind===null||ref.href!==msg.href)return {ok:false};
+     const targetHref=msg.href;
+     try{
+       if(new URL(sender.url||'').pathname!==msg.href)return {ok:false};
+     }catch{return {ok:false}}
+     const consent=(await chrome.storage.session.get(consentKey(id,profile)))[consentKey(id,profile)];
+     if(consent!==true)return {ok:false};
+     const key=manifestKey(id,profile);
+     return withManifestLock(key,async()=>{
+       const saved=(await chrome.storage.session.get(key))[key];
+       if(saved===undefined)return {ok:true,session:null,page:null};
+       const manifest=parsePublicPageManifest(saved,profile);
+       if(!manifest){
+         await chrome.storage.session.remove(key);
+         return {ok:true,session:null,page:null};
+       }
+       const keys=manifest.pages.map(meta=>checkpointKey(id,profile,meta.page));
+       const storage=await chrome.storage.session.get(keys);
+       let chosen:Record<string,unknown>|null=null;
+       let selected:number|null=null;
+       for(let i=0;i<keys.length;i++){
+         const data=storage[keys[i]];
+         if(!validateSession(data,profile)||
+            !publicPageMatchesDescriptor(
+              data,manifest.pages[i],profile,manifest.timeline,manifest.expires)){
+           await chrome.storage.session.remove(key);
+           return {ok:true,session:null,page:null};
+         }
+         if((data.refs as string[]).includes(targetHref)){
+           if(chosen!==null){
+             // One X media URL may not belong to two committed page windows.
+             await chrome.storage.session.remove(key);
+             return {ok:true,session:null,page:null};
+           }
+           chosen=data;
+           selected=manifest.pages[i].page;
+         }
+       }
+       return {ok:true,session:chosen,page:selected};
      });
    }
    if(msg.op==='manifest.get'||msg.op==='manifest.put'){

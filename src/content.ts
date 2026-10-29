@@ -280,11 +280,23 @@ namespace XMN {
       const profile=match[1].toLowerCase();
       const generation=this.navGeneration;
       this.sessionStore ??= new SessionStore();
-      const data=await this.sessionStore.load(profile);
+      const route=mediaRefFromHref(path,profile);
+      if(!route)return;
+      let data=await this.sessionStore.load(profile);
+      let restoredPage:number|null=null;
+      // A full-document back/forward visit may target a committed historical
+      // page instead of the newest session. The worker verifies ALL immutable
+      // pages and the exact active URL before returning a page snapshot.
+      if((!data || !data.refs.includes(route.href)) && route.kind!==null){
+        const found=await this.sessionStore.findCheckpointForRoute?.(profile,route.href);
+        if(found){
+          data=found.session;
+          restoredPage=found.page;
+        }
+      }
       if(!data || window.location.pathname!==path ||
          generation!==this.navGeneration || this.originProfile!==null) return;
-      const route=mediaRefFromHref(path,profile);
-      if(!route || !Array.isArray(data.refs) || !Array.isArray(data.apiKeys))return;
+      if(!Array.isArray(data.refs) || !Array.isArray(data.apiKeys))return;
       const refs=data.refs.map(href=>mediaRefFromHref(href,profile));
       if(refs.some(ref=>!ref) || !refs.some(ref=>ref?.key===route.key))return;
       const keys=new Set(data.apiKeys.filter(key=>typeof key==='string' &&
@@ -314,6 +326,8 @@ namespace XMN {
            !keys.has(entry[0])||typeof entry[1]!=='string')continue;
         this.rememberImageSource(entry[0], entry[1]);
       }
+      if(restoredPage!==null)
+        diagnostic('checkpoint.restored',{page:restoredPage,media:this.refs.length});
     }
 
     /**

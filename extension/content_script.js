@@ -658,12 +658,12 @@ var XMN;
 var XMN;
 (function (XMN) {
     class SessionStore {
-        async call(op, profile, session, page, manifest) {
+        async call(op, profile, session, page, manifest, href) {
             try {
                 if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage)
                     return null;
                 const data = await chrome.runtime.sendMessage({
-                    kind: 'xmn-store-v1', op, profile, session, page, manifest
+                    kind: 'xmn-store-v1', op, profile, session, page, manifest, href
                 });
                 if (!data || typeof data !== 'object')
                     return null;
@@ -722,6 +722,17 @@ var XMN;
         }
         async clearPageManifest(profile) {
             return (await this.call('manifest.clear', profile))?.ok === true;
+        }
+        /** A read-only, origin-checked historical lookup for the EXACT current X URL. */
+        async findCheckpointForRoute(profile, href) {
+            const ref = XMN.mediaRefFromHref(href, profile);
+            if (!ref || ref.kind === null || ref.href !== href)
+                return null;
+            const r = await this.call('checkpoint.find', profile, undefined, undefined, undefined, href);
+            if (r?.ok !== true || !r.session || !Number.isSafeInteger(r.page) ||
+                r.page < 0 || r.page >= 64)
+                return null;
+            return { session: r.session, page: r.page };
         }
     }
     XMN.SessionStore = SessionStore;
@@ -980,12 +991,25 @@ var XMN;
             const profile = match[1].toLowerCase();
             const generation = this.navGeneration;
             this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
-            const data = await this.sessionStore.load(profile);
+            const route = XMN.mediaRefFromHref(path, profile);
+            if (!route)
+                return;
+            let data = await this.sessionStore.load(profile);
+            let restoredPage = null;
+            // A full-document back/forward visit may target a committed historical
+            // page instead of the newest session. The worker verifies ALL immutable
+            // pages and the exact active URL before returning a page snapshot.
+            if ((!data || !data.refs.includes(route.href)) && route.kind !== null) {
+                const found = await this.sessionStore.findCheckpointForRoute?.(profile, route.href);
+                if (found) {
+                    data = found.session;
+                    restoredPage = found.page;
+                }
+            }
             if (!data || window.location.pathname !== path ||
                 generation !== this.navGeneration || this.originProfile !== null)
                 return;
-            const route = XMN.mediaRefFromHref(path, profile);
-            if (!route || !Array.isArray(data.refs) || !Array.isArray(data.apiKeys))
+            if (!Array.isArray(data.refs) || !Array.isArray(data.apiKeys))
                 return;
             const refs = data.refs.map(href => XMN.mediaRefFromHref(href, profile));
             if (refs.some(ref => !ref) || !refs.some(ref => ref?.key === route.key))
@@ -1020,6 +1044,8 @@ var XMN;
                     continue;
                 this.rememberImageSource(entry[0], entry[1]);
             }
+            if (restoredPage !== null)
+                diagnostic('checkpoint.restored', { page: restoredPage, media: this.refs.length });
         }
         /**
          * A public, third-party API, explicitly requested by the user for this

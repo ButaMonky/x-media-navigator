@@ -18,17 +18,17 @@ namespace XMN {
  }
  type StoreReply={
   ok?:boolean; granted?:boolean; session?:PublicSession|null; pages?:number[];
-  manifest?:PublicPageManifest|null;
+  manifest?:PublicPageManifest|null; page?:number|null;
  };
  export class SessionStore {
   private async call(
     op:string,profile:string,session?:PublicSession,page?:number,
-    manifest?:PublicPageManifest
+    manifest?:PublicPageManifest,href?:string
   ):Promise<StoreReply|null>{
    try {
     if(typeof chrome==='undefined'||!chrome.runtime?.sendMessage)return null;
     const data=await chrome.runtime.sendMessage({
-     kind:'xmn-store-v1',op,profile,session,page,manifest});
+     kind:'xmn-store-v1',op,profile,session,page,manifest,href});
     if(!data||typeof data!=='object')return null;
     return data as StoreReply;
    }catch{return null}
@@ -80,6 +80,17 @@ namespace XMN {
   }
   async clearPageManifest(profile:string):Promise<boolean>{
    return (await this.call('manifest.clear',profile))?.ok===true;
+  }
+  /** A read-only, origin-checked historical lookup for the EXACT current X URL. */
+  async findCheckpointForRoute(
+    profile:string,href:string
+  ):Promise<{session:PublicSession;page:number}|null>{
+   const ref=mediaRefFromHref(href,profile);
+   if(!ref||ref.kind===null||ref.href!==href)return null;
+   const r=await this.call('checkpoint.find',profile,undefined,undefined,undefined,href);
+   if(r?.ok!==true||!r.session||!Number.isSafeInteger(r.page)||
+      (r.page as number)<0||(r.page as number)>=64)return null;
+   return {session:r.session,page:r.page as number};
   }
  }
 /** Purge only our obsolete host-page keys; never read or migrate untrusted values. */

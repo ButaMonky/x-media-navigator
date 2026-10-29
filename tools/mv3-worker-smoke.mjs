@@ -30,8 +30,8 @@ writeFileSync(join(ext,'manifest.json'),JSON.stringify({
 },null,2));
 const probe=`
 (async()=>{
- const m=(op,session,page,manifest)=>chrome.runtime.sendMessage({
-  kind:'xmn-store-v1',op,profile:'alice',session,page,manifest
+ const m=(op,session,page,manifest,href)=>chrome.runtime.sendMessage({
+  kind:'xmn-store-v1',op,profile:'alice',session,page,manifest,href
  });
  if(location.pathname.endsWith('/media')){
    sessionStorage.setItem('xmn-fxembed-consent-alice','yes');
@@ -43,19 +43,26 @@ const probe=`
     refs:['/alice/status/500/photo/1','/alice/status/400/photo/1'],
     apiKeys:['400:photo:1'],photos:[],photoTotals:[],
     cursor:'NEXT',anchorFound:true,exhausted:false};
+   const historical={...snapshot,
+     refs:['/alice/status/300/photo/1','/alice/status/200/photo/1'],
+     apiKeys:['200:photo:1'],cursor:null,exhausted:true};
    const saved=await m('session.set',snapshot);
    const malformed=await m('session.set',{
     ...snapshot,refs:snapshot.refs.slice().reverse()});
    const checkpoint=await m('checkpoint.put',snapshot,0);
    const duplicate=await m('checkpoint.put',snapshot,0);
    const collision=await m('checkpoint.put',{...snapshot,cursor:'INVALID_REPLACEMENT'},0);
+   const olderPage=await m('checkpoint.put',historical,1);
    const pages=await m('checkpoint.list');
    const archived=await m('checkpoint.get',undefined,0);
    const pageManifest={
      schema:1,profile:'alice',timeline:'alice|photo',
-     expires:snapshot.expires,activePage:0,pages:[{
+     expires:snapshot.expires,activePage:1,pages:[{
        page:0,firstRef:snapshot.refs[0],lastRef:snapshot.refs.at(-1),
        mediaCount:2,incomingCursor:null,outgoingCursor:'NEXT'
+     },{
+       page:1,firstRef:historical.refs[0],lastRef:historical.refs.at(-1),
+       mediaCount:2,incomingCursor:'NEXT',outgoingCursor:null
      }]
    };
    const manifestSaved=await m('manifest.put',undefined,undefined,pageManifest);
@@ -63,35 +70,43 @@ const probe=`
    const ok=before?.granted===false&&granted?.ok===true&&
     after?.granted===true&&saved?.ok===true&&malformed?.ok===false&&
     checkpoint?.ok===true&&duplicate?.ok===true&&collision?.ok===false&&
-    pages?.pages?.length===1&&pages.pages[0]===0&&
+    olderPage?.ok===true&&pages?.pages?.length===2&&
+    pages.pages[0]===0&&pages.pages[1]===1&&
     archived?.session?.cursor==='NEXT'&&
-    manifestSaved?.ok===true&&manifestRead?.manifest?.pages?.length===1;
+    manifestSaved?.ok===true&&manifestRead?.manifest?.pages?.length===2;
    if(!ok)throw Error('setup flags='+[
      before?.granted===false,granted?.ok===true,after?.granted===true,
      saved?.ok===true,malformed?.ok===false,checkpoint?.ok===true,
      duplicate?.ok===true,collision?.ok===false,
-     pages?.pages?.length===1,pages?.pages?.[0]===0,
+     olderPage?.ok===true,pages?.pages?.length===2,
+     pages?.pages?.[0]===0,pages?.pages?.[1]===1,
      archived?.session?.cursor==='NEXT',manifestSaved?.ok===true,
-     manifestRead?.manifest?.pages?.length===1
+     manifestRead?.manifest?.pages?.length===2
    ].join(','));
-   location.assign('/alice/status/400/photo/1');
+   // Main saved session still points to 500/400, while this exact URL is
+   // owned by the separately committed 300/200 historical checkpoint.
+   location.assign('/alice/status/200/photo/1');
    return;
  }
  const session=await m('session.get');
  const consent=await m('consent.get');
- const checkpoint=await m('checkpoint.get',undefined,0);
+ const checkpoint=await m('checkpoint.get',undefined,1);
  const manifest=await m('manifest.get');
- const ok=location.pathname==='/alice/status/400/photo/1'&&
+ const located=await m('checkpoint.find',undefined,undefined,
+   undefined,location.pathname);
+ const ok=location.pathname==='/alice/status/200/photo/1'&&
    session?.ok===true&&session?.session?.refs?.length===2&&
    session.session.cursor==='NEXT'&&consent?.granted===true&&
-   checkpoint?.ok===true&&checkpoint?.session?.cursor==='NEXT'&&
-   manifest?.ok===true&&manifest.manifest?.pages?.length===1;
+   checkpoint?.ok===true&&checkpoint?.session?.cursor===null&&
+   manifest?.ok===true&&manifest.manifest?.pages?.length===2&&
+   located?.ok===true&&located?.page===1&&
+   located?.session?.refs?.at(-1)==='/alice/status/200/photo/1';
  setTimeout(()=>{
    const label=document.querySelector('.xmn-status')?.textContent||'';
    const previous=document.querySelector('.xmn-prev');
    const viewer=document.querySelector('[data-testid="swipe-to-dismiss"]');
    const replies=document.getElementById('replies');
-   const visible=label==='投稿 2 / 2+'&&previous&&!previous.disabled&&
+   const visible=label==='投稿 2 / 2'&&previous&&!previous.disabled&&
      !!viewer?.isConnected&&replies?.textContent==='Original replies';
    document.documentElement.dataset.mv3WorkerResult=ok&&visible?'passed':'failed';
    document.documentElement.dataset.mv3WorkerSignals=[
@@ -106,8 +121,8 @@ const probe=`
 writeFileSync(join(ext,'probe.js'),probe);
 const server=createServer((req,res)=>{
  res.setHeader('content-type','text/html; charset=utf-8');
- if(req.url?.includes('/status/400/')){
-   res.end(`<!doctype html><html><head><title>B1 modal fixture</title></head><body>
+ if(req.url?.includes('/status/200/')){
+   res.end(`<!doctype html><html><head><title>B2 historical checkpoint modal fixture</title></head><body>
     <main><div data-testid="primaryColumn"></div></main>
     <div role="dialog"><button data-testid="app-bar-close" aria-label="Close">Close</button>
      <div data-testid="swipe-to-dismiss" style="width:690px;height:420px">

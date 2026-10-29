@@ -391,3 +391,57 @@ test('B2 failed manifest storage commit leaves immutable page unadvertised',asyn
  equalResponse(await w.send('checkpoint.get',1,'alice',{page:0}),
    {ok:true,session:p0});
 });
+
+test('B2 find returns only the historical page matching the exact sender route',async()=>{
+ const w=worker();
+ const current=checkpointSession(900,800,'CURSOR_A');
+ const historical=checkpointSession(700,600,null);
+ const m=manifest([
+  {snap:current,incoming:null},
+  {snap:historical,incoming:'CURSOR_A'}
+ ]);
+ await w.send('consent.set');
+ await w.send('session.set',1,'alice',{session:current});
+ await w.send('checkpoint.put',1,'alice',{page:0,session:current});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:historical});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ const find=(url,href=url,tab=1)=>w.raw({
+  kind:'xmn-store-v1',op:'checkpoint.find',profile:'alice',href
+ },{...sender(tab),url:'https://x.com'+url});
+ equalResponse(await find('/alice/status/700/photo/1'),{
+  ok:true,session:historical,page:1
+ });
+ equalResponse(await find('/alice/status/900/photo/1'),{
+  ok:true,session:current,page:0
+ });
+ equalResponse(await find('/alice/status/777/photo/1'),{
+  ok:true,session:null,page:null
+ });
+ equalResponse(await find('/alice/status/700/photo/1','/alice/status/800/photo/1'),
+  {ok:false});
+ equalResponse(await find('/alice/status/700/photo/1',
+  '/alice/status/700/photo/1',2),{ok:false});
+ equalResponse(await find('/alice/status/700'),{ok:false},
+  'bare status routes cannot assert unproven photo ownership');
+ equalResponse(await find('/alice/status/700/photo/1',
+  '/bob/status/700/photo/1'),{ok:false});
+});
+test('B2 route lookup fails closed if any committed checkpoint is corrupted',async()=>{
+ const w=worker();
+ const p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,null);
+ await w.send('consent.set');
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ await w.send('manifest.put',1,'alice',{
+  manifest:manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}])
+ });
+ w.memory.delete('xmn:checkpoint:1:alice:0');
+ const senderRoute={...sender(1),url:'https://x.com/alice/status/700/photo/1'};
+ equalResponse(await w.raw({
+  kind:'xmn-store-v1',op:'checkpoint.find',profile:'alice',
+  href:'/alice/status/700/photo/1'
+ },senderRoute),{ok:true,session:null,page:null});
+ assert.equal(w.memory.has('xmn:manifest:1:alice'),false,
+  'a partially corrupted multi-page manifest is not usable');
+});

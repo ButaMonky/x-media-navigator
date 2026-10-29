@@ -284,3 +284,13 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - Serialized manifest writes prevent a conflicting update or simultaneous clear. Saving a page does not make it visible as a committed history until the manifest write succeeds.
 - Tests and a real MV3 Chrome-for-Testing fixture verify cursor continuity, immutable history, tab/profile isolation, missing page behavior, expired metadata, session/tab clear, storage write failure, and survival across a document change.
 - **Not yet working 450+ page navigation**: The product Controller does not yet activate these manifest pages, evict/load a page window or implement reversible full-history movement. Keep original 450-ref limit, cursor provenance and native X gallery safeguards until actual X acceptance.
+
+---
+
+## B2 historical immutable-page restore | 2026-10-29
+
+- Task `XMN-B2-CHECKPOINT-RESTORE-20261029`: detailed rationale, safety constraints and tests: `docs/implementation/B2-CHECKPOINT-RESTORE.md`.
+- MV3 Worker `checkpoint.find` verifies same top-frame X document pathname, user consent, tab/profile, entire committed manifest and each immutable stored page before returning only the exact matching media snapshot; uncommitted/expired/corrupt/mismatched pages are rejected.
+- When the current short-lived tab session lacks the document URL, the Content Script can now restore that exact historical page through `SessionStore.findCheckpointForRoute()`. A new route, changed session generation, bare status or unverified URL is ignored, without revisiting FxEmbed or replacing X's replies panel.
+- Tests: 282 total, 273 PASS, 0 FAIL, 3 SKIP, 6 actual-X TODO; TypeScript PASS; synthetic Edge Chromium 4/4 PASS; actual Chrome for Testing MV3 cross-document historical restore PASS; unauthorized localhost sender rejected in actual Edge MV3.
+- **Still pending**: automatically moving across immutable pages with keyboard/buttons; eviction and checkpoint creation when a 450-ref FxEmbed window fills; real signed-in X acceptance, Paint/CPU/memory measurements, and any release/deployment.
