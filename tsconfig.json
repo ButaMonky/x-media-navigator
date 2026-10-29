@@ -16,6 +16,7 @@
   },
   "files": [
     "src/core.ts",
+    "src/checkpoint-manifest.ts",
     "src/media-window.ts",
     "src/session.ts",
     "src/content.ts"

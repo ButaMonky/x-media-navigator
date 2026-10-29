@@ -18,14 +18,17 @@ namespace XMN {
  }
  type StoreReply={
   ok?:boolean; granted?:boolean; session?:PublicSession|null; pages?:number[];
+  manifest?:PublicPageManifest|null;
  };
  export class SessionStore {
-  private async call(op:string,profile:string,session?:PublicSession,page?:number)
-   :Promise<StoreReply|null>{
+  private async call(
+    op:string,profile:string,session?:PublicSession,page?:number,
+    manifest?:PublicPageManifest
+  ):Promise<StoreReply|null>{
    try {
     if(typeof chrome==='undefined'||!chrome.runtime?.sendMessage)return null;
     const data=await chrome.runtime.sendMessage({
-     kind:'xmn-store-v1',op,profile,session,page});
+     kind:'xmn-store-v1',op,profile,session,page,manifest});
     if(!data||typeof data!=='object')return null;
     return data as StoreReply;
    }catch{return null}
@@ -65,6 +68,18 @@ namespace XMN {
    if(page!==undefined && (!Number.isSafeInteger(page)||page<0||page>=64))
      return false;
    return (await this.call('checkpoint.clear',profile,undefined,page))?.ok===true;
+  }
+  /** Commit only a manifest whose immutable page snapshots already exist. */
+  async savePageManifest(data:PublicPageManifest):Promise<boolean>{
+   return (await this.call('manifest.put',data.profile,undefined,undefined,data))
+      ?.ok===true;
+  }
+  async loadPageManifest(profile:string):Promise<PublicPageManifest|null>{
+   const r=await this.call('manifest.get',profile);
+   return r?.ok===true&&r.manifest ? r.manifest : null;
+  }
+  async clearPageManifest(profile:string):Promise<boolean>{
+   return (await this.call('manifest.clear',profile))?.ok===true;
   }
  }
 /** Purge only our obsolete host-page keys; never read or migrate untrusted values. */

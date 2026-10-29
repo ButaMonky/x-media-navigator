@@ -9,5 +9,5 @@
     "removeComments": false,
     "skipLibCheck": true
   },
-  "files": ["src/core.ts", "src/background.ts"]
+  "files": ["src/core.ts", "src/checkpoint-manifest.ts", "src/background.ts"]
 }

@@ -229,3 +229,165 @@ test('B2 clearing the session also purges its checkpoints without revoking conse
  equalResponse(await w.send('checkpoint.list'),{ok:true,pages:[]});
  equalResponse(await w.send('consent.get'),{ok:true,granted:true});
 });
+
+const checkpointSession=(top,bottom,cursor)=>{
+ const p=session();
+ const refs=[top,bottom].map(id=>'/alice/status/'+id+'/photo/1');
+ return {...p,refs,apiKeys:[bottom+':photo:1'],photos:[],
+  photoTotals:[],cursor,anchorFound:true};
+};
+const descriptor=(page,snapshot,incomingCursor)=>({
+ page,firstRef:snapshot.refs[0],lastRef:snapshot.refs.at(-1),
+ mediaCount:snapshot.refs.length,incomingCursor,outgoingCursor:snapshot.cursor
+});
+const manifest=(pages,expires=Math.min(...pages.map(p=>p.snap.expires)))=>({
+ schema:1,profile:'alice',timeline:'alice|photo',expires,activePage:0,
+ pages:pages.map(({snap,incoming},i)=>descriptor(i,snap,incoming))
+});
+test('B2 manifest cannot commit a missing checkpoint page or bypass consent',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ const m=manifest([{snap:p0,incoming:null}]);
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:m}),{ok:false});
+ await w.send('consent.set');
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:m}),{ok:false},
+  'metadata must not become visible until its immutable page is saved');
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:null});
+ equalResponse(await w.send('checkpoint.put',1,'alice',{page:0,session:p0}),{ok:true});
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:m}),{ok:true});
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:m});
+ equalResponse(await w.send('manifest.get',2,'alice'),{ok:false});
+});
+test('B2 manifest proves two complete pages and an unmodified forward cursor',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,'CURSOR_B');
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:p0.cursor}]);
+ await w.send('consent.set');
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:m}),{ok:true});
+ const next={...m,activePage:1};
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:next}),{ok:true});
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:next});
+ equalResponse(await w.send('checkpoint.get',1,'alice',{page:0}),
+   {ok:true,session:p0});
+ equalResponse(await w.send('checkpoint.get',1,'alice',{page:1}),
+   {ok:true,session:p1});
+});
+
+test('B2 manifest refuses unverified order, cursor gaps, fabricated totals and mutation',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,'CURSOR_B');
+ const base=manifest([{snap:p0,incoming:null}]);
+ await w.send('consent.set');
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:base}),{ok:true});
+ const expected=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ for(const faulty of [
+  {...expected,pages:[...expected.pages.slice(0,1),
+   {...expected.pages[1],incomingCursor:'WRONG_CURSOR'}]},
+  {...expected,pages:[...expected.pages.slice(0,1),
+   {...expected.pages[1],firstRef:'/alice/status/850/photo/1'}]},
+  {...expected,pages:[...expected.pages.slice(0,1),
+   {...expected.pages[1],mediaCount:400}]},
+  {...expected,pages:[...expected.pages.slice(0,1),
+   {...expected.pages[1],outgoingCursor:'FABRICATED'}]},
+  {...expected,activePage:2},
+  {...expected,pages:[...expected.pages.slice(0,1),
+   {...expected.pages[1],page:4}]},
+  {...expected,profile:'bob'},
+  {...expected,expires:Date.now()+40*60_000},
+  {...expected,unexpectedSecret:'not a schema field'},
+  {...expected,pages:[{...expected.pages[0],lastRef:'/alice/status/123/photo/1'},
+    expected.pages[1]]}
+ ]){
+  equalResponse(await w.send('manifest.put',1,'alice',{manifest:faulty}),{ok:false});
+ }
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:base});
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:expected}),{ok:true});
+ // Once the second page is committed, a shorter manifest cannot silently
+ // hide it or mutate its immutable first-page boundary.
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:base}),{ok:false});
+ const change={...expected,pages:[{...expected.pages[0],outgoingCursor:'BAD'},
+   expected.pages[1]]};
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:change}),{ok:false});
+});
+test('B2 manifests are invalidated if a page disappears or expires',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ // Deliberate storage corruption simulates a missing page or browser
+ // persistence loss; no partially validated index may be restored.
+ w.memory.delete('xmn:checkpoint:1:alice:1');
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:null});
+ assert.equal(w.memory.has('xmn:manifest:1:alice'),false);
+ await w.send('checkpoint.clear');
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:null});
+});
+
+test('B2 clearing a checkpoint invalidates its manifest but preserves unrelated tab',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,null);
+ const m=manifest([{snap:p0,incoming:null}]);
+ await w.send('consent.set',1,'alice');
+ await w.send('consent.set',2,'alice');
+ for(const tab of [1,2]){
+  equalResponse(await w.send('checkpoint.put',tab,'alice',{page:0,session:p0}),{ok:true});
+  equalResponse(await w.send('manifest.put',tab,'alice',{manifest:m}),{ok:true});
+ }
+ equalResponse(await w.send('checkpoint.clear',1,'alice',{page:0}),{ok:true});
+ equalResponse(await w.send('manifest.get',1,'alice'),{ok:true,manifest:null});
+ equalResponse(await w.send('manifest.get',2,'alice'),{ok:true,manifest:m});
+ equalResponse(await w.send('manifest.clear',2,'alice'),{ok:true});
+ equalResponse(await w.send('manifest.get',2,'alice'),{ok:true,manifest:null});
+ equalResponse(await w.send('checkpoint.list',2,'alice'),{ok:true,pages:[]});
+});
+test('B2 manifest and all pages clear when the owning tab closes',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,null);
+ const m=manifest([{snap:p0,incoming:null}]);
+ await w.send('consent.set',1,'alice');
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ w.tabRemoved()(1);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal([...w.memory.keys()].some(k=>k.includes(':1:')),false);
+ assert.equal(w.memory.has('xmn:manifest:1:alice'),false);
+});
+
+test('B2 manifest cannot outlive its immutable pages or invent repeated boundary post',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CONT_A');
+ const p1=checkpointSession(800,700,null);
+ await w.send('consent.set');
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ const sameStatusBoundary=manifest([
+  {snap:p0,incoming:null},{snap:p1,incoming:'CONT_A'}]);
+ equalResponse(await w.send('manifest.put',1,'alice',{
+  manifest:sameStatusBoundary}),{ok:false});
+ const validSingle=manifest([{snap:p0,incoming:null}]);
+ const extendedLifetime={...validSingle,expires:p0.expires+10_000};
+ equalResponse(await w.send('manifest.put',1,'alice',{
+  manifest:extendedLifetime}),{ok:false},
+  'cannot claim a longer manifest lifetime than its source page');
+ equalResponse(await w.send('manifest.put',1,'alice',{
+  manifest:validSingle}),{ok:true});
+});
+test('B2 failed manifest storage commit leaves immutable page unadvertised',async()=>{
+ const w=worker({beforeSet:async values=>{
+  if(Object.keys(values).some(key=>key.startsWith('xmn:manifest:')))
+   throw Error('fixture storage quota or write failure');
+ }});
+ const p0=checkpointSession(900,800,null);
+ await w.send('consent.set');
+ equalResponse(await w.send('checkpoint.put',1,'alice',{
+  page:0,session:p0}),{ok:true});
+ equalResponse(await w.send('manifest.put',1,'alice',{
+  manifest:manifest([{snap:p0,incoming:null}])}),{ok:false});
+ assert.equal(w.memory.has('xmn:manifest:1:alice'),false);
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:null});
+ equalResponse(await w.send('checkpoint.get',1,'alice',{page:0}),
+   {ok:true,session:p0});
+});

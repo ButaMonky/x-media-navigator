@@ -30,8 +30,8 @@ writeFileSync(join(ext,'manifest.json'),JSON.stringify({
 },null,2));
 const probe=`
 (async()=>{
- const m=(op,session,page)=>chrome.runtime.sendMessage({
-  kind:'xmn-store-v1',op,profile:'alice',session,page
+ const m=(op,session,page,manifest)=>chrome.runtime.sendMessage({
+  kind:'xmn-store-v1',op,profile:'alice',session,page,manifest
  });
  if(location.pathname.endsWith('/media')){
    sessionStorage.setItem('xmn-fxembed-consent-alice','yes');
@@ -51,17 +51,28 @@ const probe=`
    const collision=await m('checkpoint.put',{...snapshot,cursor:'INVALID_REPLACEMENT'},0);
    const pages=await m('checkpoint.list');
    const archived=await m('checkpoint.get',undefined,0);
+   const pageManifest={
+     schema:1,profile:'alice',timeline:'alice|photo',
+     expires:snapshot.expires,activePage:0,pages:[{
+       page:0,firstRef:snapshot.refs[0],lastRef:snapshot.refs.at(-1),
+       mediaCount:2,incomingCursor:null,outgoingCursor:'NEXT'
+     }]
+   };
+   const manifestSaved=await m('manifest.put',undefined,undefined,pageManifest);
+   const manifestRead=await m('manifest.get');
    const ok=before?.granted===false&&granted?.ok===true&&
     after?.granted===true&&saved?.ok===true&&malformed?.ok===false&&
     checkpoint?.ok===true&&duplicate?.ok===true&&collision?.ok===false&&
     pages?.pages?.length===1&&pages.pages[0]===0&&
-    archived?.session?.cursor==='NEXT';
+    archived?.session?.cursor==='NEXT'&&
+    manifestSaved?.ok===true&&manifestRead?.manifest?.pages?.length===1;
    if(!ok)throw Error('setup flags='+[
      before?.granted===false,granted?.ok===true,after?.granted===true,
      saved?.ok===true,malformed?.ok===false,checkpoint?.ok===true,
      duplicate?.ok===true,collision?.ok===false,
      pages?.pages?.length===1,pages?.pages?.[0]===0,
-     archived?.session?.cursor==='NEXT'
+     archived?.session?.cursor==='NEXT',manifestSaved?.ok===true,
+     manifestRead?.manifest?.pages?.length===1
    ].join(','));
    location.assign('/alice/status/400/photo/1');
    return;
@@ -69,10 +80,12 @@ const probe=`
  const session=await m('session.get');
  const consent=await m('consent.get');
  const checkpoint=await m('checkpoint.get',undefined,0);
+ const manifest=await m('manifest.get');
  const ok=location.pathname==='/alice/status/400/photo/1'&&
    session?.ok===true&&session?.session?.refs?.length===2&&
    session.session.cursor==='NEXT'&&consent?.granted===true&&
-   checkpoint?.ok===true&&checkpoint?.session?.cursor==='NEXT';
+   checkpoint?.ok===true&&checkpoint?.session?.cursor==='NEXT'&&
+   manifest?.ok===true&&manifest.manifest?.pages?.length===1;
  setTimeout(()=>{
    const label=document.querySelector('.xmn-status')?.textContent||'';
    const previous=document.querySelector('.xmn-prev');

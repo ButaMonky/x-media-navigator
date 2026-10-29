@@ -1,7 +1,10 @@
 /// <reference path="./core.ts" />
 /** MV3 trusted worker: tab-scoped, memory-only consent and validated media session. */
 type Sender = { tab?: { id?: number }, frameId?: number, url?: string };
-type Message = { kind?: string, op?: string, profile?: string, session?: unknown, page?: unknown };
+type Message = {
+  kind?: string; op?: string; profile?: string; session?: unknown;
+  page?: unknown; manifest?: unknown;
+};
 declare const chrome: {
  runtime: { onMessage: { addListener(cb: (
    message: unknown, sender: Sender, sendResponse: (result: unknown)=>void
@@ -25,6 +28,7 @@ namespace XMN {
  const SESSION_PREFIX='xmn:session:';
  const CONSENT_PREFIX='xmn:consent:';
  const CHECKPOINT_PREFIX='xmn:checkpoint:';
+ const MANIFEST_PREFIX='xmn:manifest:';
  const MAX_CHECKPOINT_PAGES=64; // Up to ~28,800 media references in memory.
  const validTab=(sender:Sender,profile:unknown):number|null=>{
    const tab=sender.tab?.id;
@@ -99,6 +103,29 @@ namespace XMN {
  const checkpointPage=(page:unknown):page is number=>
    typeof page==='number'&&Number.isSafeInteger(page)&&
    page>=0&&page<MAX_CHECKPOINT_PAGES;
+ const manifestKey=(tab:number,profile:string)=>
+   MANIFEST_PREFIX+tab+':'+profile.toLowerCase();
+ const manifestJobs=new Map<string,Promise<unknown>>();
+ async function withManifestLock<T>(key:string,operation:()=>Promise<T>):Promise<T>{
+   const previous=manifestJobs.get(key)??Promise.resolve();
+   const current=previous.catch(()=>undefined).then(operation);
+   manifestJobs.set(key,current);
+   try{return await current}
+   finally{if(manifestJobs.get(key)===current)manifestJobs.delete(key)}
+ }
+ async function verifyManifestPages(
+   manifest:PublicPageManifest,tab:number,profile:string
+ ):Promise<boolean>{
+   const keys=manifest.pages.map(meta=>checkpointKey(tab,profile,meta.page));
+   const stored=await chrome.storage.session.get(keys);
+   for(let i=0;i<manifest.pages.length;i++){
+     const value=stored[keys[i]];
+     if(!validateSession(value,profile))return false;
+     if(!publicPageMatchesDescriptor(value,manifest.pages[i],
+          profile,manifest.timeline,manifest.expires))return false;
+   }
+   return true;
+ }
  // A page slot is immutable. Concurrent writes to the same slot serialize;
  // a replay is idempotent and a different payload is rejected.
  const checkpointWrites=new Map<string,Promise<boolean>>();
@@ -169,15 +196,48 @@ namespace XMN {
      await chrome.storage.session.set({[sessionKey(id)]:msg.session});
      return {ok:true};
    }
-   if(msg.op==='session.clear'){
-     await deleteCheckpointPages(id,profile);
-     await chrome.storage.session.remove(sessionKey(id));
-     return {ok:true};
+   if(msg.op==='session.clear'||msg.op==='checkpoint.clear'||
+      msg.op==='manifest.clear'){
+     if(msg.op==='checkpoint.clear' && msg.page!==undefined &&
+        !checkpointPage(msg.page))return {ok:false};
+     return withManifestLock(manifestKey(id,profile),async()=>{
+       await deleteCheckpointPages(id,profile,
+         msg.op==='checkpoint.clear' ? msg.page as number|undefined : undefined);
+       const remove=[manifestKey(id,profile)];
+       if(msg.op==='session.clear')remove.push(sessionKey(id));
+       await chrome.storage.session.remove(remove);
+       return {ok:true};
+     });
    }
-   if(msg.op==='checkpoint.clear'){
-     if(msg.page!==undefined && !checkpointPage(msg.page))return {ok:false};
-     await deleteCheckpointPages(id,profile,msg.page as number|undefined);
-     return {ok:true};
+   if(msg.op==='manifest.get'||msg.op==='manifest.put'){
+     const consent=(await chrome.storage.session.get(consentKey(id,profile)))[consentKey(id,profile)];
+     if(consent!==true)return {ok:false};
+     const key=manifestKey(id,profile);
+     return withManifestLock(key,async()=>{
+       const saved=(await chrome.storage.session.get(key))[key];
+       if(msg.op==='manifest.get'){
+         if(saved===undefined)return {ok:true,manifest:null};
+         const current=parsePublicPageManifest(saved,profile);
+         if(!current || !await verifyManifestPages(current,id,profile)){
+           await chrome.storage.session.remove(key);
+           return {ok:true,manifest:null};
+         }
+         return {ok:true,manifest:current};
+       }
+       const next=parsePublicPageManifest(msg.manifest,profile);
+       if(!next)return {ok:false};
+       if(saved!==undefined){
+         const previous=parsePublicPageManifest(saved,profile);
+         if(!previous || previous.timeline!==next.timeline ||
+            next.expires>previous.expires ||
+            next.pages.length<previous.pages.length ||
+            previous.pages.some((desc,i)=>
+              !samePublicPageDescriptor(desc,next.pages[i])))return {ok:false};
+       }
+       if(!await verifyManifestPages(next,id,profile))return {ok:false};
+       await chrome.storage.session.set({[key]:next});
+       return {ok:true};
+     });
    }
    if(msg.op==='checkpoint.put'||msg.op==='checkpoint.get'||
       msg.op==='checkpoint.list'){
@@ -227,13 +287,18 @@ namespace XMN {
    // Tab IDs may be reused. Never let another tab inherit prior consent.
    void (async()=>{
      const prefix=CHECKPOINT_PREFIX+tabId+':';
+     const manifestPrefix=MANIFEST_PREFIX+tabId+':';
+     // A tab ID may be recycled. Clear already-started transactions first.
+     await Promise.all([...manifestJobs.entries()]
+       .filter(([key])=>key.startsWith(manifestPrefix))
+       .map(([,job])=>job.catch(()=>undefined)));
      await Promise.all([...checkpointWrites.entries()]
        .filter(([key])=>key.startsWith(prefix))
        .map(([,write])=>write.catch(()=>false)));
      const all=await chrome.storage.session.get(null);
      const keys=Object.keys(all).filter(k=>
        k===sessionKey(tabId)||k.startsWith(CONSENT_PREFIX+tabId+':')||
-       k.startsWith(prefix));
+       k.startsWith(prefix)||k.startsWith(manifestPrefix));
      if(keys.length)await chrome.storage.session.remove(keys);
    })().catch(()=>{/* Nothing to report after the tab closed. */});
  });

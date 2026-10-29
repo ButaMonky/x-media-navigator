@@ -366,6 +366,91 @@ var XMN;
     XMN.planMediaWindow = planMediaWindow;
 })(XMN || (XMN = {}));
 /// <reference path="./core.ts" />
+/** B2: a manifest commits immutable page boundaries without evicting the X viewer.
+ * This module defines data invariants only; it never fetches, navigates or
+ * interprets a volunteer API cursor as proof of missing/complete X posts.
+ */
+var XMN;
+(function (XMN) {
+    const MANIFEST_FIELDS = [
+        'schema', 'profile', 'timeline', 'expires', 'activePage', 'pages'
+    ];
+    const PAGE_FIELDS = [
+        'page', 'firstRef', 'lastRef', 'mediaCount', 'incomingCursor', 'outgoingCursor'
+    ];
+    const exactFields = (v, fields) => {
+        const own = Object.keys(v);
+        return own.length === fields.length && own.every(key => fields.includes(key));
+    };
+    const cursorValid = (v) => v === null || (typeof v === 'string' && v.length > 0 && v.length <= 1024);
+    const older = (a, b) => a.padStart(19, '0') < b.padStart(19, '0');
+    function parsePublicPageManifest(input, profile) {
+        if (!input || typeof input !== 'object' || Array.isArray(input))
+            return null;
+        const m = input;
+        if (!exactFields(m, MANIFEST_FIELDS) || m.schema !== 1 ||
+            typeof m.profile !== 'string' || m.profile !== profile.toLowerCase() ||
+            typeof m.timeline !== 'string' ||
+            !['default', 'photo', 'video'].some(k => m.timeline === m.profile + '|' + k) ||
+            typeof m.expires !== 'number' || !Number.isFinite(m.expires) ||
+            m.expires <= Date.now() || m.expires > Date.now() + 31 * 60000 ||
+            !Array.isArray(m.pages) || m.pages.length < 1 || m.pages.length > 64 ||
+            !Number.isSafeInteger(m.activePage) ||
+            m.activePage < 0 || m.activePage >= m.pages.length)
+            return null;
+        const rows = [];
+        let priorLast = null;
+        let priorCursor = null;
+        for (let i = 0; i < m.pages.length; i++) {
+            const row = m.pages[i];
+            if (!row || typeof row !== 'object' || Array.isArray(row) ||
+                !exactFields(row, PAGE_FIELDS))
+                return null;
+            const p = row;
+            if (p.page !== i || !Number.isSafeInteger(p.mediaCount) ||
+                p.mediaCount < 1 || p.mediaCount > 450 ||
+                typeof p.firstRef !== 'string' || typeof p.lastRef !== 'string' ||
+                !cursorValid(p.incomingCursor) || !cursorValid(p.outgoingCursor))
+                return null;
+            const first = XMN.mediaRefFromHref(p.firstRef, profile);
+            const last = XMN.mediaRefFromHref(p.lastRef, profile);
+            if (!first || !last || first.href !== p.firstRef || last.href !== p.lastRef ||
+                older(first.statusId, last.statusId))
+                return null;
+            if (i === 0 && p.incomingCursor !== null)
+                return null;
+            if (i > 0 && (p.incomingCursor !== priorCursor ||
+                priorCursor === null || priorLast === null ||
+                !older(first.statusId, priorLast)))
+                return null;
+            priorLast = last.statusId;
+            priorCursor = p.outgoingCursor;
+            rows.push(p);
+        }
+        return m;
+    }
+    XMN.parsePublicPageManifest = parsePublicPageManifest;
+    function samePublicPageDescriptor(a, b) {
+        return a.page === b.page && a.firstRef === b.firstRef &&
+            a.lastRef === b.lastRef && a.mediaCount === b.mediaCount &&
+            a.incomingCursor === b.incomingCursor && a.outgoingCursor === b.outgoingCursor;
+    }
+    XMN.samePublicPageDescriptor = samePublicPageDescriptor;
+    function publicPageMatchesDescriptor(input, desc, profile, timeline, manifestExpires) {
+        const refs = input.refs;
+        if (input.profile !== profile || input.timeline !== timeline ||
+            typeof input.expires !== 'number' || manifestExpires > input.expires ||
+            !Array.isArray(refs) || refs.length !== desc.mediaCount ||
+            refs[0] !== desc.firstRef || refs[refs.length - 1] !== desc.lastRef ||
+            input.cursor !== desc.outgoingCursor ||
+            input.anchorFound !== true)
+            return false;
+        // No split post may cross a committed page boundary.
+        return true;
+    }
+    XMN.publicPageMatchesDescriptor = publicPageMatchesDescriptor;
+})(XMN || (XMN = {}));
+/// <reference path="./core.ts" />
 var XMN;
 (function (XMN) {
     const MAX_SESSION_CHARACTERS = 120000;
@@ -378,6 +463,7 @@ var XMN;
     const SESSION_PREFIX = 'xmn:session:';
     const CONSENT_PREFIX = 'xmn:consent:';
     const CHECKPOINT_PREFIX = 'xmn:checkpoint:';
+    const MANIFEST_PREFIX = 'xmn:manifest:';
     const MAX_CHECKPOINT_PAGES = 64; // Up to ~28,800 media references in memory.
     const validTab = (sender, profile) => {
         const tab = sender.tab?.id;
@@ -468,6 +554,32 @@ var XMN;
     const checkpointKey = (id, profile, page) => checkpointPrefix(id, profile) + page;
     const checkpointPage = (page) => typeof page === 'number' && Number.isSafeInteger(page) &&
         page >= 0 && page < MAX_CHECKPOINT_PAGES;
+    const manifestKey = (tab, profile) => MANIFEST_PREFIX + tab + ':' + profile.toLowerCase();
+    const manifestJobs = new Map();
+    async function withManifestLock(key, operation) {
+        const previous = manifestJobs.get(key) ?? Promise.resolve();
+        const current = previous.catch(() => undefined).then(operation);
+        manifestJobs.set(key, current);
+        try {
+            return await current;
+        }
+        finally {
+            if (manifestJobs.get(key) === current)
+                manifestJobs.delete(key);
+        }
+    }
+    async function verifyManifestPages(manifest, tab, profile) {
+        const keys = manifest.pages.map(meta => checkpointKey(tab, profile, meta.page));
+        const stored = await chrome.storage.session.get(keys);
+        for (let i = 0; i < manifest.pages.length; i++) {
+            const value = stored[keys[i]];
+            if (!validateSession(value, profile))
+                return false;
+            if (!XMN.publicPageMatchesDescriptor(value, manifest.pages[i], profile, manifest.timeline, manifest.expires))
+                return false;
+        }
+        return true;
+    }
     // A page slot is immutable. Concurrent writes to the same slot serialize;
     // a replay is idempotent and a different payload is rejected.
     const checkpointWrites = new Map();
@@ -548,16 +660,53 @@ var XMN;
             await chrome.storage.session.set({ [sessionKey(id)]: msg.session });
             return { ok: true };
         }
-        if (msg.op === 'session.clear') {
-            await deleteCheckpointPages(id, profile);
-            await chrome.storage.session.remove(sessionKey(id));
-            return { ok: true };
-        }
-        if (msg.op === 'checkpoint.clear') {
-            if (msg.page !== undefined && !checkpointPage(msg.page))
+        if (msg.op === 'session.clear' || msg.op === 'checkpoint.clear' ||
+            msg.op === 'manifest.clear') {
+            if (msg.op === 'checkpoint.clear' && msg.page !== undefined &&
+                !checkpointPage(msg.page))
                 return { ok: false };
-            await deleteCheckpointPages(id, profile, msg.page);
-            return { ok: true };
+            return withManifestLock(manifestKey(id, profile), async () => {
+                await deleteCheckpointPages(id, profile, msg.op === 'checkpoint.clear' ? msg.page : undefined);
+                const remove = [manifestKey(id, profile)];
+                if (msg.op === 'session.clear')
+                    remove.push(sessionKey(id));
+                await chrome.storage.session.remove(remove);
+                return { ok: true };
+            });
+        }
+        if (msg.op === 'manifest.get' || msg.op === 'manifest.put') {
+            const consent = (await chrome.storage.session.get(consentKey(id, profile)))[consentKey(id, profile)];
+            if (consent !== true)
+                return { ok: false };
+            const key = manifestKey(id, profile);
+            return withManifestLock(key, async () => {
+                const saved = (await chrome.storage.session.get(key))[key];
+                if (msg.op === 'manifest.get') {
+                    if (saved === undefined)
+                        return { ok: true, manifest: null };
+                    const current = XMN.parsePublicPageManifest(saved, profile);
+                    if (!current || !await verifyManifestPages(current, id, profile)) {
+                        await chrome.storage.session.remove(key);
+                        return { ok: true, manifest: null };
+                    }
+                    return { ok: true, manifest: current };
+                }
+                const next = XMN.parsePublicPageManifest(msg.manifest, profile);
+                if (!next)
+                    return { ok: false };
+                if (saved !== undefined) {
+                    const previous = XMN.parsePublicPageManifest(saved, profile);
+                    if (!previous || previous.timeline !== next.timeline ||
+                        next.expires > previous.expires ||
+                        next.pages.length < previous.pages.length ||
+                        previous.pages.some((desc, i) => !XMN.samePublicPageDescriptor(desc, next.pages[i])))
+                        return { ok: false };
+                }
+                if (!await verifyManifestPages(next, id, profile))
+                    return { ok: false };
+                await chrome.storage.session.set({ [key]: next });
+                return { ok: true };
+            });
         }
         if (msg.op === 'checkpoint.put' || msg.op === 'checkpoint.get' ||
             msg.op === 'checkpoint.list') {
@@ -615,12 +764,17 @@ var XMN;
         // Tab IDs may be reused. Never let another tab inherit prior consent.
         void (async () => {
             const prefix = CHECKPOINT_PREFIX + tabId + ':';
+            const manifestPrefix = MANIFEST_PREFIX + tabId + ':';
+            // A tab ID may be recycled. Clear already-started transactions first.
+            await Promise.all([...manifestJobs.entries()]
+                .filter(([key]) => key.startsWith(manifestPrefix))
+                .map(([, job]) => job.catch(() => undefined)));
             await Promise.all([...checkpointWrites.entries()]
                 .filter(([key]) => key.startsWith(prefix))
                 .map(([, write]) => write.catch(() => false)));
             const all = await chrome.storage.session.get(null);
             const keys = Object.keys(all).filter(k => k === sessionKey(tabId) || k.startsWith(CONSENT_PREFIX + tabId + ':') ||
-                k.startsWith(prefix));
+                k.startsWith(prefix) || k.startsWith(manifestPrefix));
             if (keys.length)
                 await chrome.storage.session.remove(keys);
         })().catch(() => { });

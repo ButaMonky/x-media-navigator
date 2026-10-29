@@ -366,6 +366,91 @@ var XMN;
     XMN.planMediaWindow = planMediaWindow;
 })(XMN || (XMN = {}));
 /// <reference path="./core.ts" />
+/** B2: a manifest commits immutable page boundaries without evicting the X viewer.
+ * This module defines data invariants only; it never fetches, navigates or
+ * interprets a volunteer API cursor as proof of missing/complete X posts.
+ */
+var XMN;
+(function (XMN) {
+    const MANIFEST_FIELDS = [
+        'schema', 'profile', 'timeline', 'expires', 'activePage', 'pages'
+    ];
+    const PAGE_FIELDS = [
+        'page', 'firstRef', 'lastRef', 'mediaCount', 'incomingCursor', 'outgoingCursor'
+    ];
+    const exactFields = (v, fields) => {
+        const own = Object.keys(v);
+        return own.length === fields.length && own.every(key => fields.includes(key));
+    };
+    const cursorValid = (v) => v === null || (typeof v === 'string' && v.length > 0 && v.length <= 1024);
+    const older = (a, b) => a.padStart(19, '0') < b.padStart(19, '0');
+    function parsePublicPageManifest(input, profile) {
+        if (!input || typeof input !== 'object' || Array.isArray(input))
+            return null;
+        const m = input;
+        if (!exactFields(m, MANIFEST_FIELDS) || m.schema !== 1 ||
+            typeof m.profile !== 'string' || m.profile !== profile.toLowerCase() ||
+            typeof m.timeline !== 'string' ||
+            !['default', 'photo', 'video'].some(k => m.timeline === m.profile + '|' + k) ||
+            typeof m.expires !== 'number' || !Number.isFinite(m.expires) ||
+            m.expires <= Date.now() || m.expires > Date.now() + 31 * 60000 ||
+            !Array.isArray(m.pages) || m.pages.length < 1 || m.pages.length > 64 ||
+            !Number.isSafeInteger(m.activePage) ||
+            m.activePage < 0 || m.activePage >= m.pages.length)
+            return null;
+        const rows = [];
+        let priorLast = null;
+        let priorCursor = null;
+        for (let i = 0; i < m.pages.length; i++) {
+            const row = m.pages[i];
+            if (!row || typeof row !== 'object' || Array.isArray(row) ||
+                !exactFields(row, PAGE_FIELDS))
+                return null;
+            const p = row;
+            if (p.page !== i || !Number.isSafeInteger(p.mediaCount) ||
+                p.mediaCount < 1 || p.mediaCount > 450 ||
+                typeof p.firstRef !== 'string' || typeof p.lastRef !== 'string' ||
+                !cursorValid(p.incomingCursor) || !cursorValid(p.outgoingCursor))
+                return null;
+            const first = XMN.mediaRefFromHref(p.firstRef, profile);
+            const last = XMN.mediaRefFromHref(p.lastRef, profile);
+            if (!first || !last || first.href !== p.firstRef || last.href !== p.lastRef ||
+                older(first.statusId, last.statusId))
+                return null;
+            if (i === 0 && p.incomingCursor !== null)
+                return null;
+            if (i > 0 && (p.incomingCursor !== priorCursor ||
+                priorCursor === null || priorLast === null ||
+                !older(first.statusId, priorLast)))
+                return null;
+            priorLast = last.statusId;
+            priorCursor = p.outgoingCursor;
+            rows.push(p);
+        }
+        return m;
+    }
+    XMN.parsePublicPageManifest = parsePublicPageManifest;
+    function samePublicPageDescriptor(a, b) {
+        return a.page === b.page && a.firstRef === b.firstRef &&
+            a.lastRef === b.lastRef && a.mediaCount === b.mediaCount &&
+            a.incomingCursor === b.incomingCursor && a.outgoingCursor === b.outgoingCursor;
+    }
+    XMN.samePublicPageDescriptor = samePublicPageDescriptor;
+    function publicPageMatchesDescriptor(input, desc, profile, timeline, manifestExpires) {
+        const refs = input.refs;
+        if (input.profile !== profile || input.timeline !== timeline ||
+            typeof input.expires !== 'number' || manifestExpires > input.expires ||
+            !Array.isArray(refs) || refs.length !== desc.mediaCount ||
+            refs[0] !== desc.firstRef || refs[refs.length - 1] !== desc.lastRef ||
+            input.cursor !== desc.outgoingCursor ||
+            input.anchorFound !== true)
+            return false;
+        // No split post may cross a committed page boundary.
+        return true;
+    }
+    XMN.publicPageMatchesDescriptor = publicPageMatchesDescriptor;
+})(XMN || (XMN = {}));
+/// <reference path="./core.ts" />
 /**
  * Experimental post-level index for very long X Media timelines.
  * This module is kept separate from the released Content Script until
@@ -573,12 +658,12 @@ var XMN;
 var XMN;
 (function (XMN) {
     class SessionStore {
-        async call(op, profile, session, page) {
+        async call(op, profile, session, page, manifest) {
             try {
                 if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage)
                     return null;
                 const data = await chrome.runtime.sendMessage({
-                    kind: 'xmn-store-v1', op, profile, session, page
+                    kind: 'xmn-store-v1', op, profile, session, page, manifest
                 });
                 if (!data || typeof data !== 'object')
                     return null;
@@ -625,6 +710,18 @@ var XMN;
             if (page !== undefined && (!Number.isSafeInteger(page) || page < 0 || page >= 64))
                 return false;
             return (await this.call('checkpoint.clear', profile, undefined, page))?.ok === true;
+        }
+        /** Commit only a manifest whose immutable page snapshots already exist. */
+        async savePageManifest(data) {
+            return (await this.call('manifest.put', data.profile, undefined, undefined, data))
+                ?.ok === true;
+        }
+        async loadPageManifest(profile) {
+            const r = await this.call('manifest.get', profile);
+            return r?.ok === true && r.manifest ? r.manifest : null;
+        }
+        async clearPageManifest(profile) {
+            return (await this.call('manifest.clear', profile))?.ok === true;
         }
     }
     XMN.SessionStore = SessionStore;

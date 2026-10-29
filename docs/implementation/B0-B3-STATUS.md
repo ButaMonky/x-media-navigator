@@ -273,3 +273,14 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - The previously permitted dirty Git worktree and same-version/different-content overwrite are now rejected. Source HEAD and private GitHub branch must match, before and after required tests; no new permissions or automatic browser installation.
 - The QA README records a verified source SHA and distinguishes DOM overlay reveal from actual image Paint. Static tests guard against reintroducing unsafe behavior; PowerShell parser reports zero errors.
 - Source default remains the previously authorized research branch, so the new v2.4.21 candidate is **not** automatically deployed. The installed normal v2.4.18, QA v2.4.20, stable/main and Draft PR #17 remain untouched.
+
+---
+
+## B2 versioned checkpoint manifest | 2026-10-29
+
+- Task ID `XMN-B2-MANIFEST-20261029`: see `docs/implementation/B2-PAGE-MANIFEST.md` for typed schema, validation, tests, failure log and next safe integration conditions.
+- The new `src/checkpoint-manifest.ts` and Worker `manifest.put/get/clear` store **only independently verified immutable 1–64 page references and their cursor/ordering metadata**; the active page is mutable but prior page descriptors cannot be rewritten. No new Chrome permissions or page access.
+- Worker verifies all referenced pages exist, are valid, have the expected owner/filter/first/last key/count/outgoing cursor, are still within the unexpired 30-minute window, and form a descending, cursor-linked series. A manifest with a missing/corrupt page is removed rather than used for navigation.
+- Serialized manifest writes prevent a conflicting update or simultaneous clear. Saving a page does not make it visible as a committed history until the manifest write succeeds.
+- Tests and a real MV3 Chrome-for-Testing fixture verify cursor continuity, immutable history, tab/profile isolation, missing page behavior, expired metadata, session/tab clear, storage write failure, and survival across a document change.
+- **Not yet working 450+ page navigation**: The product Controller does not yet activate these manifest pages, evict/load a page window or implement reversible full-history movement. Keep original 450-ref limit, cursor provenance and native X gallery safeguards until actual X acceptance.
