@@ -1394,7 +1394,7 @@ test('preloads the next photo and the NEXT POST before reaching the album edge',
   context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'}};
   const requests=[];
   context.Image=class {
-    naturalWidth=800;
+    naturalWidth=800;naturalHeight=600;
     classList={add(){}};
     set src(value) { requests.push(value); this.value=value; }
     get src() { return this.value; }

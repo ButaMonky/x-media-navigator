@@ -1906,8 +1906,9 @@ namespace XMN {
               const estimate = (image.naturalWidth || 0) * (image.naturalHeight || 0) * 4;
               record.bytes = Number.isFinite(estimate) ? estimate : 0;
               if (record.bytes > PREFETCH_MAX_DECODED_BYTES) {
-                // A single giant decoded photo cannot fit in the memory budget.
-                // Do not evict it and then download it again on every scan.
+                // A single giant photo cannot fit in the memory budget.
+                // Do not treat the rejected photo as decoded or displayable.
+                record.ready = false;
                 this.prefetched.delete(url);
                 this.prefetchTooLarge.add(url);
                 if (this.prefetchTooLarge.size > 64) {
@@ -1951,17 +1952,42 @@ namespace XMN {
         }
         image.decoding = 'async';
         image.fetchPriority = 'low';
-        image.onerror = () => finish(false);
-        image.onload = () => {
-          if (typeof image.decode !== 'function') finish(true);
+        let decodeStarted = false;
+        const startDecode = (): void => {
+          if (settled || decodeStarted) return;
+          const width = image.naturalWidth || 0;
+          const height = image.naturalHeight || 0;
+          // Image dimensions may be available from metadata before decode().
+          // Do not explicitly decode an image larger than the entire budget.
+          if (width > 0 && height > 0 &&
+              width * height * 4 > PREFETCH_MAX_DECODED_BYTES) {
+            finish(true); // finish marks this entry tooLarge, not ready.
+            image.onload = null;
+            image.onerror = null;
+            try {
+              // Release the oversized transfer without requesting a blank URL.
+              image.removeAttribute?.('src');
+            } catch { /* Rejection remains valid even if cleanup is unavailable. */ }
+            return;
+          }
+          if (typeof image.decode === 'function') {
+            decodeStarted = true;
+            try {
+              void image.decode().then(() => finish(true)).catch(() => finish(false));
+            } catch { finish(false); }
+          } else {
+            finish(true);
+          }
         };
+        image.onerror = () => finish(false);
+        image.onload = () => startDecode();
         this.prefetched.set(url, record);
         this.prefetchInFlight++;
         diagnostic('prefetch.started', { inFlight: this.prefetchInFlight });
         image.src = url;
-        if (typeof image.decode === 'function') {
-          void image.decode().then(() => finish(true)).catch(() => finish(false));
-        }
+        // Synthetic fixtures and memory cache hits can have dimensions now.
+        // A new browser image normally waits for onload to reveal its size.
+        if (image.naturalWidth > 0 && image.naturalHeight > 0) startDecode();
         this.trimPrefetched();
       }
     }
