@@ -1378,6 +1378,36 @@ var XMN;
                 const oldPhotoTotals = new Map(this.knownPhotoTotals ?? []);
                 const oldImageSources = new Map(this.imageSources ?? []);
                 const oldImageRevision = this.imageSourcesRevision;
+                // API data is initially speculative; a tab hide or route transition
+                // while MV3 storage is pending must not leave a half-applied index.
+                const sourceRefs = this.refs;
+                const sourceIndexes = this.indexes;
+                const sourceApiKeys = this.publicApiKeys;
+                let appended = 0;
+                const rollbackLocalDraft = () => {
+                    // A newly created session (or a fresh native scan) owns its own data.
+                    // Do not tear it down merely because the old async save completed.
+                    if (generation !== this.navGeneration ||
+                        this.originProfile !== profile || this.originTimeline !== timeline ||
+                        this.refs !== sourceRefs || this.indexes !== sourceIndexes ||
+                        this.publicApiKeys !== sourceApiKeys ||
+                        this.refs.length !== oldLength + appended)
+                        return;
+                    for (const ref of this.refs.splice(oldLength)) {
+                        this.indexes.delete(ref.key);
+                        this.publicApiKeys.delete(ref.key);
+                        this.imageSources.delete(ref.key);
+                    }
+                    this.publicApiCursor = oldCursor;
+                    this.publicApiAnchorFound = oldAnchorFound;
+                    this.publicApiExhausted = oldExhausted;
+                    this.knownPhotoTotals = oldPhotoTotals;
+                    this.imageSources = oldImageSources;
+                    this.imageSourcesRevision = oldImageRevision;
+                    this.statusOrdinalCache = null;
+                    this.viewerStateSnapshot = null;
+                    this.postWindowCache = null;
+                };
                 const plannedKeys = new Set();
                 for (const ref of newlyVerified) {
                     if (!this.indexes.has(ref.key))
@@ -1389,7 +1419,6 @@ var XMN;
                     diagnostic('fxembed.continuation_abort', { reason: 'index_limit' });
                     return false;
                 }
-                let appended = 0;
                 for (const ref of newlyVerified) {
                     if (this.indexes.has(ref.key))
                         continue;
@@ -1431,12 +1460,8 @@ var XMN;
                     const saved = !this.publicApiKeys.size ||
                         await this.persistPublicMediaSession();
                     // A route change during storage belongs to the NEW session.
-                    if (!stillSameSession())
-                        return false;
-                    if (!saved) {
-                        this.publicApiCursor = oldCursor;
-                        this.publicApiAnchorFound = oldAnchorFound;
-                        this.publicApiExhausted = oldExhausted;
+                    if (!stillSameSession() || !saved) {
+                        rollbackLocalDraft();
                         return false;
                     }
                     diagnostic('fxembed.exhausted', { indexed: this.refs.length });
@@ -1444,8 +1469,10 @@ var XMN;
                 }
                 const saved = appended > 0 && stillSameSession()
                     ? await this.persistPublicMediaSession() : false;
-                if (!stillSameSession())
+                if (!stillSameSession()) {
+                    rollbackLocalDraft();
                     return false;
+                }
                 if (saved) {
                     diagnostic('fxembed.continuation_ready', {
                         added: appended, indexed: this.refs.length, hasMore: !!newCursor, background,
@@ -1458,17 +1485,7 @@ var XMN;
                 });
                 // Do not leave a half-appended public page if storage is blocked or
                 // X changed profile/tab while the asynchronous API was responding.
-                for (const ref of this.refs.splice(oldLength)) {
-                    this.indexes.delete(ref.key);
-                    this.publicApiKeys.delete(ref.key);
-                    this.imageSources.delete(ref.key);
-                }
-                this.publicApiCursor = oldCursor;
-                this.publicApiAnchorFound = oldAnchorFound;
-                this.publicApiExhausted = oldExhausted;
-                this.knownPhotoTotals = oldPhotoTotals;
-                this.imageSources = oldImageSources;
-                this.imageSourcesRevision = oldImageRevision;
+                rollbackLocalDraft();
                 if (appended === 0)
                     this.imposePublicApiCooldown('no_new_entries');
                 return false;
