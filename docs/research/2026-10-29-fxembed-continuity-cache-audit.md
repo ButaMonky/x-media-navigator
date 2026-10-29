@@ -90,3 +90,13 @@
 - 誤順序防止ガードを含むソースのバージョンを**非公開QA v2.4.20**とした（TypeScript・コンパイルJS・manifest・npm package/lock整合）。
 - この変更は安全側に停止する検証であり、「29件目以降を全件取りこぼしなく高速表示できる」保証や、本番Xでの受け入れ合格ではない。
 - QA固定フォルダは`tools/update-chrome-qa.ps1`経由でテスト成功後にのみ更新する。通常版`X-Media-Navigator-Current`はv2.4.18を維持。
+
+## 9. 非公開QA v2.4.20への導入検証（修正コミット後）
+
+- **実装修正・研究スクリプトのコミット：`71b0fd101d1a7e3b4be83f3d5917f6bf5ebc205d`**。非公開引継ぎブランチへpush済み。
+- コミット後に`tools/update-chrome-qa.ps1 -NoOpen`を実行。型検査、通常Node全テスト、Chromium全テストが成功した場合のみフォルダを入れ替える一括処理が正常終了。
+- QA設置先：`%USERPROFILE%\Downloads\X-Media-Navigator-FxEmbed-QA-20261029`、manifest版`2.4.20`を確認。JS/CSS/3アイコンのSHA-256はソースと**5/5完全一致**、QA_READMEにソース`71b0fd1`と未コミット変更なしが記載された。
+- 通常固定フォルダ：`%USERPROFILE%\Downloads\X-Media-Navigator-Current`は`2.4.18`のまま。更新スクリプトによる通常版6ファイルの非変更検証も成功。
+- Git作業ツリーはclean、mainと安定`fix/prefetch-startup-v241`は以前のSHAから変更なし。Draft PR #17もopen/Draft/未マージ。
+- ブラウザは自動再起動・通常プロファイル操作をしていない。QAをChromeで試すには、旧版を無効化し、QA拡張カードを再読み込み後、Xタブを再読み込みする必要がある。
+- GitHubのこのコミットに対するstatus APIは空配列で、**クラウドCIの成功を裏付ける情報なし**。Windowsローカルテスト成功と明確に区別する。
