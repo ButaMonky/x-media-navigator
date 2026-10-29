@@ -6,7 +6,8 @@ import {readFileSync} from 'node:fs';
 const source=readFileSync(new URL('../extension/content_script.js',import.meta.url),'utf8');
 const ctx=vm.createContext({
  URL,URLSearchParams,Map,Set,Date,console,Element:class{},
- window:{location:{pathname:'/alice/status/400/photo/1'},addEventListener(){}},
+ window:{location:{pathname:'/alice/status/400/photo/1'},addEventListener(){},
+  setTimeout:(fn,ms)=>setTimeout(fn,1),clearTimeout},
  document:{readyState:'loading',hidden:false,addEventListener(){}},
  navigator:{onLine:true},
 });
@@ -14,7 +15,7 @@ vm.runInContext(source,ctx);
 const X=ctx.XMN,proto=X.Controller.prototype;
 const ref=(n,i=1)=>X.mediaRefFromHref('/alice/status/'+n+'/photo/'+i,'alice');
 const check=process.env.XMN_B0_VERIFY_FIXES==='1';
-const fixed=new Set(['R-001']);
+const fixed=new Set(['R-001','R-026','R-028','R-029','R-032','R-033','R-042','R-044']);
 const contract=(name,fn)=>test(name,{skip:!check && ![...fixed].some(id=>name.includes(id))?'B0 RED baseline; enable after implementation':false},fn);
 
 test('B0 fixtures originate from the exact compiled MV3 bundle',()=>{

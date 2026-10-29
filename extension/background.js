@@ -245,7 +245,8 @@ var XMN;
                 continue;
             const photoOnly = attachments.every((asset) => asset?.type === 'photo');
             const videoOnly = attachments.length === 1 &&
-                (attachments[0]?.type === 'video' || attachments[0]?.type === 'gif');
+                (attachments[0]?.type === 'video' || attachments[0]?.type === 'gif' ||
+                    attachments[0]?.type === 'animated_gif');
             if (!photoOnly && !videoOnly)
                 continue;
             const urls = photoOnly
@@ -270,10 +271,15 @@ var XMN;
             }
         }
         const cursorObj = data.cursor;
-        const bottom = cursorObj?.bottom;
-        const cursor = typeof bottom === 'string' && bottom.length > 0 &&
-            bottom.length <= 1024 ? bottom : null;
-        return { refs, photos, cursor };
+        if (!cursorObj || typeof cursorObj !== 'object' ||
+            Array.isArray(cursorObj) ||
+            !Object.prototype.hasOwnProperty.call(cursorObj, 'bottom'))
+            return null;
+        const bottom = cursorObj.bottom;
+        if (bottom !== null && (typeof bottom !== 'string' ||
+            bottom.length < 1 || bottom.length > 1024))
+            return null;
+        return { refs, photos, cursor: bottom };
     }
     XMN.parsePublicMediaPage = parsePublicMediaPage;
     /** Only rewrite genuine X image CDN thumbnails. No arbitrary URL/network access. */
@@ -299,6 +305,65 @@ var XMN;
         return url.toString();
     }
     XMN.preloadImageUrl = preloadImageUrl;
+    /** B2: immutable, whole-post working window; no guessed X navigation. */
+    function planMediaWindow(refs, activeKey, maxRefs = 450) {
+        if (!Number.isInteger(maxRefs) || maxRefs < 4 || !refs.length)
+            return null;
+        const groups = [];
+        const seenKeys = new Set(), seenPosts = new Set();
+        let active = -1;
+        for (let i = 0; i < refs.length; i++) {
+            const r = refs[i];
+            if (!r || seenKeys.has(r.key))
+                return null;
+            seenKeys.add(r.key);
+            if (r.key === activeKey)
+                active = i;
+            const last = groups[groups.length - 1];
+            if (!last || last.id !== r.statusId) {
+                if (seenPosts.has(r.statusId))
+                    return null;
+                seenPosts.add(r.statusId);
+                groups.push({ id: r.statusId, start: i, end: i + 1 });
+            }
+            else
+                last.end = i + 1;
+        }
+        if (active < 0)
+            return null;
+        let center = groups.findIndex(g => g.start <= active && active < g.end);
+        if (center < 0)
+            return null;
+        let left = center, right = center, total = groups[center].end - groups[center].start;
+        if (total > maxRefs)
+            return null;
+        let blockedLeft = false, blockedRight = false;
+        while (!blockedLeft || !blockedRight) {
+            const leftSpan = center - left, rightSpan = right - center;
+            const goLeft = !blockedLeft && (blockedRight || leftSpan <= rightSpan);
+            if (goLeft) {
+                const g = groups[left - 1];
+                if (!g || total + g.end - g.start > maxRefs)
+                    blockedLeft = true;
+                else {
+                    left--;
+                    total += g.end - g.start;
+                }
+            }
+            else {
+                const g = groups[right + 1];
+                if (!g || total + g.end - g.start > maxRefs)
+                    blockedRight = true;
+                else {
+                    right++;
+                    total += g.end - g.start;
+                }
+            }
+        }
+        const base = groups[left].start;
+        return { refs: refs.slice(base, groups[right].end), base, activeIndex: active - base };
+    }
+    XMN.planMediaWindow = planMediaWindow;
 })(XMN || (XMN = {}));
 /// <reference path="./core.ts" />
 var XMN;

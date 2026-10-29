@@ -114,7 +114,7 @@ namespace XMN {
     private sessionStore: SessionStore = new SessionStore();
     private originProfile: string | null = null;
     private originTimeline: string | null = null;
-    private pendingGrid: { column: Element | null; firstTiles: Element[]; firstKeys: string[] } | null = null;
+    private pendingGrid: { column: Element | null; firstTiles: Element[]; firstKeys: string[]; lastTiles?: Element[]; lastKeys?: string[]; tileCount?: number } | null = null;
     private refs: MediaRef[] = [];
     private indexes = new Map<string, number>();
     // Append-only media ordering lets route updates reuse first-seen post
@@ -423,6 +423,11 @@ namespace XMN {
             });
             return false;
           }
+          // Cursor progress is mandatory even if the page already has enough posts.
+          if (cursor && page.cursor === cursor) {
+            diagnostic('fxembed.continuation_abort',{reason:'cursor_not_advanced'});
+            return false;
+          }
           pages.push({
             refs: mediaKind ? page.refs.filter((ref) => ref.kind === mediaKind) : page.refs,
             photos: mediaKind === 'video' ? [] : page.photos,
@@ -443,7 +448,21 @@ namespace XMN {
         if (!stillSameSession()) return false;
         const combined = pages.flatMap((item) => item.refs);
         if (!combined.length) return false;
-        const statusIds = [...new Set(combined.map((ref) => ref.statusId))];
+        // Validate RAW contiguous post groups before Set() can mask a
+        // repeated post separated by another post across page boundaries.
+        const seenGroups=new Set<string>();
+        let previousGroup:string|null=null;
+        for(const ref of combined) {
+          if(ref.statusId===previousGroup)continue;
+          if(seenGroups.has(ref.statusId) || (previousGroup &&
+             ref.statusId.padStart(19,'0')>=previousGroup.padStart(19,'0'))){
+            diagnostic('fxembed.continuation_abort',{reason:'noncontiguous_post_group'});
+            return false;
+          }
+          seenGroups.add(ref.statusId);
+          previousGroup=ref.statusId;
+        }
+        const statusIds = [...seenGroups];
         // Snowflake status IDs must decrease in chronological order. Refuse
         // reordered external results rather than crossing posts out-of-order.
         if (statusIds.some((id, i) => i > 0 &&
@@ -457,6 +476,7 @@ namespace XMN {
           return false;
         }
         let start = 0;
+        const anchorExtra: MediaRef[] = [];
         if (!this.publicApiAnchorFound) {
           const last = statusIds.indexOf(nativeLast);
           if (last < 0) {
@@ -469,8 +489,24 @@ namespace XMN {
             return false; // Provider does not match X native media list.
           }
           start = combined.findIndex((ref) => ref.statusId === nativeLast);
+          const anchorStart=start;
           while (start < combined.length && combined[start].statusId === nativeLast) start++;
+          // X can expose only photo/1 in its native timeline. Preserve any
+          // newly verified photos of the anchor post before appending older posts.
+          const nativeGroup = this.refs.filter(ref=>ref.statusId===nativeLast);
+          const maxNativePhoto = Math.max(0,...nativeGroup.map(ref=>
+            ref.kind==='photo' ? ref.mediaIndex??0 : 0));
+          for(const ref of combined.slice(anchorStart,start)){
+            if(this.indexes.has(ref.key))continue;
+            if(ref.kind!=='photo'||maxNativePhoto===0 ||
+               (ref.mediaIndex??0)<=maxNativePhoto){
+              diagnostic('fxembed.continuation_abort',{reason:'anchor_album_ambiguous'});
+              return false;
+            }
+            anchorExtra.push(ref);
+          }
         }
+        const newlyVerified=[...anchorExtra,...combined.slice(start)];
         const sourceMap = new Map(pages.flatMap((item) => item.photos));
         const oldLength = this.refs.length;
         const oldCursor = this.publicApiCursor;
@@ -478,7 +514,7 @@ namespace XMN {
         const oldExhausted = this.publicApiExhausted;
         const oldPhotoTotals = new Map(this.knownPhotoTotals ?? []);
         const plannedKeys = new Set<string>();
-        for (const ref of combined.slice(start)) {
+        for (const ref of newlyVerified) {
           if (!this.indexes.has(ref.key)) plannedKeys.add(ref.key);
         }
         // Never silently drop part of an album/page and then advance the
@@ -488,7 +524,7 @@ namespace XMN {
           return false;
         }
         let appended = 0;
-        for (const ref of combined.slice(start)) {
+        for (const ref of newlyVerified) {
           if (this.indexes.has(ref.key)) continue;
           this.indexes.set(ref.key, this.refs.length);
           this.refs.push(ref);
@@ -502,7 +538,7 @@ namespace XMN {
         // confirmed 1–4 photo count when EVERY photo of that group was
         // indexed (the 450-ref cap must never truncate the album counter).
         const groupedPhotos = new Map<string, Set<number>>();
-        for (const ref of combined.slice(start)) {
+        for (const ref of newlyVerified) {
           if (ref.kind !== 'photo' || ref.mediaIndex === null) continue;
           const indexes = groupedPhotos.get(ref.statusId) ?? new Set<number>();
           indexes.add(ref.mediaIndex);
@@ -521,6 +557,20 @@ namespace XMN {
         this.publicApiExhausted = !newCursor;
         this.statusOrdinalCache = null;
         this.viewerStateSnapshot = null;
+        // Zero new posts with an explicit terminal cursor is a legitimate end,
+        // not a retryable error. Preserve the already-verified public window.
+        if (appended === 0 && newCursor === null && stillSameSession()) {
+          this.publicApiExhausted = true;
+          if(this.publicApiKeys.size &&
+             (!await this.persistPublicMediaSession() || !stillSameSession())) {
+            this.publicApiCursor = oldCursor;
+            this.publicApiAnchorFound = oldAnchorFound;
+            this.publicApiExhausted = oldExhausted;
+            return false;
+          }
+          diagnostic('fxembed.exhausted',{indexed:this.refs.length});
+          return false;
+        }
         if (appended > 0 && stillSameSession() && await this.persistPublicMediaSession() && stillSameSession()) {
           diagnostic('fxembed.continuation_ready', {
             added: appended, indexed: this.refs.length, hasMore: !!newCursor, background,
@@ -788,24 +838,36 @@ namespace XMN {
     }
 
     /** First few anchors and DOM nodes distinguish X's data swap from our badge cleanup. */
-    private captureGrid(): { column: Element | null; firstTiles: Element[]; firstKeys: string[] } {
+    private captureGrid(): { column: Element | null; firstTiles: Element[]; firstKeys: string[]; lastTiles?: Element[]; lastKeys?: string[]; tileCount?: number } {
       const column = mediaColumn();
-      const firstTiles = column ? Array.from(column.querySelectorAll(TILE_SELECTOR)).slice(0, 8) : [];
+      const tiles=column ? Array.from(column.querySelectorAll(TILE_SELECTOR)) : [];
+      const firstTiles=tiles.slice(0,8);
+      const lastTiles=tiles.slice(-8);
       const firstKeys = firstTiles.map((tile) => {
         const link = this.originProfile ? usableTileLink(tile, this.originProfile) : null;
         return link?.ref.key ?? '';
       });
-      return { column, firstTiles, firstKeys };
+      const lastKeys=lastTiles.map(tile=>{
+        const link=this.originProfile ? usableTileLink(tile,this.originProfile) : null;
+        return link?.ref.key ?? '';
+      });
+      return {column,firstTiles,firstKeys,lastTiles,lastKeys,tileCount:tiles.length};
     }
 
-    private hasGridTurnedOver(previous: { column: Element | null; firstTiles: Element[]; firstKeys: string[] }): boolean {
+    private hasGridTurnedOver(previous: { column: Element | null; firstTiles: Element[]; firstKeys: string[]; lastTiles?: Element[]; lastKeys?: string[]; tileCount?: number }): boolean {
       const current = this.captureGrid();
       if (current.firstTiles.length === 0) return false;
       // Waiting for X's actual list replacement is safer than a fixed delay.
       if (current.column !== previous.column) return true;
       const replaced = current.firstTiles.some((tile, index) => tile !== previous.firstTiles[index]);
       const keysChanged = current.firstKeys.some((key, index) => key !== previous.firstKeys[index]);
-      return replaced || keysChanged;
+      const tailChanged=(previous.lastTiles??[]).some((tile,i)=>
+        current.lastTiles?.[i]!==tile);
+      const tailKeysChanged=(previous.lastKeys??[]).some((key,i)=>
+        current.lastKeys?.[i]!==key);
+      const countChanged=previous.tileCount!==undefined&&
+        current.tileCount!==previous.tileCount;
+      return replaced || keysChanged || tailChanged || tailKeysChanged || countChanged;
     }
 
     private ensureListObserver(): boolean {
@@ -905,7 +967,32 @@ namespace XMN {
           mediaProfileFromPath(window.location.pathname) !== this.originProfile) return;
       const root = mediaColumn();
       if (!root) return;
-      for (const tile of Array.from(root.querySelectorAll<HTMLElement>(TILE_SELECTOR))) {
+      const tiles = Array.from(root.querySelectorAll<HTMLElement>(TILE_SELECTOR));
+      // When X prepends a newer post, its DOM order (not discovery time)
+      // determines the verified head. Never reorder previously observed posts
+      // when the first surviving anchor is not the original head.
+      if (this.refs.length > 0) {
+        const head: MediaRef[] = [];
+        for (const tile of tiles) {
+          const observed=usableTileLink(tile,this.originProfile);
+          if(!observed)continue;
+          const known=this.indexes.get(observed.ref.key);
+          if(known!==undefined){
+            if(known===0 && head.length &&
+               head.every(ref => ref.statusId.padStart(19,'0') >
+                 this.refs[0].statusId.padStart(19,'0'))) {
+              const unique=[...new Map(head.map(ref=>[ref.key,ref])).values()];
+              this.refs.unshift(...unique);
+              this.indexes=new Map(this.refs.map((ref,i)=>[ref.key,i]));
+              this.statusOrdinalCache=null;
+              this.viewerStateSnapshot=null;
+            }
+            break;
+          }
+          head.push(observed.ref);
+        }
+      }
+      for (const tile of tiles) {
         const found = usableTileLink(tile, this.originProfile);
         if (!found) continue;
         const { ref } = found;
