@@ -65,3 +65,21 @@
   最新主開発正本との差分を再照合してFF-only統合。
 - 実際のXでの28→29、複数メディア、レスポンス、
   画像転送・Paint・CPU/RAMを最終受入するまで公開しない。
+
+## 2026-10-30｜B5 Provider Integrityとの独立統合結果
+
+- 元のB4修正 `3036d194b842ba5006f3204c70ee452ea4a81dcd`は
+  GitHub Actions run `41022376848` **SUCCESS**。
+- 並行担当が先行して主開発に取り込んだProvider Integrity
+  `57aa63957000d6694ba608c2dd4f00bebfa73847`を新たな基準とし、
+  別の `task/xmn-b4-network-integration-20261030` 上で
+  B4の`src/content.ts`差分を **git apply --3way** で適用。
+  元のproviderコード・修正版の`src/core.ts`は保護した。
+- B4の4試験と専用報告・台帳追記だけを再配置し、
+  既存の別担当の研究記録やテストを上書きしていない。
+- Provider Integrityのコードとの再受入：
+  Node **339件／330 PASS／0 FAIL／3 SKIP／実X TODO6**、
+  TypeScript型検査PASS、合成Chromium **4/4 PASS**、
+  隔離ChromeのMV3試験 **8系統すべてPASS**。
+- 統合ブランチのGitHub Actionsと主開発へのFF-only採用は、
+  この記録とは別に同一SHAの成功を必ず確認する。

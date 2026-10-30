@@ -630,3 +630,12 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   実Xでの通信・Paint・同意・公開受入は未完了。
 - GitHub CI成功と主開発正本のHEAD再照合後にのみFF-only統合。
   旧QA・通常インストール・公開mainを変更しない。
+
+### 2026-10-30 B4ネットワーク予算｜Provider Integrity後の適合検査
+
+- 先行コミット `57aa639`を保持してB4変更を独立再統合。
+  `B4-NETWORK-POLICY-20261030.md`に詳細と失敗再現を残した。
+- Provider IntegrityとB4を両方含めたNode339件
+  （330PASS・0FAIL・3SKIP・6実X TODO）、型検査、
+  Chromium4件、Chrome MV3の8系統PASS。
+- GitHub CIと主開発正本の整合確認後のみFF-onlyで反映。
