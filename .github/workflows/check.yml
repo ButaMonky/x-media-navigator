@@ -25,5 +25,22 @@ jobs:
             echo "::error::No Chrome/Chromium found: browser integration is a required quality gate."
             exit 1
           fi
+      - name: Install Chrome for Testing (unpacked extension support)
+        uses: browser-actions/setup-chrome@v2
+        id: setup-cft
+        with:
+          chrome-version: stable
+      - name: Required isolated Chrome MV3 B5 acceptance and security gate
+        env:
+          XMN_CHROME_FOR_TESTING: ${{ steps.setup-cft.outputs.chrome-path }}
+        run: |
+          if [ ! -x "$XMN_CHROME_FOR_TESTING" ]; then
+            echo "::error::The Chrome for Testing binary is missing or non-executable."
+            exit 1
+          fi
+          npm run test:mv3:native
+          npm run test:mv3:fourphoto
+          npm run test:mv3:deny
+          npm run test:mv3:unverified
       - name: Verify committed compiled JS is up to date
         run: git diff --exit-code -- extension/content_script.js extension/background.js
