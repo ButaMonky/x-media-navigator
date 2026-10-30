@@ -104,3 +104,71 @@
 - 再開位置：
   `docs/implementation/B2-PREFLIGHT-RACE-20261030.md`と本節。
   Chromeへ手動で新QAをLoad unpackedし、実機受入後のみ公開検討。
+
+---
+
+## 2026-10-30追記｜v2.4.26 同意重複対策・独立QA固定成果
+
+- 作業ID：`XMN-B5-CONSENT-ONCE-20261030`
+- 実装の独立QA正本：`task/xmn-b5-consent-once-20261030`
+  `6e5dd776e0ad7a07060bd32665afd5310d083351`。
+- FF-only統合前の最新開発正本を保持した統合コミット：
+  `72c7ababab33519abc2bf3927373233d23309fcf`。
+- 保管先：非公開`ButaMonky/x-media-navigator`、
+  `task/xmn-b0-b3-20261029`（公開mainではない）。
+- GitHub Actions独立QA run `41065264581` **SUCCESS**、
+  統合ブランチrun `41066110505` **SUCCESS**。
+- Node **368件：359 PASS／0 FAIL／3 SKIP／実X TODO6**、
+  TypeScript、合成Chromium4件、隔離Chrome MV3 11系統PASS。
+  必須GitHub CI（Node/型検査/ブラウザ/MV3×7/生成JS一致）も成功。
+- 修正内容：外部FxEmbedの同意をWorkerに問い合わせている間に
+  右矢印を続けて押しても、確認ダイアログや外部APIの重複起動をしない。
+  同意拒否、同意済みの通信、別URL世代への移動、
+  Workerストレージ照合が例外を返す場合をfail-closedで検証。
+- 機能・非公開QAの詳細：
+  `docs/implementation/B5-CONSENT-ONCE-20261030.md`。
+
+### 固定QA成果・完全性
+
+- 既存通常版・旧QAと独立した解凍済みフォルダ：
+  `%USERPROFILE%\Downloads\X-Media-Navigator-v2.4.26-CONSENT-QA-20261030`
+- ZIPバックアップ：
+  `%USERPROFILE%\Downloads\X-Media-Navigator-v2.4.26-CONSENT-QA-20261030.zip`
+- ZIP SHA-256：
+  `AB3BDB42A23B79A4B2ACDCC9BDE79D7927C10390481D6DD416626396576D93E7`
+- 横に`.sha256.txt`を保存。ZIP 10件の必須ファイルを照合し、
+  QAフォルダの7アセットとソース・主開発コードを照合。
+- `README`、`SHA256SUMS`、任意の個人情報を含まない
+  集計用スニペットを含む。Chromeは自動で起動・インストール・更新しない。
+- 通常v2.4.18、v2.4.20〜v2.4.25旧QA、公開main、
+  安定Draft PR #17は不変更。
+
+### 正式100％・公開判定の未解決ゲート
+
+- 2026-10-30の公開X Media画面の読み取り専用確認は
+  ログイン画面へ転送。画像グリッド・モーダルを確認できなかった。
+- ChatGPT iOSからのローカルWindows Browser接続は
+  `originating browser context`不足で拒否。
+  ログイン情報・Cookie・トークン・HARを持ち出したり、
+  拒否を別のブラウザ／未承認経路で迂回しない。
+- ログイン済み実Xの28→29、写真1〜4枚・GIF/動画/混合、
+  実返信欄・React SPA、450件超、Paint・HTTP転送・CPU/RAM計測と
+  公開可否判断だけが正式受入未完了。
+- そのため、**新しいQA候補は動作確認可能な非公開検証版であり、
+  正式公開済みでも進捗100％でもない**。
+- 再開時はWindowsのChromeでChatGPTを接続済みの同じ
+  ブラウザコンテキストから開き、必要ならWorkで実X UIを受入する。
+  それが使えなければ、利用者がQAフォルダを手動Load unpackedし、
+  旧XMNを一時無効にして確認する。
+- 次の開発はこの固定SHAと現行CIを基準に、
+  実Xの不合格箇所だけを新ブランチで修正。
+  合成試験や完了済みB0〜B5を繰り返さない。
+
+### 追加の主開発ゲート確定
+
+- 主開発同一コードSHA
+  `72c7ababab33519abc2bf3927373233d23309fcf`の
+  GitHub Actions run `41066759263`も**SUCCESS**。
+- Node／型検査／Chromium合成／7つの必須MV3／
+  コミット済みJS生成一致の全ゲートが成功。
+- Windows検証が終わった後の公開mainへの無断変更は行わない。

@@ -754,3 +754,22 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 詳細・BLOCKED・再開位置：
   `docs/implementation/B5-CONSENT-ONCE-20261030.md`。
 - 認証済み実Xでの受入・公開判断は未完了。
+
+---
+
+## 2026-10-30｜v2.4.26非公開QA固定・最終受入ゲート
+
+- 二重同意確認・Worker接続例外・別URLとの競合を修正した
+  v2.4.26（独立`6e5dd77`／統合コード`72c7aba`）を非公開GitHubへ保存。
+- GitHub Actionsの独立QA run`41065264581`と
+  統合run`41066110505`がSUCCESS。
+  Node368件（359 PASS、0 FAIL、3 SKIP、実X TODO6）、
+  合成Chromium4件と隔離Chrome MV3 11系統PASS。
+- v2.4.26の独立QAフォルダとZIP、SHA256照合ファイルを
+  `%USERPROFILE%\Downloads`へ保存。7ファイルの本体内容が
+  主開発コードと一致することを確認。
+- **公開main／通常拡張／旧QAは未更新**。
+  認証済み実Xでの画面・GIF/動画・返信欄・Paint等の
+  受入と公開可否判断が終わるまでは100％完了扱いにしない。
+- 正式な成果、ブロック理由、ZIPハッシュと再開位置は
+  `docs/implementation/B5-RELEASE-GATE-HANDOFF-20261030.md`末尾を参照。
