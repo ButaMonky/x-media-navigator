@@ -571,3 +571,137 @@ test('B2 active page transition refuses skips, wrong boundaries and unrelated ta
  equalResponse(await send(valid,undefined,2),{ok:false});
  equalResponse(await w.send('manifest.get'),{ok:true,manifest:m});
 });
+
+test('B2 active manifest blocks stale public session writes without breaking idempotent handoff',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ equalResponse(await w.send('session.set',1,'alice',{session:p0}),{ok:true});
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:m}),{ok:true});
+ const wrong={...p0,refs:['/alice/status/901/photo/1',p0.refs[1]]};
+ equalResponse(await w.send('session.set',1,'alice',{session:wrong}),{ok:false});
+ const refreshed={...p0,expires:Math.min(Date.now()+120000,p0.expires+5000)};
+ equalResponse(await w.send('session.set',1,'alice',{session:refreshed}),{ok:true},
+  'same exact committed media snapshot remains navigable');
+ equalResponse(await w.send('session.get'),{ok:true,session:p0});
+ const transition={expectedActivePage:0,targetPage:1,direction:1,
+  sourceRef:p0.refs.at(-1),targetRef:p1.refs[0]};
+ equalResponse(await w.raw({kind:'xmn-store-v1',op:'manifest.activate',
+  profile:'alice',transition},{...sender(),url:'https://x.com'+p1.refs[0]}),
+  {ok:true,session:p1,manifest:{...m,activePage:1}});
+ equalResponse(await w.send('session.set',1,'alice',{session:p0}),{ok:false},
+  'previous page cannot replace the new active checkpoint');
+ equalResponse(await w.send('session.get'),{ok:true,session:p1});
+});
+test('B2 activation and an in-flight earlier-page session.set are serialized',async()=>{
+ let hold=false,entered,release;
+ const enteredPromise=new Promise(r=>{entered=r});
+ const gate=new Promise(r=>{release=r});
+ const w=worker({beforeSet:async values=>{
+  if(hold && Object.keys(values).length===1 &&
+     Object.hasOwn(values,'xmn:session:1')){
+   entered();await gate;
+  }
+ }});
+ const p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ await w.send('session.set',1,'alice',{session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ hold=true;
+ const pending=w.send('session.set',1,'alice',{session:p0});
+ await enteredPromise;
+ const transition={expectedActivePage:0,targetPage:1,direction:1,
+  sourceRef:p0.refs.at(-1),targetRef:p1.refs[0]};
+ const activation=w.raw({kind:'xmn-store-v1',op:'manifest.activate',
+   profile:'alice',transition},{...sender(),url:'https://x.com'+p1.refs[0]});
+ release();
+ equalResponse(await pending,{ok:true});
+ equalResponse(await activation,{
+  ok:true,session:p1,manifest:{...m,activePage:1}});
+ equalResponse(await w.send('session.get'),{ok:true,session:p1});
+});
+
+test('B2 active manifest rejects a stale session.set even after page activation',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ equalResponse(await w.send('session.set',1,'alice',{session:p0}),{ok:true});
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ equalResponse(await w.send('session.set',1,'alice',{
+  session:{...p0,expires:p0.expires+1000}
+ }),{ok:true},'identical media with refreshed TTL is acknowledged without overwrite');
+ equalResponse(await w.send('session.get'),{ok:true,session:p0});
+ equalResponse(await w.send('session.set',1,'alice',{session:p0}),{ok:true});
+ const t={expectedActivePage:0,targetPage:1,direction:1,
+  sourceRef:p0.refs.at(-1),targetRef:p1.refs[0]};
+ equalResponse(await w.raw({
+  kind:'xmn-store-v1',op:'manifest.activate',
+  profile:'alice',transition:t
+ },{...sender(),url:'https://x.com'+p1.refs[0]}),{
+   ok:true,session:p1,manifest:{...m,activePage:1}
+ });
+ equalResponse(await w.send('session.set',1,'alice',{session:p0}),{ok:false},
+  'a prior document must never restore stale worker storage');
+ equalResponse(await w.send('session.get'),{ok:true,session:p1});
+ equalResponse(await w.send('session.set',1,'alice',{session:p1}),{ok:true});
+});
+test('B2 reverse activation opens first photo of prior last album only',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ p0.refs=['/alice/status/900/photo/1','/alice/status/800/photo/1',
+  '/alice/status/800/photo/2'];
+ p0.apiKeys=['800:photo:1','800:photo:2'];
+ const p1=checkpointSession(700,600,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ const forward={expectedActivePage:0,targetPage:1,direction:1,
+  sourceRef:p0.refs.at(-1),targetRef:p1.refs[0]};
+ await w.raw({kind:'xmn-store-v1',op:'manifest.activate',
+  profile:'alice',transition:forward},
+  {...sender(),url:'https://x.com'+p1.refs[0]});
+ const back={expectedActivePage:1,targetPage:0,direction:-1,
+  sourceRef:p1.refs[0],targetRef:p0.refs[1]};
+ const reply=await w.raw({kind:'xmn-store-v1',op:'manifest.activate',
+  profile:'alice',transition:{...back,targetRef:p0.refs[2]}},
+  {...sender(),url:'https://x.com'+p0.refs[2]});
+ equalResponse(reply,{ok:false},'do not jump backward into the middle of a post');
+ equalResponse(await w.raw({kind:'xmn-store-v1',op:'manifest.activate',
+  profile:'alice',transition:back},
+  {...sender(),url:'https://x.com'+p0.refs[1]}),{
+   ok:true,session:p0,manifest:m
+ });
+});
+
+
+test('B2 a stable committed page remains navigable after only decoded photo cache changes',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ p0.photos=[['800:photo:1',
+  'https://pbs.twimg.com/media/CACHE800?format=jpg&name=large']];
+ p0.photoTotals=[['800',1]];
+ const p1=checkpointSession(700,600,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ await w.send('session.set',1,'alice',{session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ const cacheChanged={...p0,photos:[],photoTotals:[],
+  expires:p0.expires+500};
+ equalResponse(await w.send('session.set',1,'alice',
+  {session:cacheChanged}),{ok:true},
+  'public media identity is unchanged; cached image metadata is not persisted');
+ equalResponse(await w.send('session.get'),{ok:true,session:p0});
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:m});
+});

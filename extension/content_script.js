@@ -795,6 +795,116 @@ var XMN;
     XMN.clearLegacyPageSession = clearLegacyPageSession;
 })(XMN || (XMN = {}));
 /// <reference path="./core.ts" />
+/// <reference path="./session.ts" />
+/** A bounded, immutable checkpoint is published ONLY after its full page is
+ * validated. X still owns the real gallery and its navigation.
+ */
+var XMN;
+(function (XMN) {
+    const pageOlder = (a, b) => a.padStart(19, '0') < b.padStart(19, '0');
+    /** Build from complete provider POST groups, never from guessed photo URLs. */
+    function preparePublicContinuationPage(profile, timeline, refs, suppliedPhotos, outgoingCursor, expires) {
+        const p = profile.toLowerCase();
+        if (!/^[a-z0-9_]{1,15}$/.test(p) ||
+            !['default', 'photo', 'video'].some(t => timeline === p + '|' + t) ||
+            refs.length < 1 || refs.length > 450 ||
+            !Number.isFinite(expires) || expires <= Date.now() ||
+            expires > Date.now() + 31 * 60000 ||
+            (outgoingCursor !== null && (outgoingCursor.length < 1 ||
+                outgoingCursor.length > 1024)))
+            return null;
+        const groups = XMN.groupMediaRefs(refs, 'fxembed', 'complete');
+        if (!groups || groups.length < 1)
+            return null;
+        const photos = [];
+        const photoTotals = [];
+        const seen = new Set();
+        for (let i = 0; i < groups.length; i++) {
+            const g = groups[i];
+            if (i > 0 && !pageOlder(g.statusId, groups[i - 1].statusId))
+                return null;
+            if (g.refs.some(r => r.profile !== p || r.kind === null || seen.has(r.key)))
+                return null;
+            for (const r of g.refs)
+                seen.add(r.key);
+            // The provider parser excludes mixed media. Do not silently interpret
+            // /photo/N and /video/N as one canonical album.
+            const kind = g.refs[0].kind;
+            if (g.refs.some(r => r.kind !== kind))
+                return null;
+            if (kind === 'video' && (g.refs.length !== 1 ||
+                g.refs[0].mediaIndex !== 1))
+                return null;
+            if (kind === 'photo') {
+                if (g.refs.length > 4 || g.refs.some((r, j) => r.mediaIndex !== j + 1))
+                    return null;
+                photoTotals.push([g.statusId, g.refs.length]);
+                for (const r of g.refs) {
+                    const url = suppliedPhotos.get(r.key);
+                    if (!url || XMN.preloadImageUrl(url) !== url)
+                        return null;
+                    photos.push([r.key, url]);
+                }
+            }
+        }
+        if (photoTotals.length > 128)
+            photoTotals.splice(0, photoTotals.length - 128);
+        return { schema: 1, profile: p, timeline, expires,
+            refs: refs.map(r => r.href), apiKeys: refs.map(r => r.key),
+            photos, photoTotals, cursor: outgoingCursor,
+            anchorFound: true, exhausted: outgoingCursor === null };
+    }
+    XMN.preparePublicContinuationPage = preparePublicContinuationPage;
+    /** A descriptor never points into the middle of a post group. */
+    function createPublicContinuationManifest(active, next, previous) {
+        if (active.schema !== 1 || next.schema !== 1 ||
+            active.profile !== next.profile || active.timeline !== next.timeline ||
+            !active.anchorFound || active.exhausted || !active.cursor ||
+            !next.anchorFound || active.expires !== next.expires ||
+            active.refs.length < 1 || active.refs.length > 450 ||
+            next.refs.length < 1 || next.refs.length > 450)
+            return null;
+        const profile = active.profile;
+        const currentFirst = XMN.mediaRefFromHref(active.refs[0], profile);
+        const currentLast = XMN.mediaRefFromHref(active.refs[active.refs.length - 1], profile);
+        const nextFirst = XMN.mediaRefFromHref(next.refs[0], profile);
+        const nextLast = XMN.mediaRefFromHref(next.refs[next.refs.length - 1], profile);
+        if (!currentFirst || !currentLast || !nextFirst || !nextLast ||
+            !pageOlder(nextFirst.statusId, currentLast.statusId))
+            return null;
+        const basePages = previous?.pages ?? [];
+        if (basePages.length >= 64)
+            return null;
+        if (previous) {
+            const last = basePages[basePages.length - 1];
+            if (previous.activePage !== basePages.length - 1 ||
+                previous.profile !== profile || previous.timeline !== active.timeline ||
+                previous.expires > active.expires ||
+                last.firstRef !== active.refs[0] ||
+                last.lastRef !== active.refs[active.refs.length - 1] ||
+                last.mediaCount !== active.refs.length ||
+                last.outgoingCursor !== active.cursor)
+                return null;
+        }
+        const currentIndex = previous ? basePages.length - 1 : 0;
+        const pages = previous ? basePages.slice() : [{
+                page: 0, firstRef: active.refs[0], lastRef: active.refs[active.refs.length - 1],
+                mediaCount: active.refs.length, incomingCursor: null,
+                outgoingCursor: active.cursor
+            }];
+        pages.push({ page: currentIndex + 1, firstRef: next.refs[0],
+            lastRef: next.refs[next.refs.length - 1], mediaCount: next.refs.length,
+            incomingCursor: active.cursor, outgoingCursor: next.cursor });
+        const manifest = {
+            schema: 1, profile, timeline: active.timeline,
+            expires: previous?.expires ?? active.expires,
+            activePage: currentIndex, pages
+        };
+        return XMN.parsePublicPageManifest(manifest, profile);
+    }
+    XMN.createPublicContinuationManifest = createPublicContinuationManifest;
+})(XMN || (XMN = {}));
+/// <reference path="./core.ts" />
 /**
  * MV3 content-script controller. No page-world monkeypatches or network requests.
  * Bare arrow keys stay under X's control until a CONFIRMED gallery boundary.
@@ -1319,6 +1429,75 @@ var XMN;
                 });
             }, 400);
         }
+        /** Roll a complete provider page into an immutable MV3 checkpoint.
+         * Never evict the current viewer/index before the manifest is committed.
+         * The following document validates the exact page boundary before use.
+         */
+        async archivePublicContinuation(incoming, photos, outgoing, previous, stillSameSession) {
+            const profile = this.originProfile;
+            const timeline = this.originTimeline;
+            if (!profile || !timeline || !this.publicApiCursor ||
+                !this.publicApiAnchorFound || !incoming.length ||
+                !stillSameSession())
+                return false;
+            this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
+            const source = await this.sessionStore.load(profile);
+            if (!source || !stillSameSession())
+                return false;
+            if (source.timeline !== timeline || source.cursor !== this.publicApiCursor ||
+                !source.anchorFound || source.exhausted ||
+                source.refs.length !== this.refs.length ||
+                source.refs.some((url, i) => url !== this.refs[i].href) ||
+                source.apiKeys.length !== this.publicApiKeys.size ||
+                source.apiKeys.some(key => !this.publicApiKeys.has(key)))
+                return false;
+            // A cursor can skip additional photos if an X-native partial album is
+            // mistaken for a complete post. Archive only a proven final POST.
+            const last = this.refs[this.refs.length - 1];
+            const samePost = this.refs.filter(r => r.statusId === last.statusId);
+            if (!samePost.every(r => source.apiKeys.includes(r.key)))
+                return false;
+            if (last.kind === 'photo') {
+                const total = source.photoTotals.find(([id]) => id === last.statusId)?.[1];
+                if (!total || samePost.length !== total ||
+                    samePost.some((ref, i) => ref.kind !== 'photo' ||
+                        ref.mediaIndex !== i + 1))
+                    return false;
+            }
+            else if (last.kind !== 'video' || samePost.length !== 1 ||
+                samePost[0].mediaIndex !== 1)
+                return false;
+            const next = XMN.preparePublicContinuationPage(profile, timeline, incoming, photos, outgoing, source.expires);
+            if (!next)
+                return false;
+            const manifest = XMN.createPublicContinuationManifest(source, next, previous);
+            if (!manifest || !stillSameSession())
+                return false;
+            if (!previous) {
+                if (!await this.sessionStore.saveCheckpoint(0, source))
+                    return false;
+                if (!stillSameSession())
+                    return false;
+            }
+            const newPage = manifest.pages.length - 1;
+            if (!await this.sessionStore.saveCheckpoint(newPage, next))
+                return false;
+            if (!stillSameSession())
+                return false;
+            if (!await this.sessionStore.savePageManifest(manifest))
+                return false;
+            if (!stillSameSession())
+                return false;
+            // The current session remains the previous page. No speculative
+            // media URL is added to refs: Worker handles only committed boundaries.
+            this.publicSessionRestored = true;
+            this.restoredCheckpointPage = manifest.activePage;
+            this.viewerStateSnapshot = null;
+            diagnostic('checkpoint.page_ready', {
+                page: newPage, media: incoming.length, hasMore: !!outgoing
+            });
+            return true;
+        }
         /** Append only validated, chronologically older media records. */
         async loadPublicMediaContinuation(background = false) {
             if (!this.originProfile || this.publicApiLoading || document.hidden ||
@@ -1502,8 +1681,42 @@ var XMN;
                     if (!this.indexes.has(ref.key))
                         plannedKeys.add(ref.key);
                 }
-                // Never silently drop part of an album/page and then advance the
-                // cursor beyond those missing posts. Fail without changing the index.
+                // A committed page is immutable. Instead of appending to it or
+                // dropping a provider page at the 450-reference bound, preserve the
+                // previous whole-post page and commit a new bounded checkpoint.
+                this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
+                const storedManifest = await this.sessionStore.loadPageManifest?.(profile) ?? null;
+                if (!stillSameSession())
+                    return false;
+                if (this.restoredCheckpointPage != null && !storedManifest) {
+                    diagnostic('checkpoint.page_abort', { reason: 'manifest_missing' });
+                    return false;
+                }
+                if (storedManifest && plannedKeys.size === 0) {
+                    // A previously committed older page is not a fresh end-of-feed.
+                    // Only the final active checkpoint can mark a local terminal retry.
+                    if (newCursor === null &&
+                        storedManifest.activePage === storedManifest.pages.length - 1)
+                        this.publicApiExhausted = true;
+                    diagnostic('checkpoint.no_new_entries');
+                    return false;
+                }
+                if (plannedKeys.size > 0 &&
+                    (storedManifest || this.refs.length + plannedKeys.size > 450)) {
+                    const additions = newlyVerified.filter(ref => !this.indexes.has(ref.key));
+                    if (additions.length !== plannedKeys.size ||
+                        additions.some(ref => ref.statusId === nativeLast)) {
+                        diagnostic('checkpoint.page_abort', { reason: 'split_or_duplicate' });
+                        return false;
+                    }
+                    const archived = await this.archivePublicContinuation(additions, sourceMap, newCursor, storedManifest, stillSameSession);
+                    if (archived) {
+                        committed = true;
+                        return true;
+                    }
+                    diagnostic('checkpoint.page_abort', { reason: 'unverified_or_storage' });
+                    return false;
+                }
                 if (this.refs.length + plannedKeys.size > 450) {
                     diagnostic('fxembed.continuation_abort', { reason: 'index_limit' });
                     return false;
@@ -1595,7 +1808,9 @@ var XMN;
                         this.refs.some(ref => ref.statusId === intent.statusId)) {
                         const index = this.activeIndex();
                         if (index !== null && this.refs[index].statusId === intent.statusId &&
-                            XMN.adjacentPostIndex(this.refs, intent.statusId, 1, index) !== null) {
+                            (XMN.adjacentPostIndex(this.refs, intent.statusId, 1, index) !== null ||
+                                (this.publicSessionRestored &&
+                                    this.restoredCheckpointPage !== null))) {
                             diagnostic('fxembed.boundary_resumed');
                             void this.navigate(1);
                         }

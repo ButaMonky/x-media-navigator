@@ -540,6 +540,67 @@ namespace XMN {
       }, 400);
     }
 
+    /** Roll a complete provider page into an immutable MV3 checkpoint.
+     * Never evict the current viewer/index before the manifest is committed.
+     * The following document validates the exact page boundary before use.
+     */
+    private async archivePublicContinuation(
+      incoming:MediaRef[],photos:Map<string,string>,
+      outgoing:string|null,previous:PublicPageManifest|null,
+      stillSameSession:()=>boolean
+    ):Promise<boolean>{
+      const profile=this.originProfile;
+      const timeline=this.originTimeline;
+      if(!profile||!timeline||!this.publicApiCursor||
+         !this.publicApiAnchorFound||!incoming.length ||
+         !stillSameSession())return false;
+      this.sessionStore ??= new SessionStore();
+      const source=await this.sessionStore.load(profile);
+      if(!source||!stillSameSession())return false;
+      if(source.timeline!==timeline||source.cursor!==this.publicApiCursor||
+         !source.anchorFound||source.exhausted||
+         source.refs.length!==this.refs.length||
+         source.refs.some((url,i)=>url!==this.refs[i].href)||
+         source.apiKeys.length!==this.publicApiKeys.size||
+         source.apiKeys.some(key=>!this.publicApiKeys.has(key)))
+        return false;
+      // A cursor can skip additional photos if an X-native partial album is
+      // mistaken for a complete post. Archive only a proven final POST.
+      const last=this.refs[this.refs.length-1];
+      const samePost=this.refs.filter(r=>r.statusId===last.statusId);
+      if(!samePost.every(r=>source.apiKeys.includes(r.key)))return false;
+      if(last.kind==='photo'){
+        const total=source.photoTotals.find(([id])=>id===last.statusId)?.[1];
+        if(!total||samePost.length!==total||
+           samePost.some((ref,i)=>ref.kind!=='photo'||
+             ref.mediaIndex!==i+1))return false;
+      }else if(last.kind!=='video'||samePost.length!==1||
+               samePost[0].mediaIndex!==1)return false;
+      const next=preparePublicContinuationPage(
+        profile,timeline,incoming,photos,outgoing,source.expires);
+      if(!next)return false;
+      const manifest=createPublicContinuationManifest(source,next,previous);
+      if(!manifest || !stillSameSession())return false;
+      if(!previous){
+        if(!await this.sessionStore.saveCheckpoint(0,source))return false;
+        if(!stillSameSession())return false;
+      }
+      const newPage=manifest.pages.length-1;
+      if(!await this.sessionStore.saveCheckpoint(newPage,next))return false;
+      if(!stillSameSession())return false;
+      if(!await this.sessionStore.savePageManifest(manifest))return false;
+      if(!stillSameSession())return false;
+      // The current session remains the previous page. No speculative
+      // media URL is added to refs: Worker handles only committed boundaries.
+      this.publicSessionRestored=true;
+      this.restoredCheckpointPage=manifest.activePage;
+      this.viewerStateSnapshot=null;
+      diagnostic('checkpoint.page_ready',{
+        page:newPage,media:incoming.length,hasMore:!!outgoing
+      });
+      return true;
+    }
+
     /** Append only validated, chronologically older media records. */
     private async loadPublicMediaContinuation(background = false): Promise<boolean> {
       if (!this.originProfile || this.publicApiLoading || document.hidden ||
@@ -712,8 +773,39 @@ namespace XMN {
         for (const ref of newlyVerified) {
           if (!this.indexes.has(ref.key)) plannedKeys.add(ref.key);
         }
-        // Never silently drop part of an album/page and then advance the
-        // cursor beyond those missing posts. Fail without changing the index.
+        // A committed page is immutable. Instead of appending to it or
+        // dropping a provider page at the 450-reference bound, preserve the
+        // previous whole-post page and commit a new bounded checkpoint.
+        this.sessionStore ??= new SessionStore();
+        const storedManifest=await this.sessionStore.loadPageManifest?.(profile)??null;
+        if(!stillSameSession())return false;
+        if(this.restoredCheckpointPage!=null && !storedManifest){
+          diagnostic('checkpoint.page_abort',{reason:'manifest_missing'});
+          return false;
+        }
+        if(storedManifest && plannedKeys.size===0){
+          // A previously committed older page is not a fresh end-of-feed.
+          // Only the final active checkpoint can mark a local terminal retry.
+          if(newCursor===null &&
+             storedManifest.activePage===storedManifest.pages.length-1)
+            this.publicApiExhausted=true;
+          diagnostic('checkpoint.no_new_entries');
+          return false;
+        }
+        if(plannedKeys.size>0 &&
+           (storedManifest || this.refs.length + plannedKeys.size > 450)){
+          const additions=newlyVerified.filter(ref=>!this.indexes.has(ref.key));
+          if(additions.length!==plannedKeys.size ||
+             additions.some(ref=>ref.statusId===nativeLast)){
+            diagnostic('checkpoint.page_abort',{reason:'split_or_duplicate'});
+            return false;
+          }
+          const archived=await this.archivePublicContinuation(
+            additions,sourceMap,newCursor,storedManifest,stillSameSession);
+          if(archived){committed=true;return true;}
+          diagnostic('checkpoint.page_abort',{reason:'unverified_or_storage'});
+          return false;
+        }
         if (this.refs.length + plannedKeys.size > 450) {
           diagnostic('fxembed.continuation_abort', { reason: 'index_limit' });
           return false;
@@ -800,7 +892,9 @@ namespace XMN {
              this.refs.some(ref=>ref.statusId===intent.statusId)) {
             const index=this.activeIndex();
             if(index!==null && this.refs[index].statusId===intent.statusId &&
-               adjacentPostIndex(this.refs,intent.statusId,1,index)!==null) {
+               (adjacentPostIndex(this.refs,intent.statusId,1,index)!==null ||
+                (this.publicSessionRestored&&
+                 this.restoredCheckpointPage!==null))) {
               diagnostic('fxembed.boundary_resumed');
               void this.navigate(1);
             }
