@@ -534,3 +534,23 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   原因となった競合プロセスは未特定。
 - 詳細・手動受入：`docs/implementation/B5-28-TO-29-20261030.md`。
   実サイトXでのログイン済み検証・公開はまだ未完了。
+
+
+## 2026-10-30｜B5追加：ネイティブ28→29と拒否系の実MV3独立検証
+
+- 新規独立ブランチ `task/xmn-b5-native-28to29-20261030`。
+  元正本`f85dc47`とv2.4.22を変更せず、実Chrome for Testingで
+  **公開API seedなし／ネイティブ28投稿からの1回ArrowRight**の
+  一連のクロスドキュメント移動・前投稿戻りを確認。
+- 4枚画像の最終投稿 `photo/4` から29番目へ進む
+  本物の`onKeyDown`・`photoCount`と、32媒体のWorker保存を確認。
+- 外部APIに同意しない場合は通信0・Worker空・X相当返信欄保持。
+  APIのアンカーがXと一致しない場合は推測で29番目へ
+  移動せず、28件の索引を保存せずそのまま維持。
+- `npm run test:mv3:native`、`test:mv3:fourphoto`、
+  `test:mv3:deny`、`test:mv3:unverified`が実MV3でPASS。
+- 詳細・未完了範囲：
+  `docs/implementation/B5-NATIVE-FIRST-ARROW-20261030.md`。
+- 実Xでログイン済みの画廊/動画/GIFと返信欄の受入・公開は未完了。
+  既存のB5版QAフォルダを更新せず、主正本へのFF-only統合は
+  GitHub CI成功後のみ行う。

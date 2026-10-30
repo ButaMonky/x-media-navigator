@@ -14,6 +14,10 @@
     "test:mv3:archive": "npm run build && node tools/mv3-archive-bridge-smoke.mjs",
     "test:mv3:roundtrip": "npm run build && node tools/mv3-archive-roundtrip-smoke.mjs",
     "test:mv3:b5": "npm run build && node tools/mv3-b5-28-to-29-smoke.mjs",
+    "test:mv3:native": "npm run build && node tools/mv3-b5-native-28-to-29-smoke.mjs",
+    "test:mv3:fourphoto": "npm run build && node tools/mv3-b5-four-photos-to-next-smoke.mjs",
+    "test:mv3:deny": "npm run build && node tools/mv3-b5-deny-consent-smoke.mjs",
+    "test:mv3:unverified": "npm run build && node tools/mv3-b5-unverified-cursor-smoke.mjs",
     "test:mv3:reject": "node tools/b1-worker-cdp-probe.mjs",
     "test:navigation-isolated": "node tools/navigation-isolated-probe.mjs",
     "qa:update": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/update-chrome-qa.ps1"
