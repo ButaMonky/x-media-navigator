@@ -4059,3 +4059,136 @@ test('B5 streaming body cancels immediately when the real byte limit is exceeded
   assert.equal(released,1);
  }finally{context.TextDecoder=previous}
 });
+
+test('B4 Data Saver activation cancels old speculative transfers and never starts a third',()=>{
+ const oldImage=context.Image,oldNav=context.navigator,oldHidden=document.hidden;
+ const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+ const requested=[],cancelled=[],timers=new Map();let sequence=1;
+ context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'},deviceMemory:8};
+ context.window.setTimeout=(fn,ms)=>{const id=sequence++;timers.set(id,{fn,ms});return id;};
+ context.window.clearTimeout=id=>timers.delete(id);
+ context.Image=class {
+  naturalWidth=600;naturalHeight=400;
+  set src(value){if(value.startsWith('https:'))requested.push(value);this.url=value;}
+  removeAttribute(){cancelled.push(this.url);this.url='';}
+  decode(){return new Promise(()=>{});}
+ };
+ document.hidden=false;
+ const urls=['DATA_A','DATA_B','DATA_C'].map(id=>
+   'https://pbs.twimg.com/media/'+id+'?format=jpg&name=large');
+ const controller=Object.assign(Object.create(proto),{
+  viewer:{isConnected:true},originProfile:'alice',navGeneration:5,navigationBusy:false,
+  prefetched:new Map(),prefetchQueue:[...urls],prefetchWanted:new Set(urls),
+  prefetchInFlight:0,prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+  preloadTimer:null,preloadForPath:'visible',handoff:null
+ });
+ try{
+  proto.drainPrefetchQueue.call(controller);
+  assert.equal(controller.prefetchInFlight,2);
+  assert.deepEqual(requested,urls.slice(0,2));
+  context.navigator.connection.saveData=true;
+  proto.onNetworkPolicyChange.call(controller);
+  assert.equal(controller.prefetchInFlight,0);
+  assert.deepEqual(cancelled,urls.slice(0,2));
+  assert.deepEqual(requested,urls.slice(0,2),'queued third URL must not load');
+  assert.equal(controller.prefetchQueue.length,0);
+  assert.equal(controller.prefetchWanted.size,0);
+  assert.equal(controller.prefetchFailed.size,0,
+    'a user-requested Data Saver cancellation is not a CDN error');
+  assert.equal(timers.size,0,'watchdogs must be cleared on cancellation');
+ }finally{context.Image=oldImage;context.navigator=oldNav;
+  context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;
+  document.hidden=oldHidden;}
+});
+test('B4 offline network change keeps decoded images and an already displayed handoff',()=>{
+ const oldNav=context.navigator,oldHidden=document.hidden;
+ const oldClear=context.window.clearTimeout;const cleared=[],cancelled=[];
+ context.navigator={onLine:false,connection:{saveData:false,effectiveType:'4g'}};
+ document.hidden=false;
+ context.window.clearTimeout=id=>cleared.push(id);
+ const displayed={};
+ const cache={image:{},bytes:48000,ready:true,loading:false};
+ const shown={image:displayed,bytes:0,ready:false,loading:true,
+  cancel(){throw Error('Image serving the visible handoff must remain protected')}};
+ const stale={image:{},bytes:0,ready:false,loading:true,
+  cancel(){cancelled.push('stale');ctrl.prefetched.delete('stale');
+   ctrl.prefetchInFlight--;}};
+ const ctrl=Object.assign(Object.create(proto),{
+  originProfile:'alice',viewer:{isConnected:true},navGeneration:2,
+  prefetched:new Map([['cached',cache],['shown',shown],['stale',stale]]),
+  prefetchQueue:['queued'],prefetchWanted:new Set(['shown','queued','stale']),
+  prefetchInFlight:2,prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+  preloadTimer:55,preloadForPath:'old',
+  handoff:{host:{contains(image){return image===displayed;}}}
+ });
+ try{
+  proto.onNetworkPolicyChange.call(ctrl);
+  assert.deepEqual(cancelled,['stale']);
+  assert.equal(ctrl.prefetched.get('cached'),cache);
+  assert.equal(ctrl.prefetched.get('shown'),shown);
+  assert.equal(ctrl.prefetchInFlight,1);
+  assert.equal(ctrl.prefetchQueue.length,0);
+  assert.equal(ctrl.prefetchWanted.size,0);
+  assert.deepEqual(cleared,[55]);
+ }finally{context.navigator=oldNav;document.hidden=oldHidden;
+  context.window.clearTimeout=oldClear;}
+});
+test('B4 returning to fast network restarts only the existing bounded prefetch scheduler',()=>{
+ const oldNav=context.navigator,oldHidden=document.hidden;
+ context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'}};
+ document.hidden=false;
+ let schedules=0;
+ const ctrl=Object.assign(Object.create(proto),{
+  viewer:{isConnected:true},originProfile:'alice',preloadForPath:'cached',
+  prefetchQueue:[],prefetchWanted:new Set(),prefetched:new Map(),
+  preloadTimer:null,schedulePreload(){schedules++}
+ });
+ try{
+  proto.onNetworkPolicyChange.call(ctrl);
+  assert.equal(ctrl.preloadForPath,'');
+  assert.equal(schedules,1);
+  document.hidden=true;
+  proto.onNetworkPolicyChange.call(ctrl);
+  assert.equal(schedules,1,'hidden tabs cannot start speculative downloads');
+ }finally{context.navigator=oldNav;document.hidden=oldHidden;}
+});
+test('B4 offline transition blocks draining a pending third image after decode completes',async()=>{
+ const oldNav=context.navigator,oldImage=context.Image,oldHidden=document.hidden;
+ const oldSet=context.window.setTimeout,oldClear=context.window.clearTimeout;
+ const requested=[],pending=[];let sequence=1;
+ const timers=new Map();
+ context.navigator={onLine:true,connection:{saveData:false,effectiveType:'4g'}};
+ context.Image=class {
+  naturalWidth=900;naturalHeight=650;
+  set src(value){if(value.startsWith('https:'))requested.push(value);this.value=value;}
+  removeAttribute(){this.value='';}
+  decode(){return new Promise(resolve=>pending.push(resolve));}
+ };
+ context.window.setTimeout=(fn,ms)=>{const id=sequence++;timers.set(id,fn);return id};
+ context.window.clearTimeout=id=>timers.delete(id);
+ document.hidden=false;
+ const urls=['PREF_A','PREF_B','PREF_C'].map(id=>
+   'https://pbs.twimg.com/media/'+id+'?format=jpg&name=large');
+ const ctrl=Object.assign(Object.create(proto),{
+  viewer:{isConnected:true},originProfile:'alice',navGeneration:7,
+  navigationBusy:false,prefetched:new Map(),
+  prefetchQueue:[...urls],prefetchWanted:new Set(urls),
+  prefetchedReady:new Set(),prefetchInFlight:0,
+  prefetchFailed:new Set(),prefetchTooLarge:new Set(),
+  preloadTimer:null,preloadForPath:''
+ });
+ try{
+  proto.drainPrefetchQueue.call(ctrl);
+  assert.deepEqual(requested,urls.slice(0,2));
+  context.navigator.onLine=false;
+  pending[0]();
+  for(let n=0;n<8;n++)await Promise.resolve();
+  assert.deepEqual(requested,urls.slice(0,2),
+    'background queue must not schedule a new fetch after network goes offline');
+  assert.equal(ctrl.prefetchQueue.length,0);
+  assert.equal(ctrl.prefetchWanted.size,0);
+  assert.equal(ctrl.prefetchInFlight,0);
+  assert.equal(timers.size,0);
+ }finally{context.navigator=oldNav;context.Image=oldImage;document.hidden=oldHidden;
+  context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;}
+});

@@ -607,3 +607,26 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   `docs/implementation/B5-PROVIDER-INTEGRITY-20261030.md`。
 - 通常版・公開main・既存すべてのQAバージョン・
   Chromeユーザープロファイルは未変更。
+
+---
+
+## 2026-10-30｜B4 通信ポリシー変更による投機的画像取得の停止
+
+- 独立ブランチ `task/xmn-b4-network-budget-20261030`（基準
+  `2e8587f`）。別レーンの未コミット変更は上書きしていない。
+- 問題：Save-DataのON/オフライン後も、進行中の2件の先読みや
+  待機中の3件目の取得が止まらない。実行中のdecode完了によって
+  さらに第三の画像を取得し始める経路をREDテストで再現。
+- 修正：online/offline/NetworkInformation changeで先読みだけを
+  中断し、不要な未完了転送とキューを解放。
+  表示中handoffと完了済みデコード画像は保護し、
+  再接続時には既存の最大2転送枠ポリシーで再開。
+  ネイティブXの画像は一切操作しない。
+- B4専用RED→GREEN4件を含むNode335件：
+  326PASS・0FAIL・3SKIP・実X TODO6。
+  TypeScript、合成Chromium4件、隔離実Chrome MV3の8系統PASS。
+- 根拠・未完了：
+  `docs/implementation/B4-NETWORK-POLICY-20261030.md`。
+  実Xでの通信・Paint・同意・公開受入は未完了。
+- GitHub CI成功と主開発正本のHEAD再照合後にのみFF-only統合。
+  旧QA・通常インストール・公開mainを変更しない。
