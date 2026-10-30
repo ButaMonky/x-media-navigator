@@ -1059,6 +1059,10 @@ var XMN;
             this.pendingDocumentHandoff = null;
             this.checkpointBoundaryPending = false;
             this.restoredCheckpointPage = null;
+            // A checkpoint with a committed next page or full 64-page quota must not
+            // repeatedly contact the volunteer provider for unusable pagination.
+            this.checkpointContinuationBlocked = false;
+            this.checkpointCapacityReached = false;
             // Warm only after the user has explicitly allowed this external provider.
             this.publicApiWarmCursor = null;
             this.publicApiWarmTimer = null;
@@ -1446,7 +1450,8 @@ var XMN;
                 this.publicApiWarmCursor = requestedCursor;
                 diagnostic('fxembed.warmup', { remainingPosts: remaining });
                 void this.loadPublicMediaContinuation(true).then(ok => {
-                    if (!ok && this.publicApiWarmCursor === requestedCursor)
+                    if (!ok && !this.checkpointContinuationBlocked &&
+                        this.publicApiWarmCursor === requestedCursor)
                         this.publicApiWarmCursor = null;
                 }).catch(() => {
                     if (this.publicApiWarmCursor === requestedCursor)
@@ -1549,6 +1554,31 @@ var XMN;
             const stillSameSession = () => generation === this.navGeneration && this.originProfile === profile &&
                 this.originTimeline === timeline &&
                 window.location.pathname === initialPath && !document.hidden;
+            if (this.restoredCheckpointPage != null) {
+                this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
+                let manifest = null;
+                try {
+                    manifest = await this.sessionStore.loadPageManifest(profile);
+                }
+                catch {
+                    return false;
+                }
+                if (!stillSameSession() || !manifest ||
+                    manifest.activePage !== this.restoredCheckpointPage)
+                    return false;
+                const capacity = manifest.pages.length >= 64;
+                const savedNeighbor = manifest.activePage < manifest.pages.length - 1;
+                if (capacity || savedNeighbor) {
+                    this.checkpointContinuationBlocked = true;
+                    this.checkpointCapacityReached = capacity;
+                    diagnostic('checkpoint.continuation_blocked', {
+                        reason: capacity ? 'page_capacity' : 'already_committed'
+                    });
+                    return false; // Never fetch data that cannot be committed.
+                }
+            }
+            this.checkpointContinuationBlocked = false;
+            this.checkpointCapacityReached = false;
             this.publicApiLoading = true;
             if (!background) {
                 this.navigationBusy = true;
@@ -1909,6 +1939,8 @@ var XMN;
             this.pendingDocumentHandoff = null;
             this.checkpointBoundaryPending = false;
             this.restoredCheckpointPage = null;
+            this.checkpointContinuationBlocked = false;
+            this.checkpointCapacityReached = false;
             this.publicApiWarmCursor = null;
             if (this.publicApiWarmTimer !== null)
                 window.clearTimeout(this.publicApiWarmTimer);
@@ -3961,7 +3993,11 @@ var XMN;
                 }
                 const appended = await this.loadPublicMediaContinuation();
                 if (!appended) {
-                    this.toast('公開APIで次の投稿を確認できませんでした。Xのメディア一覧で読み込んでください');
+                    this.toast(this.checkpointCapacityReached
+                        ? '保存済みの上限64ページに達しました。Xのメディア一覧で続きを確認してください'
+                        : this.checkpointContinuationBlocked
+                            ? '次の保存済みページは、投稿の境界から移動できます'
+                            : '公開APIで次の投稿を確認できませんでした。Xのメディア一覧で読み込んでください');
                     return;
                 }
                 // Newly verified public URL can now be navigated as a native X page,

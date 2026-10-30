@@ -639,3 +639,18 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   （330PASS・0FAIL・3SKIP・6実X TODO）、型検査、
   Chromium4件、Chrome MV3の8系統PASS。
 - GitHub CIと主開発正本の整合確認後のみFF-onlyで反映。
+
+---
+
+## 2026-10-30｜B3保存ページ上限・保存済み次ページの重複API取得停止
+
+- 独立ブランチ`task/xmn-b3-capacity-bridge-20261030`。既存正本`016579f`に対し、
+  未採用のB3担当コミット`5984440`のうち容量・保存状態チェックだけを統合。
+- B2に確定済みの次ページが存在する、または64ページ満杯の場合、
+  外部APIを**再取得する前に停止**。Xの画面と保存済み索引は維持。
+- manifestの非同期読み取り中の画面切替／manifest欠落もfail-closed。
+- APIのUTF-8 4MB処理はすでにProvider Integrity`57aa639`が導入済みの
+  主開発実装を保護し、B3の追加5試験で同一境界を再検証。
+- Node350件（341PASS・0FAIL・3SKIP・実X TODO6）、TypeScript PASS。
+- 根拠・残作業：`docs/implementation/B3-CKPT-CAPACITY-BRIDGE-20261030.md`。
+- 実Xの受入・公開は未了。既存QA版や並行担当の作業ツリーは変更しない。
