@@ -349,3 +349,11 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   **本番Xの描画・滑らかさ・450→451の受入は未実施**。
 - 安定/公開/Chromeインストール変更は禁止。GitHub CI成功後のみ
   FF-onlyの主開発正本統合とする。
+
+### 2026-10-30 B2実Worker・自動ページ保存結合確認
+
+- `npm run test:mv3:archive`：Chrome for Testing上で
+  440既知参照＋20新規参照のチェックポイント保存、
+  manifest2ページ、前後URLのWorker照合がPASS。
+- 独立追試と記録：`docs/implementation/B2-PAGE-ARCHIVE-AUDIT-20261030.md`。
+  通常インストール・公開main・安定Draft PR・元担当の未保存成果は不変更。

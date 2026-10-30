@@ -63,3 +63,20 @@
 - 本成果を保存後、GitHub ActionsのNode/TypeScript/必須Chromium
   ・生成JS完全一致まで確認し、**FF-onlyで主開発正本へ統合**する。
   他の担当の未コミット成果は消去しない。
+
+## 独立Chrome MV3の自動ページ保存・追加検証
+
+- 他の作業ツリーに未コミットで存在した
+  `tools/mv3-archive-bridge-smoke.mjs`をSHA-256
+  `14159fa3acfa4e5f916e6b1dd7d4be86f8305dcbf931e148ae1604fda5a04f69`
+  で読み取り専用コピー。元のファイル・worktreeは変更しない。
+- `npm run test:mv3:archive`を追加。**Chrome for Testing実MV3 Workerと
+  実製品Content Scriptをロード**し、ローカル公開テストサイトで
+  440件の既存検証参照＋FxEmbed模擬API20件から、ページ0/1の
+  保存とmanifest確定・旧索引440件の維持・隣接ページURLを検査。
+- 実行結果：`mv3Test=passed`、`details=true,2,20,1,440`。
+  Workerのorigin判定だけは使い捨てlocalhost拡張コピーで置換。
+  **製品Workerの本来のURL制限は変更せず**、Xや個人のブラウザ
+  プロフィール・Cookieにはアクセスしていない。
+- このテストは自動ページ保存とWorker所有権の結合確認であり、
+  実XのSPA/返信欄の見た目・速度の合格宣言ではない。
