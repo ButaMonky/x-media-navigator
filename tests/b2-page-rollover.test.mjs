@@ -429,3 +429,154 @@ test('B2 missing immutable manifest refuses continuation instead of fetching',as
   assert.equal(ctl.refs.length,2);
  }finally{current.pathname=prior;document.hidden=hidden}
 });
+test('B2 two simultaneous arrows share one manifest preflight and one provider request',async()=>{
+ const previous=current.pathname,previousHidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-PREFLIGHT');
+ let resolveManifest,notifyStarted;
+ const gate=new Promise(resolve=>{resolveManifest=resolve});
+ const started=new Promise(resolve=>{notifyStarted=resolve});
+ let manifestReads=0,networkCalls=0;
+ const manifest={schema:1,profile:'alice',timeline:'alice|photo',
+  expires:snap.expires,activePage:0,pages:[{page:0}]};
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){manifestReads++;notifyStarted();return gate}
+ },null);
+ ctl.publicSessionRestored=true;ctl.restoredCheckpointPage=0;
+ ctl.fetchPublicMediaPage=async()=>{networkCalls++;return null};
+ try{
+  const first=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  await started;
+  const second=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  resolveManifest(manifest);
+  assert.deepEqual(await Promise.all([first,second]),[false,false]);
+  assert.equal(manifestReads,1,'one current-route checkpoint preflight');
+  assert.equal(networkCalls,1,'one public provider query per boundary');
+  assert.equal(ctl.publicApiLoading,false);
+  assert.equal(ctl.publicApiPreflightGeneration,null);
+ }finally{resolveManifest(manifest);current.pathname=previous;
+  document.hidden=previousHidden}
+});
+test('B2 rejected manifest preflight releases lock so a later retry can proceed',async()=>{
+ const original=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-RETRY');
+ let reads=0,networkCalls=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){
+   reads++;
+   if(reads===1)throw Error('MV3 storage temporarily unavailable');
+   return {schema:1,profile:'alice',timeline:'alice|photo',
+     expires:snap.expires,activePage:0,pages:[{page:0}]};
+  }
+ },null);
+ ctl.publicSessionRestored=true;ctl.restoredCheckpointPage=0;
+ ctl.fetchPublicMediaPage=async()=>{networkCalls++;return null};
+ try{
+  assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(
+    ctl,true),false);
+  assert.equal(ctl.publicApiPreflightGeneration,null);
+  assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(
+    ctl,true),false);
+  assert.equal(reads,2);
+  assert.equal(networkCalls,1);
+  assert.equal(ctl.publicApiPreflightGeneration,null);
+ }finally{current.pathname=original;document.hidden=hidden}
+});
+test('B2 local full 64-page bound skips repeated manifest and consent reads',async()=>{
+ const original=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-65');
+ let manifestReads=0,providerCalls=0,consentReads=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+   async loadPageManifest(){manifestReads++;
+    return {schema:1,profile:'alice',timeline:'alice|photo',
+     expires:snap.expires,activePage:63,
+     pages:Array.from({length:64},(_,page)=>({page}))}
+   },
+   async hasConsent(){consentReads++;return true}
+ },null);
+ ctl.restoredCheckpointPage=63;ctl.publicSessionRestored=true;
+ ctl.viewer={isConnected:true};ctl.publicApiWarmTimer=null;
+ ctl.publicApiWarmCursor=null;ctl.navigationBusy=false;
+ ctl.fetchPublicMediaPage=async()=>{providerCalls++;return null};
+ try{
+   assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(
+     ctl,true),false);
+   assert.equal(ctl.checkpointCapacityReached,true);
+   await X.Controller.prototype.schedulePublicMediaWarmup.call(ctl,1);
+   assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(
+     ctl,true),false);
+   assert.equal(manifestReads,1,
+     'verified capacity should not repeatedly read the same worker manifest');
+   assert.equal(consentReads,0,'no third-party consent polling at local capacity');
+   assert.equal(providerCalls,0);
+   assert.equal(ctl.publicApiExhausted,false);
+   assert.equal(ctl.publicApiCursor,'CURSOR-65');
+ }finally{current.pathname=original;document.hidden=hidden}
+});
+test('B2 an old-route preflight cannot release a newer-route reservation',async()=>{
+ const oldPath=current.pathname,hidden=document.hidden;
+ document.hidden=false;current.pathname='/alice/status/300/photo/1';
+ const snap=currentPage([400,300],'CURSOR-GENERATION');
+ const pending=[],entered=[];let reads=0,providerCalls=0;
+ const manifest={schema:1,profile:'alice',timeline:'alice|photo',
+  expires:snap.expires,activePage:0,pages:[{page:0}]};
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){
+   reads++;
+   return await new Promise(resolve=>{
+    pending.push(resolve);
+    entered.shift()?.();
+   });
+  }
+ },null);
+ ctl.restoredCheckpointPage=0;ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{providerCalls++;return null};
+ try{
+  const first=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  while(pending.length!==1)await Promise.resolve();
+  ctl.navGeneration++;
+  current.pathname='/alice/status/300/photo/2';
+  const second=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  while(pending.length!==2)await Promise.resolve();
+  pending[0](manifest);
+  assert.equal(await first,false);
+  assert.equal(ctl.publicApiPreflightGeneration,ctl.navGeneration,
+    'stale cleanup must leave new generation reservation intact');
+  const third=await X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  assert.equal(third,false);
+  assert.equal(reads,2);
+  pending[1](manifest);
+  assert.equal(await second,false);
+  assert.equal(providerCalls,1);
+  assert.equal(ctl.publicApiPreflightGeneration,null);
+ }finally{for(const resolve of pending)resolve(manifest);
+  current.pathname=oldPath;document.hidden=hidden}
+});
+test('B2 visible post counter stops promising continuation at verified 64-page cap',()=>{
+ const path=current.pathname;current.pathname='/alice/status/300/photo/1';
+ const snap=currentPage([400,300],'CURSOR-65');
+ const label={textContent:'',title:''};
+ const prev={disabled:false},next={disabled:false};
+ const viewer={isConnected:true,querySelector(name){
+  return name==='.xmn-prev'?prev:name==='.xmn-next'?next:
+   name==='.xmn-status'?label:null;
+ }};
+ const ctl=continuationCtl(snap,[ref(200)],{},null);
+ Object.assign(ctl,{viewer,publicSessionRestored:true,
+  restoredCheckpointPage:63,checkpointCapacityReached:false,
+  viewerStateSnapshot:null,controlsHost:null,
+  statusOrdinalCache:null,schedulePublicMediaWarmup(){}});
+ try{
+  X.Controller.prototype.updateViewerState.call(ctl);
+  assert.equal(label.textContent,'投稿 2 / 2+');
+  assert.ok(!prev.disabled && !next.disabled);
+  ctl.checkpointCapacityReached=true;
+  X.Controller.prototype.updateViewerState.call(ctl);
+  assert.equal(label.textContent,'投稿 2 / 2');
+  assert.match(label.title,/64ページ/);
+  assert.equal(ctl.publicApiCursor,'CURSOR-65');
+  assert.equal(ctl.publicApiExhausted,false);
+ }finally{current.pathname=path}
+});

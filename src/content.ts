@@ -13,7 +13,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.24-dev';
+  const DIAGNOSTIC_VERSION = '2.4.25-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -179,6 +179,8 @@ namespace XMN {
     // repeatedly contact the volunteer provider for unusable pagination.
     private checkpointContinuationBlocked=false;
     private checkpointCapacityReached=false;
+    // Avoid two provider fetches while awaiting an asynchronous manifest read.
+    private publicApiPreflightGeneration:number|null=null;
     // Warm only after the user has explicitly allowed this external provider.
     private publicApiWarmCursor: string | null = null;
     private publicApiWarmTimer: number | null = null;
@@ -567,6 +569,9 @@ namespace XMN {
     private async schedulePublicMediaWarmup(currentIndex: number | null): Promise<void> {
       if (currentIndex === null || !this.publicApiAnchorFound ||
           !this.publicApiCursor || this.publicApiExhausted || this.publicApiLoading ||
+          this.checkpointCapacityReached ||
+          (this.publicApiPreflightGeneration!=null &&
+           this.publicApiPreflightGeneration===this.navGeneration) ||
           this.navigationBusy || !this.viewer?.isConnected || document.hidden ||
           this.publicApiWarmTimer !== null ||
           this.publicApiWarmCursor === this.publicApiCursor || !this.originProfile ||
@@ -576,6 +581,9 @@ namespace XMN {
       if (!await this.sessionStore.hasConsent(profile)) return;
       if (this.originProfile !== profile || !this.viewer?.isConnected ||
           this.publicApiLoading || this.navigationBusy || document.hidden ||
+          this.checkpointCapacityReached ||
+          (this.publicApiPreflightGeneration!=null &&
+           this.publicApiPreflightGeneration===this.navGeneration) ||
           !this.publicApiCursor || this.publicApiExhausted ||
           this.publicApiWarmTimer !== null ||
           this.publicApiWarmCursor === this.publicApiCursor ||
@@ -594,6 +602,9 @@ namespace XMN {
       this.publicApiWarmTimer = window.setTimeout(() => {
         this.publicApiWarmTimer = null;
         if (this.publicApiCursor !== requestedCursor || this.publicApiLoading ||
+            this.checkpointCapacityReached ||
+            (this.publicApiPreflightGeneration!=null &&
+           this.publicApiPreflightGeneration===this.navGeneration) ||
             this.navigationBusy || !this.viewer?.isConnected || document.hidden) return;
         // Mark only an actually started call; a cancelled timer may be retried.
         this.publicApiWarmCursor = requestedCursor;
@@ -673,6 +684,9 @@ namespace XMN {
     /** Append only validated, chronologically older media records. */
     private async loadPublicMediaContinuation(background = false): Promise<boolean> {
       if (!this.originProfile || this.publicApiLoading || document.hidden ||
+          this.checkpointCapacityReached ||
+          (this.publicApiPreflightGeneration!=null &&
+           this.publicApiPreflightGeneration===this.navGeneration) ||
           (typeof navigator !== 'undefined' && navigator.onLine === false) ||
           this.publicApiExhausted) return false;
       if(this.publicApiRetryAt>Date.now()){
@@ -696,9 +710,17 @@ namespace XMN {
         window.location.pathname === initialPath && !document.hidden;
       if(this.restoredCheckpointPage!=null){
         this.sessionStore ??= new SessionStore();
+        // Claim this route generation *before* awaiting the Worker. Rapid
+        // right arrows otherwise each pass publicApiLoading=false and can
+        // start duplicate volunteer-provider requests.
+        this.publicApiPreflightGeneration=generation;
         let manifest:PublicPageManifest|null=null;
         try { manifest=await this.sessionStore.loadPageManifest(profile); }
         catch { return false; }
+        finally {
+          if(this.publicApiPreflightGeneration===generation)
+            this.publicApiPreflightGeneration=null;
+        }
         if(!stillSameSession() || !manifest ||
            manifest.activePage!==this.restoredCheckpointPage)
           return false;
@@ -707,6 +729,10 @@ namespace XMN {
         if(capacity||savedNeighbor){
           this.checkpointContinuationBlocked=true;
           this.checkpointCapacityReached=capacity;
+          if(capacity){
+            this.viewerStateSnapshot=null;
+            this.updateViewerState();
+          }
           diagnostic('checkpoint.continuation_blocked',{
             reason:capacity?'page_capacity':'already_committed'
           });
@@ -1058,6 +1084,7 @@ namespace XMN {
       this.restoredCheckpointPage = null;
       this.checkpointContinuationBlocked = false;
       this.checkpointCapacityReached = false;
+      this.publicApiPreflightGeneration = null;
       this.publicApiWarmCursor = null;
       if (this.publicApiWarmTimer !== null) window.clearTimeout(this.publicApiWarmTimer);
       this.publicApiWarmTimer = null;
@@ -1677,7 +1704,7 @@ namespace XMN {
       if (!viewer) return;
       // Media refs are append-only within a session; only their count,
       // current route, or navigation busy state changes the post controls.
-      const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}|${this.restoredCheckpointPage ?? -1}`;
+      const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}|${this.restoredCheckpointPage ?? -1}|${this.checkpointCapacityReached ? 1 : 0}`;
       if (this.viewerStateSnapshot?.viewer === viewer && this.viewerStateSnapshot.key === key) return;
       const current = this.activeIndex();
       const controls = this.controlsHost?.isConnected ? this.controlsHost : viewer;
@@ -1707,13 +1734,16 @@ namespace XMN {
         const index = currentRef ? ordinal.byStatus.get(currentRef.statusId) ?? -1 : -1;
         // Known indexed posts are not X's complete historical total.
         // A continuation cursor means older posts may still be obtainable.
-        const mayContinue = !!this.publicApiCursor && !this.publicApiExhausted;
+        const mayContinue = !!this.publicApiCursor && !this.publicApiExhausted &&
+          !this.checkpointCapacityReached;
         const label = index < 0 ? '投稿の位置を確認中' :
           `投稿 ${index + 1} / ${ordinal.byStatus.size}${mayContinue ? '+' : ''}`;
         if (indicator.textContent !== label) indicator.textContent = label;
-        indicator.title = mayContinue
-          ? '現在読み込み済みの投稿数です。続きを取得できる可能性があります。'
-          : '現在読み込み済みの投稿数です。';
+        indicator.title = this.checkpointCapacityReached
+          ? '保存済みの上限64ページに達しました。続きはXのメディア一覧で確認してください。'
+          : mayContinue
+            ? '現在読み込み済みの投稿数です。続きを取得できる可能性があります。'
+            : '現在読み込み済みの投稿数です。';
       }
       this.viewerStateSnapshot = { viewer, key };
       this.schedulePublicMediaWarmup?.(current);

@@ -694,3 +694,25 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   動画/GIF/混合・SPA/返信欄/画像速度の観測と公開判断のみ。
 - 完了詳細、出力場所、BLOCKEDの原因・再開位置：
   `docs/implementation/B5-RELEASE-GATE-HANDOFF-20261030.md`。
+
+---
+
+## 2026-10-30｜B2同時プリフライト重複APIの排除（非公開QA v2.4.25）
+
+- 独立ブランチ `task/xmn-b2-preflight-race-20261030`。
+  正本 `b951b94` からの変更で、別担当のdirtyな容量/History
+  worktreeを上書きしていない。
+- 保存済みmanifestの非同期Worker照会中、
+  2つの右キー操作がそれぞれ外部APIを呼び出す競合を
+  RED→GREENで再現・修正。
+- `publicApiPreflightGeneration`の世代別予約で、再入を拒否。
+  例外後の解除、新しい経路の予約を旧経路が消さないことも検証。
+- 64ページ到達後は重複Worker照会・同意確認・
+  バックグラウンド取得を停止、表示中の+記号も抑制。
+  原Xの媒体と返信はそのまま。
+- B2追加5テストGREEN。全Node/TS/合成Chrome/実MV3/CIは
+  専用ブランチにコミットしてから再確認。
+- 技術資料・残作業：
+  `docs/implementation/B2-PREFLIGHT-RACE-20261030.md`。
+- 既存QA v2.4.24以前と公開mainを保護し、
+  新しい独立v2.4.25 QAフォルダのみ生成可能。
