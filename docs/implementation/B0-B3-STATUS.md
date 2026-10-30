@@ -735,3 +735,22 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   詳細・安全拒否・再開位置：
   `docs/implementation/B5-RELEASE-GATE-HANDOFF-20261030.md`、
   `docs/implementation/B2-PREFLIGHT-RACE-20261030.md`。
+
+---
+
+## 2026-10-30｜B5同意の重複確認を防止するv2.4.26候補
+
+- 基準：`2746b80`。専用ブランチ
+  `task/xmn-b5-consent-once-20261030`。
+- 同じ投稿の右キー連続入力で、Worker同意確認の待機中に
+  同じ確認ダイアログが2つ出てしまう経路をREDで再現して修復。
+- `publicConsentPendingGeneration`の経路単位ロックを追加。
+  同意済みでも外部APIは1件だけ起動、古い経路の非同期完了は
+  新しい経路の同意処理を解放しない。
+- Worker同意照合で例外が起きたら外部通信せず
+  1回のエラー案内で安全停止。4つの新規試験でPASS。
+- ManifestとQA識別子は**v2.4.26**（別フォルダ）。
+  元のv2.4.25を上書きしない。
+- 詳細・BLOCKED・再開位置：
+  `docs/implementation/B5-CONSENT-ONCE-20261030.md`。
+- 認証済み実Xでの受入・公開判断は未完了。

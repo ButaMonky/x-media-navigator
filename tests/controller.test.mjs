@@ -4266,3 +4266,128 @@ test('B5 BFCache route changed before Worker reply prevents stale historical che
   assert.equal(checkedOut,false);
  }finally{state.pathname=before}
 });
+
+test('B2 two rapid boundary arrows show only one external-service consent prompt',async()=>{
+ const prevPath=state.pathname,prevConfirm=context.window.confirm;
+ state.pathname='/alice/status/300/photo/1';
+ let entered,release;
+ const waiting=new Promise(resolve=>release=resolve);
+ const started=new Promise(resolve=>entered=resolve);
+ let consentReads=0,prompts=0,network=0;
+ context.window.confirm=()=>{prompts++;return false};
+ const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
+ const controller=Object.assign(Object.create(proto),{
+  originProfile:'alice',originTimeline:'alice|photo',navGeneration:21,
+  refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
+  navigationBusy:false,checkpointBoundaryPending:false,
+  publicApiLoading:false,publicApiCursor:'CURSOR',
+  publicSessionRestored:false,
+  viewer:{isConnected:true},activeIndex(){return 1},
+  sessionStore:{async hasConsent(){consentReads++;entered();await waiting;return false}},
+  toast(){},updateViewerState(){},
+  fetchPublicMediaPage:async()=>{network++;return null}
+ });
+ try {
+  const first=proto.navigate.call(controller,1);
+  await started;
+  const second=proto.navigate.call(controller,1);
+  release();
+  await Promise.all([first,second]);
+  assert.equal(consentReads,1,'same route must not request consent twice');
+  assert.equal(prompts,1,'the user sees just one third-party permission prompt');
+  assert.equal(network,0);
+  assert.equal(controller.publicConsentPendingGeneration,null);
+ }finally{release();state.pathname=prevPath;context.window.confirm=prevConfirm}
+});
+
+test('B5 rapid right arrows launch only one consent-approved public continuation',async()=>{
+ const oldPath=state.pathname;
+ state.pathname='/alice/status/300/photo/1';
+ let release,entered;
+ const waiting=new Promise(resolve=>{release=resolve});
+ const started=new Promise(resolve=>{entered=resolve});
+ let consentReads=0,apiCalls=0;
+ const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
+ const ctrl=Object.assign(Object.create(proto),{
+  originProfile:'alice',originTimeline:'alice|photo',navGeneration:31,
+  refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
+  navigationBusy:false,checkpointBoundaryPending:false,
+  publicApiLoading:false,publicSessionRestored:false,
+  viewer:{isConnected:true},activeIndex(){return 1},
+  sessionStore:{async hasConsent(){consentReads++;entered();await waiting;return true}},
+  toast(){},updateViewerState(){},
+  async loadPublicMediaContinuation(){apiCalls++;return false}
+ });
+ try{
+  const first=proto.navigate.call(ctrl,1);
+  await started;
+  const second=proto.navigate.call(ctrl,1);
+  release();await Promise.all([first,second]);
+  assert.equal(consentReads,1,'same boundary cannot check consent twice');
+  assert.equal(apiCalls,1,'only one provider continuation follows the granted consent');
+  assert.equal(ctrl.publicConsentPendingGeneration,null);
+ }finally{release();state.pathname=oldPath}
+});
+test('B5 obsolete consent query cannot unlock the current-route dialog guard',async()=>{
+ const oldPath=state.pathname;
+ state.pathname='/alice/status/300/photo/1';
+ let freeOld,freeNew,startedOld,startedNew;
+ const oldGate=new Promise(resolve=>freeOld=resolve);
+ const newGate=new Promise(resolve=>freeNew=resolve);
+ const oldStarted=new Promise(resolve=>startedOld=resolve);
+ const newStarted=new Promise(resolve=>startedNew=resolve);
+ let reads=0,fetches=0;
+ const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
+ const ctrl=Object.assign(Object.create(proto),{
+  originProfile:'alice',originTimeline:'alice|photo',navGeneration:33,
+  refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
+  navigationBusy:false,checkpointBoundaryPending:false,publicApiLoading:false,
+  publicSessionRestored:false,viewer:{isConnected:true},activeIndex(){return 1},
+  sessionStore:{async hasConsent(){
+   reads++;if(reads===1){startedOld();await oldGate}
+   else{startedNew();await newGate}
+   return true;
+  }},
+  toast(){},updateViewerState(){},
+  async loadPublicMediaContinuation(){fetches++;return false}
+ });
+ try{
+  const old=proto.navigate.call(ctrl,1);
+  await oldStarted;
+  ctrl.navGeneration++;
+  state.pathname='/alice/status/400/photo/1';
+  const newer=proto.navigate.call(ctrl,1);
+  await newStarted;
+  freeOld();await old;
+  assert.equal(ctrl.publicConsentPendingGeneration,34);
+  await proto.navigate.call(ctrl,1);
+  assert.equal(reads,2,'pending new-route consent must remain locked');
+  freeNew();await newer;
+  assert.equal(fetches,1,'stale route never calls provider');
+  assert.equal(ctrl.publicConsentPendingGeneration,null);
+ }finally{freeOld();freeNew();state.pathname=oldPath}
+});
+
+test('B5 unavailable consent storage fails closed and releases dialog reservation',async()=>{
+ const oldPath=state.pathname;
+ state.pathname='/alice/status/300/photo/1';
+ const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
+ const messages=[];let providerCalls=0;
+ const ctl=Object.assign(Object.create(proto),{
+  originProfile:'alice',originTimeline:'alice|photo',navGeneration:51,
+  refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
+  navigationBusy:false,checkpointBoundaryPending:false,
+  publicApiLoading:false,publicSessionRestored:false,
+  viewer:{isConnected:true},activeIndex(){return 1},
+  sessionStore:{async hasConsent(){throw Error('MV3 worker transport offline')}},
+  toast(msg){messages.push(msg)},updateViewerState(){},
+  async loadPublicMediaContinuation(){providerCalls++;return false}
+ });
+ try{
+  await proto.navigate.call(ctl,1);
+  assert.equal(providerCalls,0);
+  assert.equal(ctl.publicConsentPendingGeneration,null);
+  assert.equal(messages.length,1,'failed Worker state needs one safe user message');
+  assert.match(messages[0],/接続しません/);
+ }finally{state.pathname=oldPath}
+});
