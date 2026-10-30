@@ -52,3 +52,10 @@
 - Other three MV3 historical provider fixtures retain original consent/invalidation assertions but now set \`experimentalThirdPartyApiEnabled=true\` explicitly in their isolated test Controller.
 - MV3 history and BFCache historical fixtures create a second explicitly opted-in isolated test Controller on restored pages. The normal production startup continues with the parameterless constructor, native-only by default. The opt-in constructor requires a private extension-side option and does not expose a user-facing switch or remove FxEmbed consent checks.
 - Windows local \`npm run check\` and \`node --test --test-force-exit --test-concurrency=4 tests/*.test.mjs\`: **372 total / 363 PASS / 0 FAIL / 3 SKIP / 6 TODO**, exit 0. Chrome-for-Testing MV3 fixture changes must still pass GitHub CI before promotion.
+## CI MV3第2パス（研究・修正）
+
+- Run 41108218149: **新しいnative-only MV3 28→29試験PASS**。最初の境界ではAPI要求0・同意0・現ビューア維持、ユーザー追加の正規タイルを取得後、2回目の右キーでXネイティブSPAを1度だけ利用し29件目へ移動（実Xではなくlocalhost隔離Chrome for Testing）。
+- 同じrunは次の歴史的4写真→次投稿のFxEmbed補助試験でFAIL: Worker内の32メディア参照は保存成功したが、v2.4.27既定モードが外部セッションを復元しないため、旧期待のカウンターと矢印は表示されなかった。これは標準ネイティブ動作の失敗ではなく、**レガシーテストの復元指定不足**。
+- 4写真の後方互換試験に対し、クロスドキュメント遷移後だけ明示的な隔離QA用オプトインControllerを作成する修正を適用した。
+- BFCache歴史試験は最初のページへ戻ったときにもページ側にオプトインControllerが必要なので、fixtureの起動時点から隔離QA用Controllerを作る（通常製品では既定OFFのまま）。品質検査を削除/skipしていない。
+- この2修正は次のGitHub ActionsのMV3実拡張検査による受入が必要。最新の結果を確認するまで非公開開発正本やCurrentへの統合・更新は保留。
