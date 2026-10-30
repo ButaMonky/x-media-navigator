@@ -13,7 +13,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.22-dev';
+  const DIAGNOSTIC_VERSION = '2.4.23-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -164,7 +164,13 @@ namespace XMN {
     private publicApiCursor: string | null = null;
     private publicApiAnchorFound = false;
     private publicApiExhausted = false;
+    // A full 64-page immutable archive is a local safety bound, never an
+    // assertion that X or the third-party provider has no older posts.
+    private publicPageCapacityReached = false;
     private publicApiLoading = false;
+    // Reserve the current route generation during async Worker preflight.
+    // Without this, simultaneous arrows can issue duplicate API requests.
+    private publicApiPreflightGeneration: number | null = null;
     private publicApiAbort: AbortController|null=null;
     private publicApiCancelReason: 'hidden'|'route_changed'|'timeout'|null=null;
     private publicApiRetryAt=0;
@@ -378,7 +384,10 @@ namespace XMN {
         // Test fixtures and old browsers have no stream. The bound is applied
         // immediately after text() in this compatibility fallback.
         const text=await response.text();
-        return text.length<=maxBytes ? text : null;
+        // UTF-16 string.length is NOT the UTF-8 wire size: Japanese text
+        // can occupy multiple bytes per character even in this old-browser
+        // compatibility path. Enforce the same 4MB limit as streaming reads.
+        return new TextEncoder().encode(text).byteLength<=maxBytes ? text : null;
       }
       const reader=response.body.getReader();
       const decoder=new TextDecoder();
@@ -498,7 +507,10 @@ namespace XMN {
      */
     private async schedulePublicMediaWarmup(currentIndex: number | null): Promise<void> {
       if (currentIndex === null || !this.publicApiAnchorFound ||
-          !this.publicApiCursor || this.publicApiExhausted || this.publicApiLoading ||
+          !this.publicApiCursor || this.publicApiExhausted ||
+          this.publicPageCapacityReached || this.publicApiLoading ||
+          (this.publicApiPreflightGeneration != null &&
+           this.publicApiPreflightGeneration===this.navGeneration) ||
           this.navigationBusy || !this.viewer?.isConnected || document.hidden ||
           this.publicApiWarmTimer !== null ||
           this.publicApiWarmCursor === this.publicApiCursor || !this.originProfile ||
@@ -507,8 +519,12 @@ namespace XMN {
       this.sessionStore ??= new SessionStore();
       if (!await this.sessionStore.hasConsent(profile)) return;
       if (this.originProfile !== profile || !this.viewer?.isConnected ||
-          this.publicApiLoading || this.navigationBusy || document.hidden ||
+          this.publicApiLoading ||
+          (this.publicApiPreflightGeneration != null &&
+           this.publicApiPreflightGeneration===this.navGeneration) ||
+          this.navigationBusy || document.hidden ||
           !this.publicApiCursor || this.publicApiExhausted ||
+          this.publicPageCapacityReached ||
           this.publicApiWarmTimer !== null ||
           this.publicApiWarmCursor === this.publicApiCursor ||
           this.publicApiRetryAt>Date.now()) return;
@@ -526,7 +542,10 @@ namespace XMN {
       this.publicApiWarmTimer = window.setTimeout(() => {
         this.publicApiWarmTimer = null;
         if (this.publicApiCursor !== requestedCursor || this.publicApiLoading ||
-            this.navigationBusy || !this.viewer?.isConnected || document.hidden) return;
+            (this.publicApiPreflightGeneration != null &&
+           this.publicApiPreflightGeneration===this.navGeneration) ||
+            this.publicPageCapacityReached || this.navigationBusy ||
+            !this.viewer?.isConnected || document.hidden) return;
         // Mark only an actually started call; a cancelled timer may be retried.
         this.publicApiWarmCursor = requestedCursor;
         diagnostic('fxembed.warmup', { remainingPosts: remaining });
@@ -603,9 +622,11 @@ namespace XMN {
 
     /** Append only validated, chronologically older media records. */
     private async loadPublicMediaContinuation(background = false): Promise<boolean> {
-      if (!this.originProfile || this.publicApiLoading || document.hidden ||
+      if (!this.originProfile || this.publicApiLoading ||
+          (this.publicApiPreflightGeneration != null &&
+           this.publicApiPreflightGeneration===this.navGeneration) || document.hidden ||
           (typeof navigator !== 'undefined' && navigator.onLine === false) ||
-          this.publicApiExhausted) return false;
+          this.publicApiExhausted || this.publicPageCapacityReached) return false;
       if(this.publicApiRetryAt>Date.now()){
         diagnostic('fxembed.cooldown_active',{retryMs:this.publicApiRetryAt-Date.now()});
         return false;
@@ -625,6 +646,39 @@ namespace XMN {
         generation === this.navGeneration && this.originProfile === profile &&
         this.originTimeline === timeline &&
         window.location.pathname === initialPath && !document.hidden;
+      // A 64-page immutable archive cannot be extended. Check BEFORE even
+      // contacting FxEmbed, otherwise repeated right arrows waste volunteer
+      // API requests after every unsuccessful checkpoint publication.
+      if(this.publicSessionRestored && this.restoredCheckpointPage!==null){
+        this.sessionStore ??= new SessionStore();
+        // Before yielding to the Worker, claim the route's preflight. An
+        // old route may finish after a new route takes ownership; only clear
+        // the claim if it is still ours.
+        this.publicApiPreflightGeneration=generation;
+        let currentManifest:PublicPageManifest|null;
+        try{
+          currentManifest=await this.sessionStore.loadPageManifest(profile);
+        }catch{
+          diagnostic('checkpoint.page_abort',{reason:'manifest_unavailable'});
+          return false;
+        }finally{
+          if(this.publicApiPreflightGeneration===generation)
+            this.publicApiPreflightGeneration=null;
+        }
+        if(!stillSameSession())return false;
+        if(!currentManifest ||
+           currentManifest.activePage!==this.restoredCheckpointPage){
+          diagnostic('checkpoint.page_abort',{reason:'manifest_not_current'});
+          return false;
+        }
+        if(currentManifest.pages.length>=64){
+          this.publicPageCapacityReached=true;
+          this.viewerStateSnapshot=null;
+          diagnostic('checkpoint.page_limit',{pages:64});
+          this.updateViewerState();
+          return false;
+        }
+      }
       this.publicApiLoading = true;
       if (!background) {
         this.navigationBusy = true;
@@ -960,8 +1014,10 @@ namespace XMN {
       this.publicApiCursor = null;
       this.publicApiAnchorFound = false;
       this.publicApiExhausted = false;
+      this.publicPageCapacityReached = false;
       this.publicSessionRestored = false;
       this.publicApiLoading = false;
+      this.publicApiPreflightGeneration = null;
       this.pendingBoundary = null;
       this.pendingDocumentHandoff = null;
       this.checkpointBoundaryPending = false;
@@ -1585,7 +1641,7 @@ namespace XMN {
       if (!viewer) return;
       // Media refs are append-only within a session; only their count,
       // current route, or navigation busy state changes the post controls.
-      const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}|${this.restoredCheckpointPage ?? -1}`;
+      const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}|${this.restoredCheckpointPage ?? -1}|${this.publicPageCapacityReached ? 1 : 0}`;
       if (this.viewerStateSnapshot?.viewer === viewer && this.viewerStateSnapshot.key === key) return;
       const current = this.activeIndex();
       const controls = this.controlsHost?.isConnected ? this.controlsHost : viewer;
@@ -1619,7 +1675,9 @@ namespace XMN {
         const label = index < 0 ? '投稿の位置を確認中' :
           `投稿 ${index + 1} / ${ordinal.byStatus.size}${mayContinue ? '+' : ''}`;
         if (indicator.textContent !== label) indicator.textContent = label;
-        indicator.title = mayContinue
+        indicator.title = this.publicPageCapacityReached
+          ? '保存済みページが安全上限64件に達しました。既存ページは移動できますが、さらに前の投稿はXのメディア一覧で開いてください。'
+          : mayContinue
           ? '現在読み込み済みの投稿数です。続きを取得できる可能性があります。'
           : '現在読み込み済みの投稿数です。';
       }
@@ -2808,7 +2866,13 @@ namespace XMN {
             await this.tryCommittedPageBoundary(direction,currentRef,oldViewer))
           return;
         if (direction !== 1) return;
-        if (this.publicApiLoading) {
+        if(this.publicPageCapacityReached){
+          this.toast('保存済みページが安全上限の64ページに達しました。Xのメディア一覧で続きを開いてください');
+          return;
+        }
+        if (this.publicApiLoading ||
+            (this.publicApiPreflightGeneration != null &&
+           this.publicApiPreflightGeneration===this.navGeneration)) {
           // One pending intent only; its path and generation are checked again
           // after the public index is committed. Never queue multiple arrows.
           this.pendingBoundary={path:window.location.pathname,
@@ -2848,7 +2912,9 @@ namespace XMN {
         }
         const appended = await this.loadPublicMediaContinuation();
         if (!appended) {
-          this.toast('公開APIで次の投稿を確認できませんでした。Xのメディア一覧で読み込んでください');
+          this.toast(this.publicPageCapacityReached
+            ? '保存済みページが安全上限の64ページに達しました。Xのメディア一覧で続きを開いてください'
+            : '公開APIで次の投稿を確認できませんでした。Xのメディア一覧で読み込んでください');
           return;
         }
         // Newly verified public URL can now be navigated as a native X page,

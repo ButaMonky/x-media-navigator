@@ -167,6 +167,7 @@ function continuationCtl(snap,nextRefs,store,nextCursor='CURSOR-NEXT'){
    publicApiKeys:new Set(snap.apiKeys),publicApiCursor:snap.cursor,
    publicApiAnchorFound:true,publicApiExhausted:false,
    publicApiLoading:false,publicApiRetryAt:0,publicSessionRestored:false,
+   publicPageCapacityReached:false,
    restoredCheckpointPage:null,sessionStore:store,
    imageSources:new Map(),knownPhotoTotals:new Map(snap.photoTotals),
    imageSourcesRevision:0,viewerStateSnapshot:null,
@@ -336,4 +337,157 @@ test('B2 re-fetching a previously committed neighbor must not mark current page 
    'an already committed older page is not evidence of global exhaustion');
   assert.deepEqual(ctl.refs.map(x=>x.key),[ref(400).key,ref(300).key]);
  }finally{current.pathname=before;document.hidden=hidden}
+});
+
+test('B2 full 64-page manifest blocks all new external API fetches without erasing the cursor',async()=>{
+ const prior=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';
+ document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-65');
+ let providerCalls=0,loadCalls=0,manifestReads=0;
+ const store={
+  async load(){loadCalls++;return snap},
+  async loadPageManifest(){
+   manifestReads++;
+   return {activePage:63,pages:Array.from({length:64},(_,i)=>({page:i}))}
+  },
+  async saveCheckpoint(){throw Error('Must not mutate checkpoints at limit')},
+  async savePageManifest(){throw Error('Must not mutate manifests at limit')}
+ };
+ const ctl=continuationCtl(snap,[ref(200)],store,'CURSOR-66');
+ ctl.publicSessionRestored=true;
+ ctl.restoredCheckpointPage=63;
+ ctl.fetchPublicMediaPage=async()=>{providerCalls++;throw Error('API called at capacity')};
+ try{
+  assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(
+   ctl,true),false);
+  assert.equal(providerCalls,0,'save all third-party API requests when at cap');
+  assert.equal(loadCalls,0,'do not fetch a session or mutate an existing page');
+  assert.equal(manifestReads,1);
+  assert.equal(ctl.publicApiExhausted,false,
+   'the archive cap is NOT proof the provider has no older posts');
+  assert.equal(ctl.publicPageCapacityReached,true);
+  assert.equal(ctl.publicApiCursor,'CURSOR-65');
+  assert.equal(ctl.publicApiLoading,false);
+  assert.deepEqual(ctl.refs.map(r=>r.key),[ref(400).key,ref(300).key]);
+ }finally{current.pathname=prior;document.hidden=hidden}
+});
+test('B2 missing manifest from restored page fails closed before any API traffic',async()=>{
+ const prior=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';
+ document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-1');
+ let calls=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){return null}
+ });
+ ctl.restoredCheckpointPage=0;
+ ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{calls++;throw Error('Untrusted restored page')};
+ try{
+  assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(
+   ctl,true),false);
+  assert.equal(calls,0);
+  assert.equal(ctl.publicApiCursor,'CURSOR-1');
+  assert.equal(ctl.publicPageCapacityReached,false);
+ }finally{current.pathname=prior;document.hidden=hidden}
+});
+test('B2 full archive suppresses repeated background warmup and consent queries',async()=>{
+ const snap=currentPage([400,300],'CURSOR-65');
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async hasConsent(){throw Error('Already at max; do not schedule warmup')}
+ });
+ ctl.viewer={isConnected:true};
+ ctl.publicPageCapacityReached=true;
+ ctl.navigationBusy=false;
+ ctl.publicApiWarmTimer=null;
+ ctl.publicApiWarmCursor=null;
+ ctl.publicApiRetryAt=0;
+ await X.Controller.prototype.schedulePublicMediaWarmup.call(ctl,1);
+ assert.equal(ctl.publicApiWarmTimer,null);
+ assert.equal(ctl.publicApiWarmCursor,null);
+});
+
+test('B2 last-page arrow reports the archive cap without consent or provider calls',async()=>{
+ const original=current.pathname;
+ current.pathname='/alice/status/300/photo/1';
+ const snap=currentPage([400,300],'CURSOR-65');
+ let consentChecks=0,apiCalls=0,boundaryChecks=0;
+ const toasts=[];
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async hasConsent(){consentChecks++;return true}
+ });
+ Object.assign(ctl,{
+  viewer:{isConnected:true},navigationBusy:false,
+  publicSessionRestored:true,restoredCheckpointPage:63,
+  publicPageCapacityReached:true,
+  activeIndex(){return 1},
+  async tryCommittedPageBoundary(){boundaryChecks++;return false},
+  fetchPublicMediaPage(){apiCalls++;throw Error('Unexpected FxEmbed request')},
+  toast(message){toasts.push(message)}
+ });
+ try{
+  await X.Controller.prototype.navigate.call(ctl,1);
+  assert.equal(boundaryChecks,1,'still ask the trusted worker about an existing page');
+  assert.equal(consentChecks,0,'no redundant third-party consent rechecks at cap');
+  assert.equal(apiCalls,0,'do not fetch beyond 64 saved pages');
+  assert.equal(toasts.length,1);
+  assert.match(toasts[0],/64ページ/);
+  assert.deepEqual(ctl.refs.map(r=>r.key),[ref(400).key,ref(300).key]);
+  assert.equal(ctl.navigationBusy,false);
+  assert.equal(ctl.publicApiExhausted,false);
+ }finally{current.pathname=original}
+});
+test('B2 stale active-page mismatch refuses provider calls before request',async()=>{
+ const previous=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';
+ document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-OLD');
+ let calls=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){return {activePage:0,pages:[{page:0},{page:1}]}}
+ });
+ ctl.restoredCheckpointPage=1;
+ ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{calls++;throw Error('Stale route')}
+ try{
+  assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(
+    ctl,true),false);
+  assert.equal(calls,0);
+  assert.equal(ctl.publicPageCapacityReached,false);
+ }finally{current.pathname=previous;document.hidden=hidden}
+});
+
+test('B2 two rapid boundary requests share one manifest preflight and one API request',async()=>{
+ const previous=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';
+ document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-RACE');
+ let release,entered;
+ const gate=new Promise(resolve=>{release=resolve});
+ const started=new Promise(resolve=>{entered=resolve});
+ let manifestReads=0,apiCalls=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){
+   manifestReads++;
+   entered();
+   await gate;
+   return {activePage:0,pages:[{page:0},{page:1}]}
+  }
+ });
+ ctl.restoredCheckpointPage=0;
+ ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{apiCalls++;return null};
+ try{
+  const first=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  await started;
+  const second=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  release();
+  assert.deepEqual(await Promise.all([first,second]),[false,false]);
+  assert.equal(manifestReads,1,
+   'pending manifest preflight is owned by one generation');
+  assert.equal(apiCalls,1,
+   'a second rapid right arrow must not duplicate volunteer API traffic');
+  assert.equal(ctl.publicApiLoading,false);
+ }finally{release();current.pathname=previous;document.hidden=hidden}
 });

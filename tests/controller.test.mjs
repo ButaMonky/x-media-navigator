@@ -30,7 +30,7 @@ const document = {
   querySelector(selector) { return selector==='main [data-testid="primaryColumn"]' ? state.root : null; },
   createElement(tag) { return new FakeElement(tag); },
 };
-const context = vm.createContext({ URL, URLSearchParams, Set, Map, Element:FakeElement, document, window: { location:state, addEventListener(){}, removeEventListener(){} }, console });
+const context = vm.createContext({ URL, URLSearchParams, Set, Map, TextEncoder, Element:FakeElement, document, window: { location:state, addEventListener(){}, removeEventListener(){} }, console });
 vm.runInContext(source, context);
 const proto = context.XMN.Controller.prototype;
 const ref = (href) => context.XMN.mediaRefFromHref(href, 'alice');

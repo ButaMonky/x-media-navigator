@@ -117,3 +117,16 @@ test('B3 nonadvancing pagination cursor imposes backoff',async()=>{
  assert.equal(await proto.loadPublicMediaContinuation.call(ctl,true),false);
  assert.ok(ctl.publicApiRetryAt>Date.now());
 });
+
+test('B3 non-streamed UTF-8 fallback counts BYTES rather than JavaScript characters',async()=>{
+ const ctl=make();
+ const oversized='「'.repeat(1_400_000); // 4.2 MB in UTF-8, 1.4M code units
+ const response={body:null,async text(){return oversized}};
+ assert.equal(new TextEncoder().encode(oversized).length>4_000_000,true);
+ assert.equal(await proto.readBoundedPublicBody.call(ctl,response),null,
+  '4MB limit is measured in wire bytes, not UTF-16 code units');
+ const smaller='「'.repeat(12);
+ assert.equal(await proto.readBoundedPublicBody.call(ctl,{
+  body:null,async text(){return smaller}
+ }),smaller);
+});
