@@ -4,7 +4,7 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { spawn, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
@@ -12,6 +12,29 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const contentScript = readFileSync(join(root, 'extension/content_script.js'));
 const extensionCss = readFileSync(join(root, 'extension/style.css'));
 const browser = process.env.CHROMIUM_PATH || '/usr/bin/chromium';
+
+/** Windows Chrome child processes can release their temporary profile file
+ * handles after taskkill returns. Retry only known disposable test folders;
+ * do not weaken browser assertions or silently leave a locked directory. */
+async function cleanupDisposableChromiumProfile(folder) {
+  const resolved=resolve(folder);
+  const allowed=['xmn-chromium-','xmn-tainted-canvas-',
+    'xmn-public-session-'];
+  if(dirname(resolved)!==resolve(tmpdir())||
+     !allowed.some(prefix=>basename(resolved).startsWith(prefix)))
+    throw Error('Refusing to delete non-test directory');
+  for(let attempt=0;attempt<30;attempt++){
+    try{
+      rmSync(resolved,{recursive:true,force:true,maxRetries:1,retryDelay:100});
+      return;
+    }catch(error){
+      const code=error?.code;
+      if(attempt===29||!['EPERM','EACCES','EBUSY','ENOTEMPTY'].includes(code))
+        throw error;
+      await new Promise(resolve=>setTimeout(resolve,500));
+    }
+  }
+}
 
 const fixture = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="/extension/style.css"></head><body>
 <main><div data-testid="primaryColumn"><ul id="tiles"></ul></div></main>
@@ -733,7 +756,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
     assert.equal(report.split('|').length, 40, report);
   } finally {
     await new Promise(resolve => server.close(resolve));
-    rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 });
+    await cleanupDisposableChromiumProfile(dir);
   }
 });
 
@@ -783,7 +806,7 @@ image.src=${JSON.stringify(imageUrl)};
   }finally{
     await new Promise(resolve=>pageServer.close(resolve));
     await new Promise(resolve=>imageServer.close(resolve));
-    rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
+    await cleanupDisposableChromiumProfile(dir);
   }
 });
 
@@ -847,6 +870,6 @@ setTimeout(()=>{
       'The mocked replies panel must not be discarded by the extension');
   } finally {
     await new Promise(resolve=>server.close(resolve));
-    rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
+    await cleanupDisposableChromiumProfile(dir);
   }
 });

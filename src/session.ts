@@ -91,6 +91,23 @@ namespace XMN {
     return r?.ok===true&&r.session&&r.manifest ?
       {session:r.session,manifest:r.manifest} : null;
   }
+  /**
+   * A browser History jump may land on a nonadjacent verified checkpoint.
+   * Unlike checkpoint.find, Worker atomically switches its active manifest
+   * and short-lived session only after verifying the exact TOP-FRAME URL.
+   */
+  async restoreCheckpointForRoute(
+    profile:string,href:string
+  ):Promise<{session:PublicSession;page:number}|null>{
+   const ref=mediaRefFromHref(href,profile);
+   if(!ref||ref.kind===null||ref.href!==href)return null;
+   const r=await this.call('checkpoint.restore',profile,
+     undefined,undefined,undefined,href);
+   if(r?.ok!==true||!r.session||!r.manifest||
+      !Number.isSafeInteger(r.page)||(r.page as number)<0||
+      (r.page as number)>=64||r.manifest.activePage!==r.page)return null;
+   return {session:r.session,page:r.page as number};
+  }
   /** A read-only, origin-checked historical lookup for the EXACT current X URL. */
   async findCheckpointForRoute(
     profile:string,href:string

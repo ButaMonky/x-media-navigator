@@ -13,7 +13,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.22-dev';
+  const DIAGNOSTIC_VERSION = '2.4.23-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -226,6 +226,13 @@ namespace XMN {
       // X has constructed its React modal. This never consumes the click.
       document.addEventListener('click', (event) => this.onMediaTileClick(event), true);
       document.addEventListener('visibilitychange', () => this.onVisibilityChange(), { passive: true });
+      // Back/Forward Cache restores the old JS Controller WITHOUT calling
+      // its constructor. The Worker may currently own a different checkpoint
+      // page, so an old document must check out its exact verified route again.
+      window.addEventListener('pageshow', (event: PageTransitionEvent) => {
+        if(event.persisted)
+          void this.reconcileBfcacheHistoryPage().catch(() => {});
+      });
       window.addEventListener('resize', () => {
         this.controlsPaneAnchor = null;
         this.controlsLayoutPath = '';
@@ -275,6 +282,46 @@ namespace XMN {
       } catch { return false; }
     }
 
+    /**
+     * Reconcile a genuine BFCache pageshow, NOT every ordinary X route tick.
+     * The user has returned to a preserved document that may be several
+     * checkpoint pages away from the last active Worker session.
+     */
+    private async reconcileBfcacheHistoryPage(): Promise<void> {
+      const path=window.location.pathname;
+      const match=/^\/([a-zA-Z0-9_]{1,15})\/status\/\d+/.exec(path);
+      if(!match)return;
+      const profile=match[1].toLowerCase();
+      const route=mediaRefFromHref(path,profile);
+      if(!route||route.kind===null)return;
+      const generation=this.navGeneration;
+      this.sessionStore ??= new SessionStore();
+      const manifest=await this.sessionStore.loadPageManifest(profile);
+      if(!manifest||window.location.pathname!==path||
+         generation!==this.navGeneration)return;
+      const found=await this.sessionStore.restoreCheckpointForRoute(profile,route.href);
+      if(!found||window.location.pathname!==path||
+         generation!==this.navGeneration)return;
+      // If the cached controller already owns this exact immutable page,
+      // keep its X viewer, images and reply pane in place.
+      if(this.publicSessionRestored && this.originProfile===profile &&
+         this.refs.length===found.session.refs.length &&
+         this.refs.every((ref,i)=>ref.href===found.session.refs[i])){
+        this.restoredCheckpointPage=found.page;
+        this.viewerStateSnapshot=null;
+        this.updateViewerState();
+        return;
+      }
+      // The original page may have been opened before the checkpoints were
+      // first created. Do not trust that stale native X index on History Back.
+      // Repopulate only after the Worker committed an exact-URL checkout.
+      this.resetSession();
+      this.originProfile=null;
+      this.originTimeline=null;
+      await this.restorePublicMediaSession();
+      if(window.location.pathname===path)this.tick();
+    }
+
     private async restorePublicMediaSession(): Promise<void> {
       const path = window.location.pathname;
       const match = /^\/([a-zA-Z0-9_]{1,15})\/status\/\d+/.exec(path);
@@ -311,8 +358,15 @@ namespace XMN {
           }
         }
         if(!data || !data.refs.includes(route.href)){
-          const found=await this.sessionStore.findCheckpointForRoute?.(
-            profile,route.href);
+          // Browser Back/Forward can skip multiple saved pages. A read-only
+          // checkpoint.find is insufficient: the next arrow would query a
+          // different Worker activePage. Require an atomic verified checkout.
+          // The fallback exists only for isolated legacy test doubles.
+          const found=this.sessionStore.restoreCheckpointForRoute
+            ? await this.sessionStore.restoreCheckpointForRoute(
+              profile,route.href)
+            : await this.sessionStore.findCheckpointForRoute?.(
+              profile,route.href);
           if(!sameRoute())return;
           if(found){data=found.session;restoredPage=found.page;}
         }

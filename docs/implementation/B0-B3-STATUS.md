@@ -585,3 +585,33 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 次の正本再開位置：
   `docs/implementation/B5-NATIVE-FIRST-ARROW-20261030.md`と
   `docs/implementation/B5-28-TO-29-20261030.md`を参照。
+
+---
+
+## 2026-10-30｜B5ブラウザ履歴とBFCache正本復元（v2.4.23候補）
+
+- 作業ID `XMN-B5-HISTORY-RESTORE-20261030`、
+  正本開始SHA `2e8587fa9c6b12b84c9a0918d4c2950b70a41b55`。
+- **発見／修正**：既存`checkpoint.find`は保存済みページを読むだけで、
+  複数ページを飛ぶHistory移動後もWorkerの`activePage`が古いまま。
+  旧タブでの左右キーが停止する可能性がある。
+- Workerの`checkpoint.restore`で、同じトップフレーム・現在到着した
+  正しいX媒体URL・所有プロフィール・同意・全不変ページを検査。
+  manifestと現在sessionを同一`chrome.storage.session.set`で更新。
+- ChromeのBFCache経由で`history.back()`を使うと旧Controllerが
+  再生成されず、以前のWorkerページを参照する不具合も発見。
+  `pageshow.persisted`時だけ正当なWorker復元を行い、
+  同一媒体ならXのDOM/画像/返信欄を維持する。
+- 失敗→成功の機械的証拠：非隣接3ページの履歴チェックアウト、
+  実ChromeのHistory Back→Forward、
+  未確認URL・別タブ・別フレーム・storage失敗時の拒否。
+- Node **337件／328 PASS／0 FAIL／3 SKIP／本番X TODO 6**、
+  TypeScript・独立Chrome合成と実MV3の検証を継続。
+- 本体変更があるため非公開候補は`2.4.23`へバージョン更新。
+  旧`2.4.22`候補を上書きしない。新QAの保存先は
+  `%USERPROFILE%\Downloads\X-Media-Navigator-v2.4.23-History-QA-20261030`。
+- 証拠台帳：
+  `docs/implementation/B5-HISTORY-RESTORE-20261030.md`。
+  実Xの認証済み受入、Paint/性能計測、公開は未完了のまま。
+- 正本GitHubへは独立ブランチCI成功後、
+  並行作業との内容一致を確かめて**FF-only**で統合する。
