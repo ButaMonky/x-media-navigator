@@ -11,3 +11,4 @@ screenshots-private/
 *.zip
 .DS_Store
 Thumbs.db
+!archive/xmn-legacy-qa-packages-20261030.zip
