@@ -103,4 +103,29 @@ namespace XMN {
     // No split post may cross a committed page boundary.
     return true;
   }
+  /** A read-only step from one proven page boundary to its neighbor. */
+  export interface PublicBoundaryTransition {
+    expectedActivePage: number;
+    targetPage: number;
+    direction: -1|1;
+    sourceRef: string;
+    targetRef: string;
+  }
+  export function planPublicBoundaryTransition(
+    input:unknown,profile:string,sourceRef:string,direction:-1|1
+  ):PublicBoundaryTransition|null{
+    const manifest=parsePublicPageManifest(input,profile);
+    if(!manifest||![-1,1].includes(direction))return null;
+    const expectedActivePage=manifest.activePage;
+    const targetPage=expectedActivePage+direction;
+    if(targetPage<0||targetPage>=manifest.pages.length)return null;
+    const source=manifest.pages[expectedActivePage];
+    const target=manifest.pages[targetPage];
+    const expectedSource=direction===1 ? source.lastRef : source.firstRef;
+    const targetRef=direction===1 ? target.firstRef : target.lastRef;
+    if(sourceRef!==expectedSource)return null;
+    const parsed=mediaRefFromHref(targetRef,profile);
+    if(!parsed||parsed.href!==targetRef)return null;
+    return {expectedActivePage,targetPage,direction,sourceRef,targetRef};
+  }
 }

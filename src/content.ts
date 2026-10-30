@@ -280,11 +280,39 @@ namespace XMN {
       const profile=match[1].toLowerCase();
       const generation=this.navGeneration;
       this.sessionStore ??= new SessionStore();
-      const data=await this.sessionStore.load(profile);
-      if(!data || window.location.pathname!==path ||
-         generation!==this.navGeneration || this.originProfile!==null) return;
       const route=mediaRefFromHref(path,profile);
-      if(!route || !Array.isArray(data.refs) || !Array.isArray(data.apiKeys))return;
+      if(!route)return;
+      const sameRoute=():boolean=>window.location.pathname===path &&
+        generation===this.navGeneration && this.originProfile===null;
+      let data=await this.sessionStore.load(profile);
+      if(!sameRoute())return;
+      const includesRoute=(snapshot:PublicSession|null):boolean=>
+        !!snapshot?.refs?.some(href=>
+          mediaRefFromHref(href,profile)?.key===route.key);
+      if(!includesRoute(data) &&
+         typeof this.sessionStore.loadPageManifest==='function' &&
+         typeof this.sessionStore.activatePage==='function'){
+        // Only a proven, adjacent page boundary at exactly the X URL
+        // already reached can change the active page. Worker revalidates.
+        const manifest=await this.sessionStore.loadPageManifest(profile);
+        if(!sameRoute())return;
+        if(manifest){
+          for(const direction of [1,-1] as const){
+            const current=manifest.pages[manifest.activePage];
+            const sourceRef=direction===1?current.lastRef:current.firstRef;
+            const plan=planPublicBoundaryTransition(
+              manifest,profile,sourceRef,direction);
+            if(!plan || plan.targetRef!==path)continue;
+            const activated=await this.sessionStore.activatePage(profile,plan);
+            if(!sameRoute())return;
+            if(activated?.manifest?.activePage===plan.targetPage)
+              data=activated.session;
+            break;
+          }
+        }
+      }
+      if(!data || !sameRoute() || !Array.isArray(data.refs) ||
+         !Array.isArray(data.apiKeys))return;
       const refs=data.refs.map(href=>mediaRefFromHref(href,profile));
       if(refs.some(ref=>!ref) || !refs.some(ref=>ref?.key===route.key))return;
       const keys=new Set(data.apiKeys.filter(key=>typeof key==='string' &&

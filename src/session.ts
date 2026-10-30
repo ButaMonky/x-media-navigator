@@ -23,12 +23,12 @@ namespace XMN {
  export class SessionStore {
   private async call(
     op:string,profile:string,session?:PublicSession,page?:number,
-    manifest?:PublicPageManifest
+    manifest?:PublicPageManifest,transition?:PublicBoundaryTransition
   ):Promise<StoreReply|null>{
    try {
     if(typeof chrome==='undefined'||!chrome.runtime?.sendMessage)return null;
     const data=await chrome.runtime.sendMessage({
-     kind:'xmn-store-v1',op,profile,session,page,manifest});
+     kind:'xmn-store-v1',op,profile,session,page,manifest,transition});
     if(!data||typeof data!=='object')return null;
     return data as StoreReply;
    }catch{return null}
@@ -80,6 +80,25 @@ namespace XMN {
   }
   async clearPageManifest(profile:string):Promise<boolean>{
    return (await this.call('manifest.clear',profile))?.ok===true;
+  }
+  /** Read-only plan for a future UI page boundary. Does not navigate. */
+  async planPageTransition(
+    profile:string,sourceRef:string,direction:-1|1
+  ):Promise<PublicBoundaryTransition|null>{
+    const saved=await this.loadPageManifest(profile);
+    return saved ? planPublicBoundaryTransition(
+      saved,profile,sourceRef,direction) : null;
+  }
+  /** Called only AFTER the trusted X URL has reached targetRef.
+   * The Worker rechecks that URL and all immutable snapshots before commit.
+   */
+  async activatePage(
+    profile:string,transition:PublicBoundaryTransition
+  ):Promise<{session:PublicSession;manifest:PublicPageManifest}|null>{
+    const r=await this.call('manifest.activate',profile,
+      undefined,undefined,undefined,transition);
+    return r?.ok===true&&r.session&&r.manifest
+      ? {session:r.session,manifest:r.manifest} : null;
   }
  }
 /** Purge only our obsolete host-page keys; never read or migrate untrusted values. */

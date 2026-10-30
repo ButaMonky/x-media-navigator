@@ -3,7 +3,7 @@
 type Sender = { tab?: { id?: number }, frameId?: number, url?: string };
 type Message = {
   kind?: string; op?: string; profile?: string; session?: unknown;
-  page?: unknown; manifest?: unknown;
+  page?: unknown; manifest?: unknown; transition?: unknown;
 };
 declare const chrome: {
  runtime: { onMessage: { addListener(cb: (
@@ -209,7 +209,8 @@ namespace XMN {
        return {ok:true};
      });
    }
-   if(msg.op==='manifest.get'||msg.op==='manifest.put'){
+   if(msg.op==='manifest.get'||msg.op==='manifest.put'||
+      msg.op==='manifest.activate'){
      const consent=(await chrome.storage.session.get(consentKey(id,profile)))[consentKey(id,profile)];
      if(consent!==true)return {ok:false};
      const key=manifestKey(id,profile);
@@ -224,11 +225,55 @@ namespace XMN {
          }
          return {ok:true,manifest:current};
        }
+       if(msg.op==='manifest.activate'){
+         const current=parsePublicPageManifest(saved,profile);
+         if(!current || !await verifyManifestPages(current,id,profile))
+           return {ok:false};
+         const req=msg.transition;
+         if(!req||typeof req!=='object'||Array.isArray(req))return {ok:false};
+         const t=req as Record<string,unknown>;
+         const fields=['expectedActivePage','targetPage','direction',
+           'sourceRef','targetRef'];
+         if(Object.keys(t).length!==fields.length ||
+            Object.keys(t).some(field=>!fields.includes(field))||
+            typeof t.sourceRef!=='string'||typeof t.targetRef!=='string'||
+            (t.direction!==1&&t.direction!==-1)||
+            !Number.isSafeInteger(t.expectedActivePage)||
+            !Number.isSafeInteger(t.targetPage))return {ok:false};
+         const expected=planPublicBoundaryTransition(current,profile,
+           t.sourceRef,t.direction as -1|1);
+         if(!expected || fields.some(field=>
+           t[field]!==expected[field as keyof PublicBoundaryTransition]))
+           return {ok:false};
+         // The caller must already be at the target X photo route.
+         // No worker navigation, guessed URLs or DOM mutations occur here.
+         let senderPath='';
+         try{senderPath=new URL(sender.url||'').pathname}catch{}
+         if(senderPath!==expected.targetRef)return {ok:false};
+         const targetMeta=current.pages[expected.targetPage];
+         const targetKey=checkpointKey(id,profile,expected.targetPage);
+         const target=(await chrome.storage.session.get(targetKey))[targetKey];
+         if(!validateSession(target,profile)||
+            !publicPageMatchesDescriptor(target,targetMeta,profile,
+              current.timeline,current.expires))return {ok:false};
+         const updated:PublicPageManifest={
+           ...current,activePage:expected.targetPage
+         };
+         // Make the activated page the short-lived handoff snapshot in the
+         // SAME storage.set as the manifest step, preventing a next document
+         // from restoring a previous page when it loads immediately.
+         await chrome.storage.session.set({
+           [key]:updated,[sessionKey(id)]:target
+         });
+         return {ok:true,session:target,manifest:updated};
+       }
        const next=parsePublicPageManifest(msg.manifest,profile);
-       if(!next)return {ok:false};
+       if(!next || (saved===undefined && next.activePage!==0))
+         return {ok:false};
        if(saved!==undefined){
          const previous=parsePublicPageManifest(saved,profile);
          if(!previous || previous.timeline!==next.timeline ||
+            next.activePage!==previous.activePage ||
             next.expires>previous.expires ||
             next.pages.length<previous.pages.length ||
             previous.pages.some((desc,i)=>

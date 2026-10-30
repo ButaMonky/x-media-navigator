@@ -30,8 +30,8 @@ writeFileSync(join(ext,'manifest.json'),JSON.stringify({
 },null,2));
 const probe=`
 (async()=>{
- const m=(op,session,page,manifest)=>chrome.runtime.sendMessage({
-  kind:'xmn-store-v1',op,profile:'alice',session,page,manifest
+ const m=(op,session,page,manifest,transition)=>chrome.runtime.sendMessage({
+  kind:'xmn-store-v1',op,profile:'alice',session,page,manifest,transition
  });
  if(location.pathname.endsWith('/media')){
    sessionStorage.setItem('xmn-fxembed-consent-alice','yes');
@@ -49,6 +49,11 @@ const probe=`
    const checkpoint=await m('checkpoint.put',snapshot,0);
    const duplicate=await m('checkpoint.put',snapshot,0);
    const collision=await m('checkpoint.put',{...snapshot,cursor:'INVALID_REPLACEMENT'},0);
+   const secondPage={...snapshot,
+     refs:['/alice/status/300/photo/1','/alice/status/200/photo/1'],
+     apiKeys:['200:photo:1'],cursor:'NEXT2'
+   };
+   const secondSaved=await m('checkpoint.put',secondPage,1);
    const pages=await m('checkpoint.list');
    const archived=await m('checkpoint.get',undefined,0);
    const pageManifest={
@@ -56,6 +61,9 @@ const probe=`
      expires:snapshot.expires,activePage:0,pages:[{
        page:0,firstRef:snapshot.refs[0],lastRef:snapshot.refs.at(-1),
        mediaCount:2,incomingCursor:null,outgoingCursor:'NEXT'
+     },{
+       page:1,firstRef:secondPage.refs[0],lastRef:secondPage.refs.at(-1),
+       mediaCount:2,incomingCursor:'NEXT',outgoingCursor:'NEXT2'
      }]
    };
    const manifestSaved=await m('manifest.put',undefined,undefined,pageManifest);
@@ -63,18 +71,67 @@ const probe=`
    const ok=before?.granted===false&&granted?.ok===true&&
     after?.granted===true&&saved?.ok===true&&malformed?.ok===false&&
     checkpoint?.ok===true&&duplicate?.ok===true&&collision?.ok===false&&
-    pages?.pages?.length===1&&pages.pages[0]===0&&
+    secondSaved?.ok===true&&pages?.pages?.length===2&&
+    pages.pages[0]===0&&pages.pages[1]===1&&
     archived?.session?.cursor==='NEXT'&&
-    manifestSaved?.ok===true&&manifestRead?.manifest?.pages?.length===1;
+    manifestSaved?.ok===true&&manifestRead?.manifest?.pages?.length===2;
    if(!ok)throw Error('setup flags='+[
      before?.granted===false,granted?.ok===true,after?.granted===true,
      saved?.ok===true,malformed?.ok===false,checkpoint?.ok===true,
      duplicate?.ok===true,collision?.ok===false,
-     pages?.pages?.length===1,pages?.pages?.[0]===0,
+     secondSaved?.ok===true,pages?.pages?.length===2,
+     pages?.pages?.[0]===0,pages?.pages?.[1]===1,
      archived?.session?.cursor==='NEXT',manifestSaved?.ok===true,
-     manifestRead?.manifest?.pages?.length===1
+     manifestRead?.manifest?.pages?.length===2
    ].join(','));
    location.assign('/alice/status/400/photo/1');
+   return;
+ }
+ if(location.pathname==='/alice/status/400/photo/1' &&
+    sessionStorage.getItem('xmn-smoke-forward')==='yes'){
+   const transition={
+     expectedActivePage:1,targetPage:0,direction:-1,
+     sourceRef:'/alice/status/300/photo/1',
+     targetRef:'/alice/status/400/photo/1'
+   };
+   const activated=await m('manifest.activate',
+     undefined,undefined,undefined,transition);
+   const readback=await m('manifest.get');
+   const ok=activated?.ok===true&&activated?.session?.cursor==='NEXT'&&
+     activated?.manifest?.activePage===0&&
+     readback?.manifest?.activePage===0;
+   document.documentElement.dataset.mv3WorkerResult=ok?'passed':'failed';
+   document.documentElement.dataset.mv3WorkerSignals=[
+     'forward-and-back',!!activated?.ok,
+     activated?.manifest?.activePage,readback?.manifest?.activePage
+   ].join(',');
+   return;
+ }
+ if(location.pathname==='/alice/status/300/photo/1'){
+   const transition={
+     expectedActivePage:0,targetPage:1,direction:1,
+     sourceRef:'/alice/status/400/photo/1',
+     targetRef:'/alice/status/300/photo/1'
+   };
+   const activated=await m('manifest.activate',
+     undefined,undefined,undefined,transition);
+   const readback=await m('manifest.get');
+   const snapshot=await m('checkpoint.get',undefined,1);
+   const ok=sessionStorage.getItem('xmn-smoke-first-visible')==='yes'&&
+     activated?.ok===true&&activated?.session?.cursor==='NEXT2'&&
+     activated?.manifest?.activePage===1&&
+     readback?.manifest?.activePage===1&&
+     snapshot?.session?.refs?.[0]==='/alice/status/300/photo/1';
+   if(ok){
+     sessionStorage.setItem('xmn-smoke-forward','yes');
+     location.assign('/alice/status/400/photo/1');
+   }else{
+     document.documentElement.dataset.mv3WorkerResult='failed';
+     document.documentElement.dataset.mv3WorkerSignals=[
+       '2pages',!!activated?.ok,
+       activated?.manifest?.activePage,readback?.manifest?.activePage
+     ].join(',');
+   }
    return;
  }
  const session=await m('session.get');
@@ -85,7 +142,8 @@ const probe=`
    session?.ok===true&&session?.session?.refs?.length===2&&
    session.session.cursor==='NEXT'&&consent?.granted===true&&
    checkpoint?.ok===true&&checkpoint?.session?.cursor==='NEXT'&&
-   manifest?.ok===true&&manifest.manifest?.pages?.length===1;
+   manifest?.ok===true&&manifest.manifest?.pages?.length===2&&
+   manifest.manifest.activePage===0;
  setTimeout(()=>{
    const label=document.querySelector('.xmn-status')?.textContent||'';
    const previous=document.querySelector('.xmn-prev');
@@ -93,11 +151,16 @@ const probe=`
    const replies=document.getElementById('replies');
    const visible=label==='投稿 2 / 2+'&&previous&&!previous.disabled&&
      !!viewer?.isConnected&&replies?.textContent==='Original replies';
-   document.documentElement.dataset.mv3WorkerResult=ok&&visible?'passed':'failed';
-   document.documentElement.dataset.mv3WorkerSignals=[
-    !!session?.ok,session?.session?.refs?.length||0,!!consent?.granted,
-    !!visible,label
-   ].join(',');
+   if(ok&&visible){
+     sessionStorage.setItem('xmn-smoke-first-visible','yes');
+     location.assign('/alice/status/300/photo/1');
+   }else{
+     document.documentElement.dataset.mv3WorkerResult='failed';
+     document.documentElement.dataset.mv3WorkerSignals=[
+       !!session?.ok,session?.session?.refs?.length||0,
+       !!consent?.granted,!!visible,label
+     ].join(',');
+   }
  },1300);
 })().catch(e=>{
  document.documentElement.dataset.mv3WorkerResult='error';
@@ -106,7 +169,7 @@ const probe=`
 writeFileSync(join(ext,'probe.js'),probe);
 const server=createServer((req,res)=>{
  res.setHeader('content-type','text/html; charset=utf-8');
- if(req.url?.includes('/status/400/')){
+ if(req.url?.includes('/status/400/')||req.url?.includes('/status/300/')){
    res.end(`<!doctype html><html><head><title>B1 modal fixture</title></head><body>
     <main><div data-testid="primaryColumn"></div></main>
     <div role="dialog"><button data-testid="app-bar-close" aria-label="Close">Close</button>

@@ -449,6 +449,26 @@ var XMN;
         return true;
     }
     XMN.publicPageMatchesDescriptor = publicPageMatchesDescriptor;
+    function planPublicBoundaryTransition(input, profile, sourceRef, direction) {
+        const manifest = parsePublicPageManifest(input, profile);
+        if (!manifest || ![-1, 1].includes(direction))
+            return null;
+        const expectedActivePage = manifest.activePage;
+        const targetPage = expectedActivePage + direction;
+        if (targetPage < 0 || targetPage >= manifest.pages.length)
+            return null;
+        const source = manifest.pages[expectedActivePage];
+        const target = manifest.pages[targetPage];
+        const expectedSource = direction === 1 ? source.lastRef : source.firstRef;
+        const targetRef = direction === 1 ? target.firstRef : target.lastRef;
+        if (sourceRef !== expectedSource)
+            return null;
+        const parsed = XMN.mediaRefFromHref(targetRef, profile);
+        if (!parsed || parsed.href !== targetRef)
+            return null;
+        return { expectedActivePage, targetPage, direction, sourceRef, targetRef };
+    }
+    XMN.planPublicBoundaryTransition = planPublicBoundaryTransition;
 })(XMN || (XMN = {}));
 /// <reference path="./core.ts" />
 /**
@@ -658,12 +678,12 @@ var XMN;
 var XMN;
 (function (XMN) {
     class SessionStore {
-        async call(op, profile, session, page, manifest) {
+        async call(op, profile, session, page, manifest, transition) {
             try {
                 if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage)
                     return null;
                 const data = await chrome.runtime.sendMessage({
-                    kind: 'xmn-store-v1', op, profile, session, page, manifest
+                    kind: 'xmn-store-v1', op, profile, session, page, manifest, transition
                 });
                 if (!data || typeof data !== 'object')
                     return null;
@@ -722,6 +742,19 @@ var XMN;
         }
         async clearPageManifest(profile) {
             return (await this.call('manifest.clear', profile))?.ok === true;
+        }
+        /** Read-only plan for a future UI page boundary. Does not navigate. */
+        async planPageTransition(profile, sourceRef, direction) {
+            const saved = await this.loadPageManifest(profile);
+            return saved ? XMN.planPublicBoundaryTransition(saved, profile, sourceRef, direction) : null;
+        }
+        /** Called only AFTER the trusted X URL has reached targetRef.
+         * The Worker rechecks that URL and all immutable snapshots before commit.
+         */
+        async activatePage(profile, transition) {
+            const r = await this.call('manifest.activate', profile, undefined, undefined, undefined, transition);
+            return r?.ok === true && r.session && r.manifest
+                ? { session: r.session, manifest: r.manifest } : null;
         }
     }
     XMN.SessionStore = SessionStore;
@@ -980,12 +1013,41 @@ var XMN;
             const profile = match[1].toLowerCase();
             const generation = this.navGeneration;
             this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
-            const data = await this.sessionStore.load(profile);
-            if (!data || window.location.pathname !== path ||
-                generation !== this.navGeneration || this.originProfile !== null)
-                return;
             const route = XMN.mediaRefFromHref(path, profile);
-            if (!route || !Array.isArray(data.refs) || !Array.isArray(data.apiKeys))
+            if (!route)
+                return;
+            const sameRoute = () => window.location.pathname === path &&
+                generation === this.navGeneration && this.originProfile === null;
+            let data = await this.sessionStore.load(profile);
+            if (!sameRoute())
+                return;
+            const includesRoute = (snapshot) => !!snapshot?.refs?.some(href => XMN.mediaRefFromHref(href, profile)?.key === route.key);
+            if (!includesRoute(data) &&
+                typeof this.sessionStore.loadPageManifest === 'function' &&
+                typeof this.sessionStore.activatePage === 'function') {
+                // Only a proven, adjacent page boundary at exactly the X URL
+                // already reached can change the active page. Worker revalidates.
+                const manifest = await this.sessionStore.loadPageManifest(profile);
+                if (!sameRoute())
+                    return;
+                if (manifest) {
+                    for (const direction of [1, -1]) {
+                        const current = manifest.pages[manifest.activePage];
+                        const sourceRef = direction === 1 ? current.lastRef : current.firstRef;
+                        const plan = XMN.planPublicBoundaryTransition(manifest, profile, sourceRef, direction);
+                        if (!plan || plan.targetRef !== path)
+                            continue;
+                        const activated = await this.sessionStore.activatePage(profile, plan);
+                        if (!sameRoute())
+                            return;
+                        if (activated?.manifest?.activePage === plan.targetPage)
+                            data = activated.session;
+                        break;
+                    }
+                }
+            }
+            if (!data || !sameRoute() || !Array.isArray(data.refs) ||
+                !Array.isArray(data.apiKeys))
                 return;
             const refs = data.refs.map(href => XMN.mediaRefFromHref(href, profile));
             if (refs.some(ref => !ref) || !refs.some(ref => ref?.key === route.key))
