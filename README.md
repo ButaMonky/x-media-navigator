@@ -1,5 +1,8 @@
 # X Media Navigator — TypeScript rebuild (private beta)
 
+> **2026-10-30 現行のPC配置・更新方法：** Chrome用の唯一のフォルダは `%USERPROFILE%\Downloads\X-Media-Navigator-Current`（**v2.4.26・非公開QA**）、開発用は `%USERPROFILE%\Documents\x-media-navigator`（単一Git worktree）。以下の過去版QAフォルダ・旧 `Update-Chrome-QA.cmd` の説明は**履歴情報であり実行しないでください**。過去版・未コミット成果のGitHubバックアップ、復元方法、PC整理記録は [2026-10-30 PC整理台帳](docs/maintenance/XMN-PC-CLEANUP-20261030.md) を参照。実Xの最終受入は未完了で、正式公開していません。
+
+
 > **2026-10-29 非公開QA v2.4.20**：FxEmbedの同意後ページ先読み、低画質仮表示・先読み通信の匿名診断ログ、ワンクリックQA更新を試験中。GitHubの公開main・安定Draft PR・通常インストール先は未変更。使い方は [FxEmbed QA診断と更新手順](docs/QA_FXEMBED_DIAGNOSTICS.md) を参照。プロジェクト直下の `Update-Chrome-QA.cmd` から更新する（Chromeカードの再読み込みは必要）。本番Xでの連続閲覧・視覚改善は未検証。
 
 
