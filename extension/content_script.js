@@ -2094,17 +2094,19 @@ var XMN;
         captureGrid() {
             const column = mediaColumn();
             const tiles = column ? Array.from(column.querySelectorAll(TILE_SELECTOR)) : [];
+            // A filtered X timeline may reuse the same first and last tiles, but
+            // replace only the MIDDLE. During this temporary transition scan each
+            // media key exactly once, then compare the complete ordered snapshot.
+            // This fingerprint is not calculated by the ordinary 450ms idle tick.
+            const allKeys = tiles.map(tile => {
+                const link = this.originProfile ? usableTileLink(tile, this.originProfile) : null;
+                return link?.ref.key ?? '';
+            });
             const firstTiles = tiles.slice(0, 8);
             const lastTiles = tiles.slice(-8);
-            const firstKeys = firstTiles.map((tile) => {
-                const link = this.originProfile ? usableTileLink(tile, this.originProfile) : null;
-                return link?.ref.key ?? '';
-            });
-            const lastKeys = lastTiles.map(tile => {
-                const link = this.originProfile ? usableTileLink(tile, this.originProfile) : null;
-                return link?.ref.key ?? '';
-            });
-            return { column, firstTiles, firstKeys, lastTiles, lastKeys, tileCount: tiles.length };
+            return { column, firstTiles, firstKeys: allKeys.slice(0, 8),
+                lastTiles, lastKeys: allKeys.slice(-8), tileCount: tiles.length,
+                allTiles: tiles, allKeys };
         }
         hasGridTurnedOver(previous) {
             const current = this.captureGrid();
@@ -2119,7 +2121,16 @@ var XMN;
             const tailKeysChanged = (previous.lastKeys ?? []).some((key, i) => current.lastKeys?.[i] !== key);
             const countChanged = previous.tileCount !== undefined &&
                 current.tileCount !== previous.tileCount;
-            return replaced || keysChanged || tailChanged || tailKeysChanged || countChanged;
+            // A wholesale filter change may keep the two visible ends untouched
+            // while recycling or rebinding an interior tile. Never keep pendingGrid
+            // permanently because the sampled head/tail happen to match.
+            const middleChanged = !!previous.allTiles && !!previous.allKeys &&
+                (current.allTiles?.length !== previous.allTiles.length ||
+                    current.allKeys?.length !== previous.allKeys.length ||
+                    previous.allTiles.some((tile, i) => current.allTiles?.[i] !== tile ||
+                        current.allKeys?.[i] !== previous.allKeys?.[i]));
+            return replaced || keysChanged || tailChanged || tailKeysChanged ||
+                countChanged || middleChanged;
         }
         ensureListObserver() {
             const column = mediaColumn();
@@ -2236,36 +2247,58 @@ var XMN;
             if (!root)
                 return;
             const tiles = Array.from(root.querySelectorAll(TILE_SELECTOR));
-            // When X prepends a newer post, its DOM order (not discovery time)
-            // determines the verified head. Never reorder previously observed posts
-            // when the first surviving anchor is not the original head.
+            // A virtualized X grid can omit its original head (e.g. status 400)
+            // while prepending status 500 above an older surviving tile (300).
+            // The first known ref does NOT have to be index zero. Only a strictly
+            // descending NEWER prefix may be placed ahead of the verified index.
+            // All other unanchored leading refs stay unindexed (rather than being
+            // appended after the oldest post and corrupting arrow navigation).
+            const unverifiedLeading = new Set();
             if (this.refs.length > 0) {
                 const head = [];
+                let foundAnchor = false;
                 for (const tile of tiles) {
                     const observed = usableTileLink(tile, this.originProfile);
                     if (!observed)
                         continue;
                     const known = this.indexes.get(observed.ref.key);
                     if (known !== undefined) {
-                        if (known === 0 && head.length &&
-                            head.every(ref => ref.statusId.padStart(19, '0') >
-                                this.refs[0].statusId.padStart(19, '0'))) {
-                            const unique = [...new Map(head.map(ref => [ref.key, ref])).values()];
-                            this.refs.unshift(...unique);
-                            this.indexes = new Map(this.refs.map((ref, i) => [ref.key, i]));
-                            this.statusOrdinalCache = null;
-                            this.viewerStateSnapshot = null;
+                        foundAnchor = true;
+                        if (head.length) {
+                            const groups = XMN.groupMediaRefs(head, 'x-dom', 'unknown');
+                            const originalHead = this.refs[0].statusId.padStart(19, '0');
+                            const verified = !!groups && groups.every((group, i) => group.statusId.padStart(19, '0') > originalHead &&
+                                (i === 0 || group.statusId.padStart(19, '0') <
+                                    groups[i - 1].statusId.padStart(19, '0')));
+                            if (verified) {
+                                // A unique contiguous prefix is observed ahead of a known
+                                // DOM anchor, even when React virtualized the original head.
+                                this.refs.unshift(...head);
+                                this.indexes = new Map(this.refs.map((ref, i) => [ref.key, i]));
+                                this.statusOrdinalCache = null;
+                                this.viewerStateSnapshot = null;
+                            }
+                            else {
+                                for (const ref of head)
+                                    unverifiedLeading.add(ref.key);
+                                diagnostic('grid.leading_unverified', { count: head.length });
+                            }
                         }
                         break;
                     }
                     head.push(observed.ref);
                 }
+                if (!foundAnchor)
+                    for (const ref of head)
+                        unverifiedLeading.add(ref.key);
             }
             for (const tile of tiles) {
                 const found = usableTileLink(tile, this.originProfile);
                 if (!found)
                     continue;
                 const { ref } = found;
+                if (unverifiedLeading.has(ref.key))
+                    continue;
                 this.recordTileImageSource(tile, found);
                 this.rememberLiveLink(ref, found.link);
                 let index = this.indexes.get(ref.key);

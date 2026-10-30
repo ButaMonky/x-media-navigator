@@ -9,6 +9,7 @@
     "check": "npm run build && node --check extension/content_script.js && node --check extension/background.js",
     "test": "npm run build && tsc -p tsconfig.core.json && node --test tests/*.test.mjs",
     "test:browser": "npm run build && node --test tests/browser.test.mjs",
+    "test:b4:grid": "npm run build && node tools/b4-grid-performance.mjs",
     "test:mv3": "node tools/mv3-worker-smoke.mjs",
     "test:mv3:archive": "npm run build && node tools/mv3-archive-bridge-smoke.mjs",
     "test:mv3:roundtrip": "npm run build && node tools/mv3-archive-roundtrip-smoke.mjs",

@@ -1326,8 +1326,15 @@ test('quoted and ambiguous media links are not indexed as the parent media tile'
   const resolved=makeTile('/alice/status/400/photo/1');
   resolved.tile.links=[other,ownership];
   state.root.tiles=[resolved.tile];
-  proto.scanTiles.call(instance);
-  assert.equal(instance.refs.at(-1).statusId,'400','link containing actual media wins over another same-profile permalink');
+  // This is an independent link-ownership fixture, not a continuity proof
+  // between unrelated X media grids. Start an empty verified index rather
+  // than forcing status 400 behind the previously indexed status 100.
+  const owned=Object.assign(Object.create(proto),{
+    originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),
+    imageSources:new Map()});
+  proto.scanTiles.call(owned);
+  assert.equal(owned.refs.at(-1).statusId,'400',
+    'link containing actual media wins over another same-profile permalink');
   state.root=null;
 });
 
@@ -3836,4 +3843,134 @@ test('R-024 same-route cached opacity-zero viewer cannot shadow visible replacem
     assert.equal(proto.activeViewerForRoute.call(ctrl),visible);
     assert.equal(probes,2,'CSS visibility also invalidates the cache');
   }finally{state.pathname=prevPath;context.window.getComputedStyle=oldStyle;}
+});
+
+test('R-043 detects a reused X media tile whose middle href changes',()=>{
+ const oldRoot=state.root,oldPath=state.pathname;
+ const grid=new FakeElement('div');
+ grid.tiles=Array.from({length:40},(_,i)=>makeTile(
+  '/alice/status/'+(1000-i)+'/photo/1').tile);
+ state.root=grid;state.pathname='/alice/media';
+ const ctl=Object.assign(Object.create(proto),{originProfile:'alice'});
+ try{
+  const before=proto.captureGrid.call(ctl);
+  assert.equal(proto.hasGridTurnedOver.call(ctl,before),false);
+  // First 8, last 8 and total count are unchanged.
+  grid.tiles[20].links[0].attrs.href='/alice/status/500/photo/1';
+  assert.equal(proto.hasGridTurnedOver.call(ctl,before),true,
+    'same DOM nodes with changed middle media must unblock filter scan');
+ }finally{state.root=oldRoot;state.pathname=oldPath}
+});
+test('R-043 catches a middle DOM replacement with the same media href',()=>{
+ const oldRoot=state.root,oldPath=state.pathname;
+ const grid=new FakeElement('div');
+ grid.tiles=Array.from({length:48},(_,i)=>makeTile(
+  '/alice/status/'+(1000-i)+'/photo/1').tile);
+ state.root=grid;state.pathname='/alice/media';
+ const ctl=Object.assign(Object.create(proto),{originProfile:'alice'});
+ try{
+  const before=proto.captureGrid.call(ctl);
+  assert.equal(proto.hasGridTurnedOver.call(ctl,before),false);
+  grid.tiles[21]=makeTile('/alice/status/979/photo/1').tile;
+  assert.equal(proto.hasGridTurnedOver.call(ctl,before),true,
+    'replace middle node signals a new media grid even with same href');
+ }finally{state.root=oldRoot;state.pathname=oldPath}
+});
+test('R-043 intact large grid has stable fingerprint with no false turnover',()=>{
+ const oldRoot=state.root,oldPath=state.pathname;
+ const grid=new FakeElement('div');
+ grid.tiles=Array.from({length:300},(_,i)=>makeTile(
+  '/alice/status/'+(5000-i)+'/photo/1').tile);
+ state.root=grid;state.pathname='/alice/media';
+ const ctl=Object.assign(Object.create(proto),{originProfile:'alice'});
+ try{
+  const before=proto.captureGrid.call(ctl);
+  for(let i=0;i<6;i++)
+   assert.equal(proto.hasGridTurnedOver.call(ctl,before),false);
+  grid.tiles[155].links[0].attrs.href='/alice/status/4000/photo/1';
+  assert.equal(proto.hasGridTurnedOver.call(ctl,before),true);
+ }finally{state.root=oldRoot;state.pathname=oldPath}
+});
+
+test('R-042 prepends newer X tiles when the old head was virtualized away',()=>{
+ const beforeRoot=state.root,beforePath=state.pathname;
+ state.pathname='/alice/media';
+ const grid=new FakeElement('div');
+ grid.tiles=[400,300,200].map(i=>makeTile('/alice/status/'+i+'/photo/1').tile);
+ state.root=grid;
+ const ctl=Object.assign(Object.create(proto),{
+  originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),
+  imageSources:new Map(),liveLinks:new Map()});
+ try{
+  proto.scanTiles.call(ctl);
+  assert.deepEqual(ctl.refs.map(x=>x.statusId),['400','300','200']);
+  // X scroll virtualization removes the previously known newest tile.
+  grid.tiles=[makeTile('/alice/status/500/photo/1').tile,
+   grid.tiles[1],grid.tiles[2]];
+  proto.scanTiles.call(ctl);
+  assert.deepEqual(ctl.refs.map(x=>x.statusId),
+   ['500','400','300','200'],
+   'DOM newest post must not be appended after the oldest post');
+  assert.equal(grid.tiles[0].children.at(-1).textContent,'1');
+ }finally{state.root=beforeRoot;state.pathname=beforePath}
+});
+test('R-042 refuses ambiguous interior-leading media instead of appending to tail',()=>{
+ const beforeRoot=state.root,beforePath=state.pathname;
+ state.pathname='/alice/media';
+ const grid=new FakeElement('div');
+ grid.tiles=[400,300,200].map(i=>makeTile('/alice/status/'+i+'/photo/1').tile);
+ state.root=grid;
+ const ctl=Object.assign(Object.create(proto),{
+  originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),
+  imageSources:new Map(),liveLinks:new Map()});
+ try{
+  proto.scanTiles.call(ctl);
+  grid.tiles=[makeTile('/alice/status/350/photo/1').tile,
+   grid.tiles[1],grid.tiles[2]];
+  proto.scanTiles.call(ctl);
+  assert.deepEqual(ctl.refs.map(x=>x.statusId),['400','300','200']);
+  grid.tiles=[makeTile('/alice/status/500/photo/1').tile,
+   makeTile('/alice/status/350/photo/1').tile,grid.tiles[1]];
+  proto.scanTiles.call(ctl);
+  assert.deepEqual(ctl.refs.map(x=>x.statusId),['400','300','200'],
+   'unproven mixed head must not change keyboard post order');
+ }finally{state.root=beforeRoot;state.pathname=beforePath}
+});
+
+test('R-042 no surviving X media anchor cannot silently append unrelated tiles',()=>{
+ const oldRoot=state.root,oldPath=state.pathname;
+ state.pathname='/alice/media';
+ const grid=new FakeElement('div');
+ grid.tiles=[400,300].map(i=>makeTile('/alice/status/'+i+'/photo/1').tile);
+ state.root=grid;
+ const ctrl=Object.assign(Object.create(proto),{
+  originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),
+  imageSources:new Map(),liveLinks:new Map()
+ });
+ try{
+  proto.scanTiles.call(ctrl);
+  grid.tiles=[600,500].map(i=>makeTile('/alice/status/'+i+'/photo/1').tile);
+  proto.scanTiles.call(ctrl);
+  assert.deepEqual(ctrl.refs.map(x=>x.statusId),['400','300']);
+  assert.ok(!ctrl.indexes.has('600:photo:1'));
+ }finally{state.root=oldRoot;state.pathname=oldPath}
+});
+test('R-042 rejects non-chronological new prefix before a verified X anchor',()=>{
+ const oldRoot=state.root,oldPath=state.pathname;
+ state.pathname='/alice/media';
+ const grid=new FakeElement('div');
+ grid.tiles=[400,300].map(i=>makeTile('/alice/status/'+i+'/photo/1').tile);
+ state.root=grid;
+ const ctrl=Object.assign(Object.create(proto),{
+  originProfile:'alice',pendingGrid:null,refs:[],indexes:new Map(),
+  imageSources:new Map(),liveLinks:new Map()
+ });
+ try{
+  proto.scanTiles.call(ctrl);
+  grid.tiles=[500,600].map(i=>makeTile('/alice/status/'+i+'/photo/1').tile)
+   .concat([grid.tiles[0]]);
+  proto.scanTiles.call(ctrl);
+  assert.deepEqual(ctrl.refs.map(x=>x.statusId),['400','300']);
+  assert.ok(!ctrl.indexes.has('600:photo:1'));
+ }finally{state.root=oldRoot;state.pathname=oldPath}
 });
