@@ -456,3 +456,36 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 受入チェックリストと未完了内容は
   `docs/implementation/B5-PRIVATE-QA-20261030.md`。
 - 実ログインXでの28→29・GIF/混合・返信欄・Paint計測・公開判断は未完了。
+
+---
+
+## 2026-10-30｜B4完成証拠とB5独立QAファイル配置の確定
+
+- B4のR-042（Xの新着先頭が仮想化で消える際の誤った末尾追加）・
+  R-043（先頭/末尾8件不変で中間のみ変わるフィルター切替）修正は
+  `9a116fa2aee2cc2502d0ad010f20a6fe0de1d2b0` として開発正本へ
+  FF-only統合済み。GitHub Actions run `41008348918` はSUCCESS。
+- 合成Chrome for Testingでバッジ1,200件・3,000件、
+  中間DOM/媒体リンク置換の検知PASS。
+  詳細:`docs/implementation/B4-GRID-VALIDATION-20261030.md`。
+- 非公開B5候補 `999a96b0664e3aadababe5a2c5144c0c47468c28` を
+  `task/xmn-b5-private-qa-20261030` でNode/TS/必須ChromiumまでCI確認。
+  run `41009199167` SUCCESS。旧Linux CI FAIL `41008882577` は、
+  必須CDPの起動待機時間を拡大した上で修復（40条件は維持）。
+- 新しい独立フォルダ
+  `%USERPROFILE%\Downloads\X-Media-Navigator-v2.4.21-B4-QA-20261030` に
+  **v2.4.21 Chrome MV3非公開QA候補をステージング済み**。
+  7アセットのSHA-256がソースと一致し、
+  `SHA256SUMS.txt`と`QA_README.txt`も配置済み。
+  既存の通常v2.4.18と旧QA v2.4.20は不変更。
+  Chromeへの実インストール・有効化は行っていない。
+- 本開発正本もB5 SHA `999a96b0664e3aadababe5a2c5144c0c47468c28`
+  へFF-only統合され、GitHubの同SHA run `41009448025` SUCCESS。
+  GitHubとローカルのHEAD一致・ワークツリーcleanを確認。
+- 本番Xの認証済み28→29、1～4枚・GIF/動画/混合、
+  実返信欄の継続表示、画像Paint・CPU/RAM・HTTP転送計測、
+  レビュー・公開判断は**未完了**。合成MV3やフォルダ作成を本番受入と
+  誤認しない。ユーザーのChromeログイン情報・通常プロフィールは触れない。
+- 次の再開点は既存の独立候補を、旧XMNを無効化したChromeに
+  ユーザーが手動Load unpackedして実機受入を行うこと。
+  完成・公開の判断はその受入証拠取得後のみ。
