@@ -14,12 +14,14 @@ const session=(profile='alice')=>({
 const sender=(tab=1,profile='alice')=>({
  tab:{id:tab},frameId:0,url:'https://x.com/'+profile+'/status/400/photo/1'
 });
-function worker({beforeSet}={}){
+function worker({beforeSet,beforeGet}={}){
  const memory=new Map();let messageListener,tabRemoved;
  const storage={session:{
   async get(key){if(key===null)return Object.fromEntries(memory);
    const keys=Array.isArray(key)?key:[key];
-   return Object.fromEntries(keys.filter(k=>memory.has(k)).map(k=>[k,memory.get(k)]))},
+   const snapshot=Object.fromEntries(keys.filter(k=>memory.has(k)).map(k=>[k,memory.get(k)]));
+   if(beforeGet)await beforeGet(key,snapshot);
+   return snapshot},
   async set(values){
    if(beforeSet)await beforeSet(values);
    for(const [k,v] of Object.entries(values))memory.set(k,v)
@@ -704,4 +706,133 @@ test('B2 a stable committed page remains navigable after only decoded photo cach
   'public media identity is unchanged; cached image metadata is not persisted');
  equalResponse(await w.send('session.get'),{ok:true,session:p0});
  equalResponse(await w.send('manifest.get'),{ok:true,manifest:m});
+});
+
+test('B2 tab closure waits for an in-flight consent write before releasing the tab ID',async()=>{
+ let release,started;
+ const startedPromise=new Promise(resolve=>{started=resolve});
+ const gate=new Promise(resolve=>{release=resolve});
+ const w=worker({beforeSet:async values=>{
+   if(Object.hasOwn(values,'xmn:consent:19:alice')){
+     started();await gate;
+   }
+ }});
+ const pending=w.send('consent.set',19,'alice');
+ await startedPromise;
+ w.tabRemoved()(19);
+ await new Promise(resolve=>setImmediate(resolve));
+ release();
+ equalResponse(await pending,{ok:true});
+ for(let i=0;i<20;i++){
+   if((await w.send('consent.get',19)).granted===false)break;
+   await new Promise(resolve=>setImmediate(resolve));
+ }
+ equalResponse(await w.send('consent.get',19),{ok:true,granted:false},
+   'a recycled tab id must never inherit the deleted tab consent');
+});
+test('B2 delayed stale session.get cannot delete a newly activated page',async()=>{
+ let releaseRead,enteredRead,hold=false;
+ const gate=new Promise(resolve=>{releaseRead=resolve});
+ const entered=new Promise(resolve=>{enteredRead=resolve});
+ const w=worker({beforeGet:async key=>{
+   if(hold&&key==='xmn:session:1'){
+     enteredRead();await gate;
+   }
+ }});
+ const p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ await w.send('session.set',1,'alice',{session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ w.memory.set('xmn:session:1',{...p0,expires:Date.now()-1000});
+ hold=true;
+ const staleRead=w.send('session.get',1,'alice');
+ await entered;
+ const transition={expectedActivePage:0,targetPage:1,direction:1,
+  sourceRef:p0.refs.at(-1),targetRef:p1.refs[0]};
+ const activation=w.raw({kind:'xmn-store-v1',op:'manifest.activate',
+  profile:'alice',transition},{...sender(),url:'https://x.com'+p1.refs[0]});
+ // Without a common lock, activation can commit while session.get still
+ // holds an expired snapshot, then its asynchronous removal deletes page1.
+ for(let i=0;i<30;i++){
+   if(w.memory.get('xmn:manifest:1:alice')?.activePage===1)break;
+   await new Promise(resolve=>setImmediate(resolve));
+ }
+ releaseRead();
+ equalResponse(await staleRead,{ok:true,session:null});
+ equalResponse(await activation,{
+  ok:true,session:p1,manifest:{...m,activePage:1}
+ });
+ equalResponse(await w.send('session.get',1,'alice'),{ok:true,session:p1});
+});
+test('B2 switching profile in the same tab cannot let stale reads erase the new profile',async()=>{
+ let releaseRead,enteredRead,hold=false;
+ const gate=new Promise(resolve=>{releaseRead=resolve});
+ const entered=new Promise(resolve=>{enteredRead=resolve});
+ const w=worker({beforeGet:async key=>{
+  if(hold&&key==='xmn:session:1'){enteredRead();await gate}
+ }});
+ const alice=session('alice'),bob=session('bob');
+ w.memory.set('xmn:session:1',{...alice,expires:Date.now()-1000});
+ hold=true;
+ const stale=w.send('session.get',1,'alice');
+ await entered;
+ let bobCompleted=false;
+ const writing=w.send('session.set',1,'bob',{session:bob})
+   .then(reply=>{bobCompleted=true;return reply});
+ for(let i=0;i<30&&!bobCompleted;i++)
+   await new Promise(resolve=>setImmediate(resolve));
+ releaseRead();
+ equalResponse(await stale,{ok:true,session:null});
+ equalResponse(await writing,{ok:true});
+ equalResponse(await w.send('session.get',1,'bob'),{ok:true,session:bob},
+  'a previous profile cannot delete the new profile snapshot');
+});
+test('B2 an old profile read cannot delete the new valid profile session',async()=>{
+ const w=worker(),bob=session('bob');
+ equalResponse(await w.send('session.set',1,'bob',{session:bob}),{ok:true});
+ equalResponse(await w.send('session.get',1,'alice'),{ok:true,session:null});
+ equalResponse(await w.send('session.get',1,'bob'),{ok:true,session:bob},
+  'profile switching must not destroy the valid later profile state');
+});
+test('B2 delayed old-profile session clear cannot delete the new current profile',async()=>{
+ const w=worker(),bob=session('bob');
+ equalResponse(await w.send('session.set',1,'bob',{session:bob}),{ok:true});
+ equalResponse(await w.send('session.clear',1,'alice'),{ok:true});
+ equalResponse(await w.send('session.get',1,'bob'),{ok:true,session:bob});
+});
+test('B2 maximum 64 immutable pages remain ordered, bounded and cannot overflow',async()=>{
+ const w=worker();
+ await w.send('consent.set');
+ const pages=[];
+ for(let i=0;i<64;i++){
+   const top=1000-2*i,bottom=top-1;
+   const snap=checkpointSession(top,bottom,i===63?null:'CURSOR-'+(i+1));
+   equalResponse(await w.send('checkpoint.put',1,'alice',{
+     page:i,session:snap}),{ok:true});
+   pages.push({snap,incoming:i===0?null:'CURSOR-'+i});
+ }
+ const m=manifest(pages);
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:m}),{ok:true});
+ const read=await w.send('manifest.get');
+ assert.equal(read?.manifest?.pages?.length,64);
+ const first=await w.raw({
+   kind:'xmn-store-v1',op:'checkpoint.adjacent',profile:'alice',
+   href:'/alice/status/999/photo/1',direction:1
+ },{...sender(),url:'https://x.com/alice/status/999/photo/1'});
+ equalResponse(first,{
+   ok:true,href:'/alice/status/998/photo/1',page:1
+ });
+ const extra=checkpointSession(872,871,null);
+ equalResponse(await w.send('checkpoint.put',1,'alice',{
+   page:64,session:extra}),{ok:false});
+ const forged={...m,pages:[...m.pages,{
+   page:64,firstRef:extra.refs[0],lastRef:extra.refs[1],
+   mediaCount:2,incomingCursor:null,outgoingCursor:null}]};
+ equalResponse(await w.send('manifest.put',1,'alice',{
+   manifest:forged}),{ok:false});
+ assert.equal((await w.send('manifest.get')).manifest.pages.length,64);
 });

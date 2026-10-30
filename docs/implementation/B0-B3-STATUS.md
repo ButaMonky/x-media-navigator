@@ -357,3 +357,25 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   manifest2ページ、前後URLのWorker照合がPASS。
 - 独立追試と記録：`docs/implementation/B2-PAGE-ARCHIVE-AUDIT-20261030.md`。
   通常インストール・公開main・安定Draft PR・元担当の未保存成果は不変更。
+
+---
+
+## 2026-10-30｜B2タブ所有権・保存競合修正と自動保存からの全往復E2E
+
+- 非公開 `task/xmn-b2-hardening-20261030` は、主開発正本
+  `77d24e4` から独立してWorkerの競合を修正。
+- **タブ終了中の同意書込／期限切れセッション取得／
+  プロフィール切替／旧プロフィール削除**の各競合をRED→GREENで再現。
+- Workerは従来のプロフィール別保存キーを維持しつつ、
+  読取・書込・manifestアクティブ化・終了・同意保存の
+  タブ所有ロックを統一。新プロフィールの状態の誤削除を防止。
+- **新しい実Chrome E2E**：440件の旧セッション＋20件API模擬結果を
+  Workerで不変アーカイブ→次ページへ文書遷移→
+  返信欄と矢印を保って旧ページへ戻るまで、実製品コードでPASS。
+- 64ページ上限と65ページ目拒否も既存Worker上で確認。
+- 全Node321件（312 PASS・0 FAIL・3 SKIP・実X TODO 6）、
+  型検査・Chromium合成4件・MV3 4系統（archive/roundtrip/
+  正規往復/不正元拒否）PASS。実Xは依然未受入。
+- 細部：`docs/implementation/B2-TAB-SESSION-RACE-AND-ROUNDTRIP-20261030.md`。
+- 公開main・安定Draft PR #17・通常/QAインストールは変更せず、
+  CIを確認してからFF-onlyで開発正本に統合。

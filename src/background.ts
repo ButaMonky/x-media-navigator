@@ -111,6 +111,9 @@ namespace XMN {
    page>=0&&page<MAX_CHECKPOINT_PAGES;
  const manifestKey=(tab:number,profile:string)=>
    MANIFEST_PREFIX+tab+':'+profile.toLowerCase();
+ // A session is keyed by TAB, not profile. All operations that can read,
+ // replace, clear or activate that session share the same tab-level lock.
+ const tabLockKey=(tab:number)=>MANIFEST_PREFIX+tab+':_tab';
  const manifestJobs=new Map<string,Promise<unknown>>();
  async function withManifestLock<T>(key:string,operation:()=>Promise<T>):Promise<T>{
    const previous=manifestJobs.get(key)??Promise.resolve();
@@ -184,23 +187,38 @@ namespace XMN {
      return {ok:true,granted:data[consentKey(id,profile)]===true};
    }
    if(msg.op==='consent.set'){
-     await chrome.storage.session.set({[consentKey(id,profile)]:true});
-     return {ok:true};
+     // A closing tab must wait for a pending consent write. Otherwise the
+     // same tab ID can be reused after cleanup but retain stale consent.
+     return withManifestLock(tabLockKey(id),async()=>{
+       await chrome.storage.session.set({[consentKey(id,profile)]:true});
+       return {ok:true};
+     });
    }
    if(msg.op==='session.get'){
-     const key=sessionKey(id);
-     const data=await chrome.storage.session.get(key);
-     const saved=data[key];
-     if(!validateSession(saved,profile)){
-       if(saved!==undefined)await chrome.storage.session.remove(key);
-       return {ok:true,session:null};
-     }
-     return {ok:true,session:saved};
+     // Expiry cleanup must not race with manifest.activate's atomic
+     // session update: an old read could otherwise delete the new page.
+     return withManifestLock(tabLockKey(id),async()=>{
+       const key=sessionKey(id);
+       const data=await chrome.storage.session.get(key);
+       const saved=data[key];
+       if(!validateSession(saved,profile)){
+         // One tab has one active session slot. A late read from its former
+         // profile must not erase a valid session owned by the new profile.
+         const other=(saved&&typeof saved==='object'&&!Array.isArray(saved))
+           ? (saved as Record<string,unknown>).profile : null;
+         if(typeof other==='string'&&other!==profile&&HANDLE.test(other)&&
+            validateSession(saved,other))
+           return {ok:true,session:null};
+         if(saved!==undefined)await chrome.storage.session.remove(key);
+         return {ok:true,session:null};
+       }
+       return {ok:true,session:saved};
+     });
    }
    if(msg.op==='session.set'){
      if(!validateSession(msg.session,profile))return {ok:false};
      const key=manifestKey(id,profile);
-     return withManifestLock(key,async()=>{
+     return withManifestLock(tabLockKey(id),async()=>{
        const value=(await chrome.storage.session.get(key))[key];
        if(value!==undefined){
          const m=parsePublicPageManifest(value,profile);
@@ -231,11 +249,19 @@ namespace XMN {
       msg.op==='manifest.clear'){
      if(msg.op==='checkpoint.clear' && msg.page!==undefined &&
         !checkpointPage(msg.page))return {ok:false};
-     return withManifestLock(manifestKey(id,profile),async()=>{
+     return withManifestLock(tabLockKey(id),async()=>{
        await deleteCheckpointPages(id,profile,
          msg.op==='checkpoint.clear' ? msg.page as number|undefined : undefined);
        const remove=[manifestKey(id,profile)];
-       if(msg.op==='session.clear')remove.push(sessionKey(id));
+       if(msg.op==='session.clear'){
+         const key=sessionKey(id);
+         const saved=(await chrome.storage.session.get(key))[key];
+         // One tab can switch profiles while an older document is closing.
+         // Only clear a session actually owned by the requested profile.
+         if(saved&&typeof saved==='object'&&!Array.isArray(saved) &&
+            (saved as Record<string,unknown>).profile===profile)
+           remove.push(key);
+       }
        await chrome.storage.session.remove(remove);
        return {ok:true};
      });
@@ -255,7 +281,7 @@ namespace XMN {
      const consent=(await chrome.storage.session.get(consentKey(id,profile)))[consentKey(id,profile)];
      if(consent!==true)return {ok:false};
      const key=manifestKey(id,profile);
-     return withManifestLock(key,async()=>{
+     return withManifestLock(tabLockKey(id),async()=>{
        const saved=(await chrome.storage.session.get(key))[key];
        if(saved===undefined)return {ok:true,session:null,page:null};
        const manifest=parsePublicPageManifest(saved,profile);
@@ -319,7 +345,7 @@ namespace XMN {
      const consent=(await chrome.storage.session.get(consentKey(id,profile)))[consentKey(id,profile)];
      if(consent!==true)return {ok:false};
      const key=manifestKey(id,profile);
-     return withManifestLock(key,async()=>{
+     return withManifestLock(tabLockKey(id),async()=>{
        const saved=(await chrome.storage.session.get(key))[key];
        if(msg.op==='manifest.get'){
          if(saved===undefined)return {ok:true,manifest:null};
