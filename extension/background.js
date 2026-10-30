@@ -484,6 +484,8 @@ var XMN;
         'photos', 'photoTotals', 'cursor', 'anchorFound', 'exhausted'
     ];
     const canonicalSession = (value) => JSON.stringify(SESSION_FIELDS.map(key => [key, value[key]]));
+    const canonicalSessionWithoutExpiry = (value) => JSON.stringify(SESSION_FIELDS.filter(key => key !== 'expires')
+        .map(key => [key, value[key]]));
     const HANDLE = /^[a-zA-Z0-9_]{1,15}$/;
     const SESSION_PREFIX = 'xmn:session:';
     const CONSENT_PREFIX = 'xmn:consent:';
@@ -682,8 +684,31 @@ var XMN;
         if (msg.op === 'session.set') {
             if (!validateSession(msg.session, profile))
                 return { ok: false };
-            await chrome.storage.session.set({ [sessionKey(id)]: msg.session });
-            return { ok: true };
+            const key = manifestKey(id, profile);
+            return withManifestLock(key, async () => {
+                const value = (await chrome.storage.session.get(key))[key];
+                if (value !== undefined) {
+                    const m = XMN.parsePublicPageManifest(value, profile);
+                    if (!m || !await verifyManifestPages(m, id, profile))
+                        return { ok: false };
+                    const active = m.pages[m.activePage];
+                    const pageKey = checkpointKey(id, profile, m.activePage);
+                    const stored = (await chrome.storage.session.get(pageKey))[pageKey];
+                    if (!validateSession(stored, profile) ||
+                        !XMN.publicPageMatchesDescriptor(stored, active, profile, m.timeline, m.expires) ||
+                        canonicalSessionWithoutExpiry(stored) !==
+                            canonicalSessionWithoutExpiry(msg.session))
+                        return { ok: false };
+                    // A stale page may refresh its own TTL after the checkpoint was
+                    // committed. Acknowledge the otherwise identical snapshot, but
+                    // never extend or overwrite the immutable active page expiration.
+                    if (canonicalSession(stored) !==
+                        canonicalSession(msg.session))
+                        return { ok: true };
+                }
+                await chrome.storage.session.set({ [sessionKey(id)]: msg.session });
+                return { ok: true };
+            });
         }
         if (msg.op === 'session.clear' || msg.op === 'checkpoint.clear' ||
             msg.op === 'manifest.clear') {
