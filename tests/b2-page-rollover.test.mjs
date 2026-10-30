@@ -300,6 +300,7 @@ test('B2 committed boundary yields exact adjacent X route, never guesses next ID
  current.assign=url=>calls.push(url);
  const refs=[ref(900),ref(451)];
  const ctl=Object.assign(Object.create(X.Controller.prototype),{
+   experimentalThirdPartyApiEnabled:true, // historical committed page navigation
   originProfile:'alice',originTimeline:'alice|photo',
   refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
   viewer:{isConnected:true},navigationBusy:false,navGeneration:4,
@@ -565,6 +566,7 @@ test('B2 visible post counter stops promising continuation at verified 64-page c
  }};
  const ctl=continuationCtl(snap,[ref(200)],{},null);
  Object.assign(ctl,{viewer,publicSessionRestored:true,
+   experimentalThirdPartyApiEnabled:true, // legacy provider-bound capacity test
   restoredCheckpointPage:63,checkpointCapacityReached:false,
   viewerStateSnapshot:null,controlsHost:null,
   statusOrdinalCache:null,schedulePublicMediaWarmup(){}});

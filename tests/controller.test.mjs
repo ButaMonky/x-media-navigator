@@ -3379,6 +3379,7 @@ test('one-time public API consent uses worker-owned tab state, never page storag
  document.hidden=false;context.navigator={onLine:true};
  const current=ref('/alice/status/200/photo/1');
  const ctrl=Object.assign(Object.create(proto),{
+   experimentalThirdPartyApiEnabled:true, // isolated historical provider test
   originProfile:'alice',originTimeline:'alice|default',
   refs:[current],indexes:new Map([[current.key,0]]),
   viewer:{isConnected:true},navigationBusy:false,navGeneration:2,
@@ -4277,6 +4278,7 @@ test('B2 two rapid boundary arrows show only one external-service consent prompt
  context.window.confirm=()=>{prompts++;return false};
  const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
  const controller=Object.assign(Object.create(proto),{
+   experimentalThirdPartyApiEnabled:true, // isolated historical provider test
   originProfile:'alice',originTimeline:'alice|photo',navGeneration:21,
   refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
   navigationBusy:false,checkpointBoundaryPending:false,
@@ -4309,6 +4311,7 @@ test('B5 rapid right arrows launch only one consent-approved public continuation
  let consentReads=0,apiCalls=0;
  const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
  const ctrl=Object.assign(Object.create(proto),{
+   experimentalThirdPartyApiEnabled:true, // isolated historical provider test
   originProfile:'alice',originTimeline:'alice|photo',navGeneration:31,
   refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
   navigationBusy:false,checkpointBoundaryPending:false,
@@ -4339,6 +4342,7 @@ test('B5 obsolete consent query cannot unlock the current-route dialog guard',as
  let reads=0,fetches=0;
  const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
  const ctrl=Object.assign(Object.create(proto),{
+   experimentalThirdPartyApiEnabled:true, // isolated historical provider test
   originProfile:'alice',originTimeline:'alice|photo',navGeneration:33,
   refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
   navigationBusy:false,checkpointBoundaryPending:false,publicApiLoading:false,
@@ -4374,6 +4378,7 @@ test('B5 unavailable consent storage fails closed and releases dialog reservatio
  const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
  const messages=[];let providerCalls=0;
  const ctl=Object.assign(Object.create(proto),{
+   experimentalThirdPartyApiEnabled:true, // isolated historical provider test
   originProfile:'alice',originTimeline:'alice|photo',navGeneration:51,
   refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
   navigationBusy:false,checkpointBoundaryPending:false,
