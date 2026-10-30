@@ -68,3 +68,24 @@
 - 再開位置：修正コミットでGitHub Actionsを再実行し、
   MV3の4ケースと生成JS一致がすべてSUCCESSしたときだけ
   FF-only主開発統合を許可。失敗結果を無かったことにしない。
+
+## 2026-10-30 二度目のLinux CIと初期ページの取りこぼし
+
+- GitHub run `41021191064`: **FAIL**。
+  公式Chrome for Testingビルドの導入は成功。
+  初回28→29／4枚投稿／同意拒否は**3/4 PASS**、
+  4件目の不正アンカー拒否は`mv3Test=waiting`。
+  プローブ結果マーカーが未生成のままで、製品内の
+  28→29ロジック不一致と断定はできない。
+- 対応：4つの一時Chrome smokeで、起動後にまだ
+  `sessionStorage`のB5内部phaseが**未設定**かつ
+  失敗マーカー未生成の場合に限り、CDPから**一回だけ**
+  同じlocalhost初期文書をReloadして起動競合を回復。
+  既に`starting`等に進んだ文書は再読み込みしない。
+  これは本番Xの移動・安全拒否を迂回せず、
+  実MV3 Workerの同意/保存/拒否を再実行して検査する。
+- 成功・失敗JSONに`startupReloaded`を追加して再現性を記録。
+  待機上限、4つのPASSアサーション、未許可送信元の拒否は維持。
+- Windowsの単独native実Worker smokeを再実行し
+  `startupReloaded=false`でPASS。
+  Linux再受入は次のGitHub SHA/runを確認するまで未確定。

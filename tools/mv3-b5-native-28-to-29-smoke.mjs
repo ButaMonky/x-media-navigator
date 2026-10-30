@@ -116,7 +116,7 @@ try{
   socket.send(JSON.stringify({id,method,params}));
  });
  await command('Runtime.enable');
- let result='waiting',details='';
+ let result='waiting',details='',startupReloaded=false;
  for(let i=0;i<240;i++){
   let r;
   try{r=await command('Runtime.evaluate',{
@@ -126,13 +126,27 @@ try{
   const v=r?.result?.value||{};
   result=v.result||'waiting';details=v.signals||v.error||'';
   if(result!=='waiting')break;
-  // Do not reload while the page transition is underway.
+  // On Linux, an extension can finish loading after Chrome's first page.
+  // Recover ONLY when the B5 probe never entered its first stage. Once it
+  // sets the sessionStorage phase, reload would destroy useful evidence.
+  // This does not skip any media/consent assertion or weaken a failed probe.
+  if(i===25 && !startupReloaded){
+    const phase=await command('Runtime.evaluate',{
+      expression:"sessionStorage.getItem('xmn-native-b5-phase')",
+      returnByValue:true
+    });
+    if(phase?.result?.value==null){
+      startupReloaded=true;
+      await command('Page.enable');
+      await command('Page.reload',{ignoreCache:true});
+    }
+  }
   await nap(260);
  }
  const types=targets.map(t=>t.type);
  console.log(JSON.stringify({mv3Test:result,details,targets:types,
   genuineChromeForTesting:true,serviceWorkerResponded:result==='passed',
-  testOrigin:'localhost only',productionGuardUnchanged:true,
+  testOrigin:'localhost only',productionGuardUnchanged:true,startupReloaded,
   crossDocumentNavigation:true,nativeFirstClick29Verified:result==='passed'},null,2));
  if(result!=='passed')process.exitCode=2;
 }finally{
