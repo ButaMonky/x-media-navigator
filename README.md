@@ -1,5 +1,9 @@
 # X Media Navigator — TypeScript rebuild (private beta)
 
+> **2026-10-31 ネイティブ優先 v2.4.27（非公開QA候補）**：Xのメディア一覧で確認できた投稿リンクだけを左右移動に使います。FxEmbedの自動取得・同意確認・バックグラウンド先行取得を通常利用では行いません。既知写真の少数先読みとXネイティブSPA移動は維持。読み込み済み一覧の終端ではビューアを保持し、Xのメディア一覧に戻って手動スクロールで続きを読み込む案内を出します。以前の裏側自動スクロールは復活させません。
+> **更新先は1か所だけ**：Downloads\X-Media-Navigator-Current。GitHub CI成功後、Update-Chrome-Current.cmdでこの固定フォルダのみ更新します。旧Update-Chrome-QA.cmdは実行を拒否します。一般公開は原作者の再配布条件と実機の最終受入確認まで保留です。詳細は [v2.4.27 QA](docs/qa/2026-10-31-v2427-native-primary.md)。
+
+
 > **2026-10-30 現行のPC配置・更新方法：** Chrome用の唯一のフォルダは `%USERPROFILE%\Downloads\X-Media-Navigator-Current`（**v2.4.26・非公開QA**）、開発用は `%USERPROFILE%\Documents\x-media-navigator`（単一Git worktree）。以下の過去版QAフォルダ・旧 `Update-Chrome-QA.cmd` の説明は**履歴情報であり実行しないでください**。過去版・未コミット成果のGitHubバックアップ、復元方法、PC整理記録は [2026-10-30 PC整理台帳](docs/maintenance/XMN-PC-CLEANUP-20261030.md) を参照。実Xの最終受入は未完了で、正式公開していません。
 
 

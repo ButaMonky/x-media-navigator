@@ -1,6 +1,6 @@
 {
   "name": "x-media-navigator",
-  "version": "2.4.26-dev.1",
+  "version": "2.4.27-dev.1",
   "private": true,
   "description": "TypeScript rebuild of X media profile navigation; private development",
   "scripts": {
@@ -22,7 +22,7 @@
     "test:mv3:unverified": "npm run build && node tools/mv3-b5-unverified-cursor-smoke.mjs",
     "test:mv3:reject": "node tools/b1-worker-cdp-probe.mjs",
     "test:navigation-isolated": "node tools/navigation-isolated-probe.mjs",
-    "qa:update": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/update-chrome-qa.ps1"
+    "qa:update": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/update-current.ps1"
   },
   "devDependencies": {
     "typescript": "5.8.3"

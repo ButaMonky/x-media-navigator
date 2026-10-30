@@ -19,6 +19,7 @@ function ctrl(){
   viewer:{isConnected:true},navGeneration:7,navigationBusy:false,
   publicApiKeys:new Set(),publicApiAnchorFound:true,publicApiCursor:'next',
   publicApiExhausted:false,publicApiLoading:true,
+  experimentalThirdPartyApiEnabled:true, // isolated legacy opt-in branch
   imageSources:new Map(),knownPhotoTotals:new Map(),
   activeIndex(){return this.refs.findIndex(x=>x.statusId==='400')},
   updateViewerState(){},persistPublicMediaSession(){return true},

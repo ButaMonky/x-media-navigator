@@ -20,7 +20,8 @@ const wait = ms => new Promise(r => setTimeout(r, ms));
 window.navEventsSeen=[];
 // Headless fixture explicitly declines the third-party API. No remote calls or
 // blocking browser confirmation should be required in native X regression QA.
-window.confirm=()=>false;
+window.nativeOnlyConfirmations=0;
+window.confirm=()=>{window.nativeOnlyConfirmations++;return false;};
 window.navApiAvailable=!!window.navigation && typeof window.navigation.addEventListener==='function';
 if(window.navApiAvailable) {
   window.navigation.addEventListener('currententrychange', () => {
@@ -391,6 +392,7 @@ async function exercise() {
   await wait(480);
   result('unknown next POST stays in modal and never scrolls the hidden X timeline',
     terminalKey1.defaultPrevented &&
+    window.nativeOnlyConfirmations===0 &&
     location.pathname.endsWith('/22/photo/1') &&
     !source('/alice/status/33/photo/1') &&
     window.nativeBackgroundScrolls===scrollCount &&
@@ -787,7 +789,7 @@ image.src=${JSON.stringify(imageUrl)};
   }
 });
 
-test('full document navigation restores FxEmbed session controls without a media grid', {
+test('native-only document navigation ignores old API session without losing replies', {
   skip: process.env.XMN_RUN_CHROMIUM !== '1' ? 'Requires Chromium' :
     !existsSync(browser) ? 'Chromium not installed' : false,
 }, async () => {
@@ -817,9 +819,12 @@ location.assign('/alice/status/100/photo/1');
 window.chrome=window.chrome||{};
 window.chrome.runtime=window.chrome.runtime||{};
 window.__xmnSessionFixture=JSON.parse(sessionStorage.getItem('xmn-public-media-v1'));
+window.workerReadCalls=0;
 window.chrome.runtime.sendMessage=async request=>{
- if(request.kind==='xmn-store-v1' && request.op==='session.get')
+ if(request.kind==='xmn-store-v1' && request.op==='session.get'){
+   window.workerReadCalls++;
    return {ok:true,session:window.__xmnSessionFixture};
+ }
  return {ok:false};
 };
 </script>
@@ -830,8 +835,8 @@ setTimeout(()=>{
  const prev=document.querySelector('.xmn-prev');
  const next=document.querySelector('.xmn-next');
  document.documentElement.dataset.xmnRestoreProof=
-   label==='投稿 2 / 2' && prev && !prev.disabled && next &&
-   document.getElementById('replies') ? 'passed':'failed:'+(label||'missing');
+   !label && !prev && !next && window.workerReadCalls===0 &&
+   document.getElementById('replies') ? 'passed':'failed:unexpected-external-restore';
 },1250);
 </script></body></html>`);
   });
@@ -842,7 +847,7 @@ setTimeout(()=>{
     const output=await runChromium(
       'http://127.0.0.1:'+server.address().port+'/alice/media',dir);
     assert.match(output,/data-xmn-restore-proof="passed"/,
-      'Full-page X route should retain same-tab API indexes and original back arrow');
+      'Native-only mode must not rehydrate old provider indices or request its Worker session');
     assert.match(output, /Unchanged replies/,
       'The mocked replies panel must not be discarded by the extension');
   } finally {

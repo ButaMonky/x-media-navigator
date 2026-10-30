@@ -25,6 +25,7 @@ test('R-041: unknown total is visibly different from an exhausted loaded index',
   originProfile:'alice',originTimeline:'alice|photo',refs,viewer,
   indexes:new Map(refs.map((r,i)=>[r.key,i])),
   navigationBusy:false,publicApiCursor:'NEXT_PAGE',
+  experimentalThirdPartyApiEnabled:true, // preserve opt-in cursor regression
   publicApiAnchorFound:true,publicApiExhausted:false,
   activeIndex(){return 1}
  });

@@ -24,6 +24,7 @@ function controller(ids,selected,lookup,{page=null}={}){
  }};
  const ctl=Object.assign(Object.create(proto),{
   originProfile:'alice',originTimeline:'alice|photo',publicSessionRestored:true,
+  experimentalThirdPartyApiEnabled:true, // old checkpoint scenarios are opt-in only
   restoredCheckpointPage:page,navGeneration:7,navigationBusy:false,
   publicApiCursor:null,publicApiExhausted:true,
   refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),viewer,

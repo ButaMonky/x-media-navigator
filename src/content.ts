@@ -13,7 +13,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.26-dev';
+  const DIAGNOSTIC_VERSION = '2.4.27-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -188,6 +188,8 @@ namespace XMN {
     private publicApiWarmTimer: number | null = null;
     // Persisted X-observed native refs stay navigable after a public API handoff.
     private publicSessionRestored = false;
+    // Native X media links are authoritative; unapproved third-party calls are disabled.
+    private experimentalThirdPartyApiEnabled = false;
 
     private viewer: HTMLElement | null = null;
     // Portaled controls live outside X's React-owned photo carousel. X may
@@ -225,8 +227,11 @@ namespace XMN {
 
     constructor() {
       clearLegacyPageSession();
-      void this.restorePublicMediaSession().catch(() => {}).finally(() => {
-        diagnostic('startup', { restored: this.publicSessionRestored, indexed: this.refs.length });
+      const startup = this.experimentalThirdPartyApiEnabled
+        ? this.restorePublicMediaSession() : Promise.resolve();
+      void startup.catch(() => {}).finally(() => {
+        diagnostic('startup', { restored: this.publicSessionRestored, indexed: this.refs.length,
+          nativeOnly: !this.experimentalThirdPartyApiEnabled });
         this.tick();
       });
       // Observe actual user keyboard input only when the viewer belongs to a media-tab session.
@@ -237,7 +242,7 @@ namespace XMN {
       document.addEventListener('visibilitychange', () => this.onVisibilityChange(), { passive: true });
       // BFCache does not rerun the original Content Script constructor.
       window.addEventListener('pageshow', (event: PageTransitionEvent) => {
-        if(event.persisted)
+        if(event.persisted && this.experimentalThirdPartyApiEnabled)
           void this.reconcileBfcacheHistoryPage().catch(() => {});
       });
       // Chrome may change Save-Data, network quality or offline status
@@ -1737,7 +1742,8 @@ namespace XMN {
         const index = currentRef ? ordinal.byStatus.get(currentRef.statusId) ?? -1 : -1;
         // Known indexed posts are not X's complete historical total.
         // A continuation cursor means older posts may still be obtainable.
-        const mayContinue = !!this.publicApiCursor && !this.publicApiExhausted &&
+        const mayContinue = this.experimentalThirdPartyApiEnabled &&
+          !!this.publicApiCursor && !this.publicApiExhausted &&
           !this.checkpointCapacityReached;
         const label = index < 0 ? '投稿の位置を確認中' :
           `投稿 ${index + 1} / ${ordinal.byStatus.size}${mayContinue ? '+' : ''}`;
@@ -1746,10 +1752,11 @@ namespace XMN {
           ? '保存済みの上限64ページに達しました。続きはXのメディア一覧で確認してください。'
           : mayContinue
             ? '現在読み込み済みの投稿数です。続きを取得できる可能性があります。'
-            : '現在読み込み済みの投稿数です。';
+            : 'Xのメディア一覧で読み込み済みの投稿数です。全件数ではありません。';
       }
       this.viewerStateSnapshot = { viewer, key };
-      this.schedulePublicMediaWarmup?.(current);
+      if (this.experimentalThirdPartyApiEnabled)
+        this.schedulePublicMediaWarmup?.(current);
     }
 
     /**
@@ -2979,6 +2986,13 @@ namespace XMN {
       // the exact current modal/replies panel until X itself loads more cards
       // from a user-initiated media-timeline scroll.
       if (nextIndex === null) {
+        if (!this.experimentalThirdPartyApiEnabled) {
+          // Do not close, scroll, request external consent or fetch unknown links.
+          // More links can arrive through the user's ordinary X timeline scroll.
+          if (direction === 1)
+            this.toast('ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
+          return;
+        }
         // A previously verified page is preferable to another third-party
         // request; only the worker can supply its exact adjoining URL.
         // Do not add an asynchronous hop to the ordinary X-native boundary.
