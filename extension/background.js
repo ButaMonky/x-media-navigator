@@ -231,29 +231,39 @@ var XMN;
             if (!entry || typeof entry !== 'object')
                 continue;
             const post = entry;
-            const id = post.id;
-            if (post.type !== 'status' || typeof id !== 'string' ||
-                !/^\d{1,19}$/.test(id) || seen.has(id) ||
+            // Different authors and text-only statuses are not this user's media.
+            // But an OWNED status with a malformed/unknown media group is a
+            // pagination barrier: skipping it yet advancing cursor.bottom would
+            // permanently lose a real photo/video from the user's gallery.
+            if (post.type !== 'status' ||
                 typeof post.author?.screen_name !== 'string' ||
                 post.author.screen_name.toLowerCase() !== handle)
                 continue;
+            const attachments = post.media?.all;
+            if (post.media == null)
+                continue;
+            if (!Array.isArray(attachments))
+                return null;
+            if (attachments.length === 0)
+                continue;
+            const id = post.id;
+            if (typeof id !== 'string' || !/^\d{1,19}$/.test(id) ||
+                seen.has(id) || attachments.length > 4)
+                return null;
             const claimed = mediaRefFromHref(post.url, handle);
             if (!claimed || claimed.statusId !== id || claimed.kind !== null)
-                continue;
-            const attachments = post.media?.all;
-            if (!Array.isArray(attachments) || attachments.length < 1 || attachments.length > 4)
-                continue;
+                return null;
             const photoOnly = attachments.every((asset) => asset?.type === 'photo');
             const videoOnly = attachments.length === 1 &&
                 (attachments[0]?.type === 'video' || attachments[0]?.type === 'gif' ||
                     attachments[0]?.type === 'animated_gif');
             if (!photoOnly && !videoOnly)
-                continue;
+                return null;
             const urls = photoOnly
                 ? attachments.map((asset) => typeof asset.url === 'string' ? normalizePublicPhotoUrl(asset.url) : null)
                 : [];
             if (photoOnly && urls.some((url) => !url))
-                continue;
+                return null;
             seen.add(id);
             if (photoOnly) {
                 for (let i = 0; i < attachments.length; i++) {

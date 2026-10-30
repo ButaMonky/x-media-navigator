@@ -231,29 +231,39 @@ var XMN;
             if (!entry || typeof entry !== 'object')
                 continue;
             const post = entry;
-            const id = post.id;
-            if (post.type !== 'status' || typeof id !== 'string' ||
-                !/^\d{1,19}$/.test(id) || seen.has(id) ||
+            // Different authors and text-only statuses are not this user's media.
+            // But an OWNED status with a malformed/unknown media group is a
+            // pagination barrier: skipping it yet advancing cursor.bottom would
+            // permanently lose a real photo/video from the user's gallery.
+            if (post.type !== 'status' ||
                 typeof post.author?.screen_name !== 'string' ||
                 post.author.screen_name.toLowerCase() !== handle)
                 continue;
+            const attachments = post.media?.all;
+            if (post.media == null)
+                continue;
+            if (!Array.isArray(attachments))
+                return null;
+            if (attachments.length === 0)
+                continue;
+            const id = post.id;
+            if (typeof id !== 'string' || !/^\d{1,19}$/.test(id) ||
+                seen.has(id) || attachments.length > 4)
+                return null;
             const claimed = mediaRefFromHref(post.url, handle);
             if (!claimed || claimed.statusId !== id || claimed.kind !== null)
-                continue;
-            const attachments = post.media?.all;
-            if (!Array.isArray(attachments) || attachments.length < 1 || attachments.length > 4)
-                continue;
+                return null;
             const photoOnly = attachments.every((asset) => asset?.type === 'photo');
             const videoOnly = attachments.length === 1 &&
                 (attachments[0]?.type === 'video' || attachments[0]?.type === 'gif' ||
                     attachments[0]?.type === 'animated_gif');
             if (!photoOnly && !videoOnly)
-                continue;
+                return null;
             const urls = photoOnly
                 ? attachments.map((asset) => typeof asset.url === 'string' ? normalizePublicPhotoUrl(asset.url) : null)
                 : [];
             if (photoOnly && urls.some((url) => !url))
-                continue;
+                return null;
             seen.add(id);
             if (photoOnly) {
                 for (let i = 0; i < attachments.length; i++) {
@@ -919,7 +929,7 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.22-dev';
+    const DIAGNOSTIC_VERSION = '2.4.23-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
@@ -1258,7 +1268,13 @@ var XMN;
                 // Test fixtures and old browsers have no stream. The bound is applied
                 // immediately after text() in this compatibility fallback.
                 const text = await response.text();
-                return text.length <= maxBytes ? text : null;
+                // UTF-16 string.length undercounts multi-byte JSON: '€' occupies
+                // one JS code unit but three UTF-8 wire bytes. Byte-cap this
+                // compatibility path exactly like the streaming reader.
+                if (text.length > maxBytes)
+                    return null;
+                return new TextEncoder().encode(text).byteLength <= maxBytes
+                    ? text : null;
             }
             const reader = response.body.getReader();
             const decoder = new TextDecoder();

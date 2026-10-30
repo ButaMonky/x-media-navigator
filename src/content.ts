@@ -13,7 +13,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.22-dev';
+  const DIAGNOSTIC_VERSION = '2.4.23-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -378,7 +378,12 @@ namespace XMN {
         // Test fixtures and old browsers have no stream. The bound is applied
         // immediately after text() in this compatibility fallback.
         const text=await response.text();
-        return text.length<=maxBytes ? text : null;
+        // UTF-16 string.length undercounts multi-byte JSON: '€' occupies
+        // one JS code unit but three UTF-8 wire bytes. Byte-cap this
+        // compatibility path exactly like the streaming reader.
+        if(text.length>maxBytes)return null;
+        return new TextEncoder().encode(text).byteLength<=maxBytes
+          ? text : null;
       }
       const reader=response.body.getReader();
       const decoder=new TextDecoder();

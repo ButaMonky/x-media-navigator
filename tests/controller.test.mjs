@@ -30,7 +30,7 @@ const document = {
   querySelector(selector) { return selector==='main [data-testid="primaryColumn"]' ? state.root : null; },
   createElement(tag) { return new FakeElement(tag); },
 };
-const context = vm.createContext({ URL, URLSearchParams, Set, Map, Element:FakeElement, document, window: { location:state, addEventListener(){}, removeEventListener(){} }, console });
+const context = vm.createContext({ URL, URLSearchParams, Set, Map, TextEncoder, TextDecoder, Element:FakeElement, document, window: { location:state, addEventListener(){}, removeEventListener(){} }, console });
 vm.runInContext(source, context);
 const proto = context.XMN.Controller.prototype;
 const ref = (href) => context.XMN.mediaRefFromHref(href, 'alice');
@@ -4016,4 +4016,46 @@ test('B5 matrix: photo 1–4 keeps native carousel control until the exact last 
    assert.equal(unnecessaryProbes,0,
      'a proven 1–4 photo album must not trigger speculative unknown-edge probes');
  }finally{state.pathname=previous}
+});
+
+test('B5 fallback public API body enforces FOUR MILLION UTF-8 BYTES, not UTF-16 units',async()=>{
+ const original=context.TextEncoder;
+ context.TextEncoder=TextEncoder;
+ try{
+  const oversized='€'.repeat(1_500_000);
+  assert.equal(oversized.length,1_500_000);
+  assert.ok(Buffer.byteLength(oversized,'utf8')>4_000_000);
+  const tooLargeResult=await proto.readBoundedPublicBody.call({},{
+   body:null,async text(){return oversized}
+  });
+  assert.equal(tooLargeResult===null,true,
+   'multi-byte JSON body exceeds 4MB even when JS string length is smaller');
+  const exact='é'.repeat(2_000_000);
+  assert.equal(Buffer.byteLength(exact,'utf8'),4_000_000);
+  assert.equal((await proto.readBoundedPublicBody.call({},{
+   body:null,async text(){return exact}
+  }))?.length,2_000_000,'boundary accepts at most 4MB of actual UTF-8');
+ }finally{context.TextEncoder=original}
+});
+test('B5 streaming body cancels immediately when the real byte limit is exceeded',async()=>{
+ const previous=context.TextDecoder;
+ context.TextDecoder=TextDecoder;
+ let cancelled=0,released=0,reads=0;
+ const reader={
+  async read(){
+   reads++;
+   return {done:false,value:new Uint8Array(reads===1?3_000_000:1_100_000)};
+  },
+  async cancel(){cancelled++},
+  releaseLock(){released++}
+ };
+ try{
+  const result=await proto.readBoundedPublicBody.call({},{
+   body:{getReader(){return reader}}
+  });
+  assert.equal(result,null);
+  assert.equal(reads,2);
+  assert.equal(cancelled,1);
+  assert.equal(released,1);
+ }finally{context.TextDecoder=previous}
 });

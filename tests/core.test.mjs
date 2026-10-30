@@ -240,7 +240,7 @@ test('public media API page parses only matching-author photo links in order', (
     ['300:photo:2','https://pbs.twimg.com/media/B?format=jpg&name=large']]);
 });
 
-test('public API rejects bad CDN URLs, mixed attachments, duplicate IDs and wrong profile', () => {
+test('public API refuses malformed owned media pages rather than silently skipping posts', () => {
   const row=(id,photos,url='https://pbs.twimg.com/media/X?format=jpg&name=large')=>({
     type:'status',id,url:'https://x.com/alice/status/'+id,author:{screen_name:'alice'},
     media:{all:Array.from({length:photos},()=>({type:'photo',url}))},
@@ -256,8 +256,7 @@ test('public API rejects bad CDN URLs, mixed attachments, duplicate IDs and wron
     row('305',1),
   ],cursor:{bottom:null}};
   const r=XMN.parsePublicMediaPage(raw,'alice');
-  assert.deepEqual(Array.from(r.refs,x=>x.statusId),['305']);
-  assert.equal(r.cursor,null);
+  assert.equal(r,null,'a mixed, duplicate or malformed owned post makes the pagination page unusable');
   assert.equal(XMN.parsePublicMediaPage({...raw,code:429},'alice'),null);
   assert.equal(XMN.parsePublicMediaPage(raw,'invalid!'),null);
 });
@@ -300,4 +299,47 @@ test('actual third-party photo media payload produces a usable candidate after p
   assert.equal(out.refs.length,1);
   assert.equal(out.photos[0][1],
     'https://pbs.twimg.com/media/HVpT9ftbsAACG4v?format=jpg&name=large');
+});
+
+test('B5 provider page refuses to skip an authored mixed-media post and advance the cursor',()=>{
+ const owned=(id,attachments)=>({
+  type:'status',id,url:'https://x.com/alice/status/'+id,
+  author:{screen_name:'alice'},media:{all:attachments}
+ });
+ const photo=id=>[{type:'photo',
+  url:'https://pbs.twimg.com/media/IMG'+id+'?format=jpg&name=orig'}];
+ const valid=owned('400',photo('400'));
+ const mixed=owned('300',[
+  ...photo('300'),{type:'video',url:'https://video.twimg.com/example.mp4'}
+ ]);
+ const older=owned('200',photo('200'));
+ const input={code:200,results:[valid,mixed,older],
+  cursor:{top:'CURRENT',bottom:'AFTER_200'}};
+ assert.equal(XMN.parsePublicMediaPage(input,'alice'),null,
+  'a missing post cannot be hidden while still advancing the API cursor');
+ const invalid=owned('300',[{type:'photo',url:'https://evil.invalid/IMG300'}]);
+ assert.equal(XMN.parsePublicMediaPage({...input,results:[valid,invalid,older]},'alice'),null,
+  'a verified user-owned post with an invalid image CDN is a hard barrier');
+ const duplicated={...input,results:[valid,owned('400',photo('400')),older]};
+ assert.equal(XMN.parsePublicMediaPage(duplicated,'alice'),null,
+  'a duplicate user-owned status is not a valid unambiguous provider page');
+});
+test('B5 provider page still ignores unrelated owners and non-media text posts',()=>{
+ const photo={type:'photo',url:'https://pbs.twimg.com/media/IMG300?format=jpg&name=orig'};
+ const status=(id,author,media)=>({
+  type:'status',id,url:'https://x.com/'+author+'/status/'+id,
+  author:{screen_name:author},media
+ });
+ const result=XMN.parsePublicMediaPage({
+  code:200,results:[
+   status('300','alice',{all:[photo]}),
+   status('250','bob',{all:[{type:'video'}]}),
+   status('225','alice',{all:[]}),
+   status('200','alice',{all:[{type:'animated_gif'}]})
+  ],cursor:{bottom:'NEXT'}
+ },'alice');
+ assert.ok(result);
+ assert.deepEqual(Array.from(result.refs,r=>r.href),[
+  '/alice/status/300/photo/1','/alice/status/200/video/1']);
+ assert.equal(result.cursor,'NEXT');
 });

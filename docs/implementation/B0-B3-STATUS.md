@@ -585,3 +585,25 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 次の正本再開位置：
   `docs/implementation/B5-NATIVE-FIRST-ARROW-20261030.md`と
   `docs/implementation/B5-28-TO-29-20261030.md`を参照。
+
+---
+
+## 2026-10-30｜B5 API投稿の取りこぼし防止・4MB通信制限（独立検査）
+
+- `task/xmn-b5-provider-integrity-20261030`にて、既存主正本
+  `2e8587f`を起点に**新たなRED→GREENの2系統修正**を追加。
+- FxEmbedの公開APIに含まれる同一プロフィール所有の
+  不正／重複／混合メディアを無言でスキップすると、ページカーソルだけ
+  先に進んで投稿を永久に読み飛ばす。**媒体が曖昧ならページごと拒否**し、
+  現在の索引とXの画廊を壊さないよう修正。
+- ストリーム非対応時の4MB上限がUTF-16文字数だったため、
+  UTF-8で450万バイトの応答でも受理されていた。
+  TextEncoderによる正確なバイト制限へ修正。
+- Node335件（326PASS、0FAIL、3SKIP、実X TODO6）、
+  TypeScript、合成Chromium4件、実MV3 Chrome9系統がPASS。
+- 新しい非公開候補`v2.4.23`を準備。QAの実ステージングは
+  公式GitHub CIで同一SHAがSUCCESSになった後のみ。
+- 詳細・制約・再開位置：
+  `docs/implementation/B5-PROVIDER-INTEGRITY-20261030.md`。
+- 通常版・公開main・既存すべてのQAバージョン・
+  Chromeユーザープロファイルは未変更。
