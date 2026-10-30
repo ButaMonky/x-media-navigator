@@ -25,5 +25,19 @@ jobs:
             echo "::error::No Chrome/Chromium found: browser integration is a required quality gate."
             exit 1
           fi
+      - name: Required isolated Chrome MV3 B5 acceptance and security gate
+        run: |
+          if command -v google-chrome >/dev/null 2>&1; then
+            export XMN_CHROME_FOR_TESTING="$(command -v google-chrome)"
+          elif command -v chromium >/dev/null 2>&1; then
+            export XMN_CHROME_FOR_TESTING="$(command -v chromium)"
+          else
+            echo "::error::Chrome/Chromium is required for MV3 Service Worker acceptance."
+            exit 1
+          fi
+          npm run test:mv3:native
+          npm run test:mv3:fourphoto
+          npm run test:mv3:deny
+          npm run test:mv3:unverified
       - name: Verify committed compiled JS is up to date
         run: git diff --exit-code -- extension/content_script.js extension/background.js

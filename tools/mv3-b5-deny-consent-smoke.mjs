@@ -6,8 +6,17 @@ import {join, resolve} from 'node:path';
 const root=resolve('.');
 const installed=join(process.env.LOCALAPPDATA||tmpdir(),'XMediaNavigator','QA-Browser','chrome');
 const choices=existsSync(installed)?readdirSync(installed).sort().reverse():[];
-const edge=process.env.XMN_CHROME_FOR_TESTING || choices.map(v=>join(installed,v,'chrome-win64','chrome.exe')).find(existsSync);
-if(!edge || !existsSync(edge))throw Error('Chrome for Testing is required; set XMN_CHROME_FOR_TESTING');
+const alternatives=process.platform==='win32'?[]:[
+ '/usr/bin/google-chrome','/usr/bin/google-chrome-stable',
+ '/usr/bin/chromium','/usr/bin/chromium-browser'
+];
+// Always use a disposable temporary profile and localhost-only test origin.
+const edge=process.env.XMN_CHROME_FOR_TESTING ||
+  process.env.CHROMIUM_PATH ||
+  choices.map(v=>join(installed,v,'chrome-win64','chrome.exe')).find(existsSync) ||
+  alternatives.find(existsSync);
+if(!edge || !existsSync(edge))
+ throw Error('Chrome/Chromium is required for mandatory MV3 smoke');
 const dir=mkdtempSync(join(tmpdir(),'xmn-b5-deny-consent-'));
 const ext=join(dir,'extension');
 mkdirSync(ext);
@@ -50,13 +59,15 @@ let child=null, socket=null;
 try{
  const args=['--headless=new','--no-sandbox','--disable-gpu',
   '--no-first-run','--no-default-browser-check','--disable-background-networking',
+  '--disable-dev-shm-usage',
   '--remote-debugging-port=0','--remote-allow-origins=*',
   '--user-data-dir='+join(dir,'profile'),'--disable-extensions-except='+ext,
   '--load-extension='+ext,'http://127.0.0.1:'+port+'/alice/status/973/photo/1'];
- child=spawn(edge,args,{stdio:['ignore','ignore','pipe'],windowsHide:true});
+ child=spawn(edge,args,{stdio:['ignore','ignore','pipe'],
+  windowsHide:true,detached:process.platform!=='win32'});
  let stderr='';child.stderr.on('data',b=>{stderr+=b;if(stderr.length>3000)stderr=stderr.slice(-3000)});
  let debugPort=null;
- for(let i=0;i<70;i++){
+ for(let i=0;i<220;i++){
   const f=join(dir,'profile','DevToolsActivePort');
   if(existsSync(f)){
    debugPort=Number(readBytes(f,'utf8').split(/\r?\n/)[0]);break;
@@ -65,7 +76,7 @@ try{
  }
  if(!debugPort)throw Error('No Chrome DevToolsActivePort '+stderr.slice(-350));
  let page=null,targets=[];
- for(let i=0;i<40;i++){
+ for(let i=0;i<100;i++){
   try{
    targets=await (await fetch('http://127.0.0.1:'+debugPort+'/json/list')).json();
    page=targets.find(t=>t.type==='page'&&t.url.startsWith('http://127.0.0.1:'));
@@ -76,7 +87,7 @@ try{
  if(!page)throw Error('Page target missing '+JSON.stringify(targets).slice(0,500));
  socket=new WebSocket(page.webSocketDebuggerUrl);
  await new Promise((res,rej)=>{
-  const timeout=setTimeout(()=>rej(Error('CDP WebSocket timeout')),5000);
+  const timeout=setTimeout(()=>rej(Error('CDP WebSocket timeout')),12000);
   socket.onopen=()=>{clearTimeout(timeout);res()};
   socket.onerror=e=>{clearTimeout(timeout);rej(Error('CDP WebSocket error'))};
  });
@@ -92,12 +103,20 @@ try{
   }catch{}
  };
  const command=(method,params={})=>new Promise((resolve,reject)=>{
-  const id=seq++;requests.set(id,{resolve,reject});
+  const id=seq++;
+  const timer=setTimeout(()=>{
+    requests.delete(id);
+    reject(Error('MV3 CDP '+method+' timed out'));
+  },12000);
+  requests.set(id,{
+    resolve(value){clearTimeout(timer);resolve(value)},
+    reject(error){clearTimeout(timer);reject(error)}
+  });
   socket.send(JSON.stringify({id,method,params}));
  });
  await command('Runtime.enable');
  let result='waiting',details='';
- for(let i=0;i<150;i++){
+ for(let i=0;i<240;i++){
   let r;
   try{r=await command('Runtime.evaluate',{
     expression:"({result:document.documentElement.dataset.mv3WorkerResult||'waiting',signals:document.documentElement.dataset.mv3WorkerSignals||'',error:document.documentElement.dataset.mv3WorkerError||''})",
@@ -118,8 +137,15 @@ try{
 }finally{
  if(socket){try{socket.close()}catch{}}
  if(child?.pid){
-  try{execFileSync('taskkill.exe',['/PID',String(child.pid),'/T','/F'],
-   {stdio:'ignore',timeout:10000})}catch{}
+  if(process.platform==='win32'){
+    try{execFileSync('taskkill.exe',['/PID',String(child.pid),'/T','/F'],
+      {stdio:'ignore',timeout:10000})}
+    catch{try{child.kill('SIGKILL')}catch{}}
+  }else{
+    // Kill only the disposable Chromium process group after this smoke.
+    try{process.kill(-child.pid,'SIGKILL')}
+    catch{try{child.kill('SIGKILL')}catch{}}
+  }
  }
  await nap(700);
  await new Promise(resolve=>server.close(resolve));
