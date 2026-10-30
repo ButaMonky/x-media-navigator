@@ -658,12 +658,12 @@ var XMN;
 var XMN;
 (function (XMN) {
     class SessionStore {
-        async call(op, profile, session, page, manifest, href) {
+        async call(op, profile, session, page, manifest, href, direction) {
             try {
                 if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage)
                     return null;
                 const data = await chrome.runtime.sendMessage({
-                    kind: 'xmn-store-v1', op, profile, session, page, manifest, href
+                    kind: 'xmn-store-v1', op, profile, session, page, manifest, href, direction
                 });
                 if (!data || typeof data !== 'object')
                     return null;
@@ -733,6 +733,21 @@ var XMN;
                 r.page < 0 || r.page >= 64)
                 return null;
             return { session: r.session, page: r.page };
+        }
+        /** Never generate a target URL: only a committed adjacent page is eligible. */
+        async findAdjacentCheckpoint(profile, href, direction) {
+            const current = XMN.mediaRefFromHref(href, profile);
+            if (!current || current.kind === null || current.href !== href ||
+                (direction !== -1 && direction !== 1))
+                return null;
+            const r = await this.call('checkpoint.adjacent', profile, undefined, undefined, undefined, href, direction);
+            if (r?.ok !== true || typeof r.href !== 'string' || !Number.isSafeInteger(r.page) ||
+                r.page < 0 || r.page >= 64)
+                return null;
+            const target = XMN.mediaRefFromHref(r.href, profile);
+            if (!target || target.kind === null || target.href !== r.href)
+                return null;
+            return { href: r.href, page: r.page };
         }
     }
     XMN.SessionStore = SessionStore;
@@ -890,6 +905,8 @@ var XMN;
             // Only the most recent eligible end-of-list key may resume after warmup.
             this.pendingBoundary = null;
             this.pendingDocumentHandoff = null;
+            this.checkpointBoundaryPending = false;
+            this.restoredCheckpointPage = null;
             // Warm only after the user has explicitly allowed this external provider.
             this.publicApiWarmCursor = null;
             this.publicApiWarmTimer = null;
@@ -1019,6 +1036,7 @@ var XMN;
             if (keys.size === 0)
                 return;
             this.publicSessionRestored = true;
+            this.restoredCheckpointPage = restoredPage;
             this.originProfile = profile;
             this.originTimeline = data.timeline;
             this.refs = refs;
@@ -1578,6 +1596,8 @@ var XMN;
             this.publicApiLoading = false;
             this.pendingBoundary = null;
             this.pendingDocumentHandoff = null;
+            this.checkpointBoundaryPending = false;
+            this.restoredCheckpointPage = null;
             this.publicApiWarmCursor = null;
             if (this.publicApiWarmTimer !== null)
                 window.clearTimeout(this.publicApiWarmTimer);
@@ -2197,7 +2217,7 @@ var XMN;
                 return;
             // Media refs are append-only within a session; only their count,
             // current route, or navigation busy state changes the post controls.
-            const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}`;
+            const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}|${this.restoredCheckpointPage ?? -1}`;
             if (this.viewerStateSnapshot?.viewer === viewer && this.viewerStateSnapshot.key === key)
                 return;
             const current = this.activeIndex();
@@ -2205,8 +2225,10 @@ var XMN;
             const prev = controls.querySelector('.xmn-prev');
             const next = controls.querySelector('.xmn-next');
             const currentRef = current !== null ? this.refs[current] : null;
+            const canReturnToCommittedPage = this.publicSessionRestored && (this.restoredCheckpointPage ?? 0) > 0;
             if (prev)
-                prev.disabled = this.navigationBusy || !currentRef || XMN.adjacentPostIndex(this.refs, currentRef.statusId, -1, current ?? undefined) === null;
+                prev.disabled = this.navigationBusy || !currentRef ||
+                    (XMN.adjacentPostIndex(this.refs, currentRef.statusId, -1, current ?? undefined) === null && !canReturnToCommittedPage);
             // At the last known post clicking the next button may load more media.
             if (next)
                 next.disabled = this.navigationBusy || !currentRef;
@@ -3418,10 +3440,72 @@ var XMN;
             return displayed === handoff.targetPhotoIdentity &&
                 (!assigned || assigned === handoff.targetPhotoIdentity);
         }
+        /** Read-only page hop, using ONLY a pre-committed adjacent X media ref.
+         * This is an ordinary full document navigation; never spoof X's SPA.
+         */
+        async tryCommittedPageBoundary(direction, currentRef, oldViewer) {
+            if (!this.publicSessionRestored || !this.originProfile ||
+                typeof this.sessionStore?.findAdjacentCheckpoint !== 'function')
+                return false;
+            if (this.checkpointBoundaryPending)
+                return true;
+            const profile = this.originProfile;
+            const path = window.location.pathname;
+            const generation = this.navGeneration;
+            this.checkpointBoundaryPending = true;
+            try {
+                const result = await this.sessionStore.findAdjacentCheckpoint(profile, path, direction);
+                if (generation !== this.navGeneration || this.originProfile !== profile ||
+                    window.location.pathname !== path || !oldViewer.isConnected ||
+                    this.navigationBusy || document.hidden)
+                    return true;
+                if (!result) {
+                    // The manifest may have expired since the historical page loaded.
+                    if (direction === -1 && this.restoredCheckpointPage !== null) {
+                        this.restoredCheckpointPage = null;
+                        this.viewerStateSnapshot = null;
+                        this.updateViewerState();
+                    }
+                    return false;
+                }
+                const target = XMN.mediaRefFromHref(result.href, profile);
+                if (!target || target.kind === null || target.href !== result.href ||
+                    (direction === 1 &&
+                        target.statusId.padStart(19, '0') >= currentRef.statusId.padStart(19, '0')) ||
+                    (direction === -1 &&
+                        target.statusId.padStart(19, '0') <= currentRef.statusId.padStart(19, '0'))) {
+                    diagnostic('checkpoint.boundary_rejected', { reason: 'invalid_target' });
+                    return true;
+                }
+                const pending = this.pendingDocumentHandoff;
+                if (pending && pending.generation === generation &&
+                    Date.now() - pending.started < 10000)
+                    return true;
+                this.pendingDocumentHandoff = {
+                    target: target.href, started: Date.now(), generation
+                };
+                diagnostic('checkpoint.boundary_navigation', {
+                    direction, page: result.page
+                });
+                try {
+                    window.location.assign(target.href);
+                }
+                catch {
+                    this.pendingDocumentHandoff = null;
+                    this.toast('保存済みページへの移動に失敗しました');
+                }
+                return true;
+            }
+            finally {
+                if (generation === this.navGeneration)
+                    this.checkpointBoundaryPending = false;
+            }
+        }
         async navigate(direction) {
             const currentIndex = this.activeIndex();
             const oldViewer = this.viewer;
-            if (this.navigationBusy || currentIndex === null || !oldViewer || !this.originProfile)
+            if (this.navigationBusy || this.checkpointBoundaryPending ||
+                currentIndex === null || !oldViewer || !this.originProfile)
                 return;
             const currentRef = this.refs[currentIndex];
             const nextIndex = XMN.adjacentPostIndex(this.refs, currentRef.statusId, direction, currentIndex);
@@ -3430,6 +3514,12 @@ var XMN;
             // the exact current modal/replies panel until X itself loads more cards
             // from a user-initiated media-timeline scroll.
             if (nextIndex === null) {
+                // A previously verified page is preferable to another third-party
+                // request; only the worker can supply its exact adjoining URL.
+                // Do not add an asynchronous hop to the ordinary X-native boundary.
+                if (this.publicSessionRestored &&
+                    await this.tryCommittedPageBoundary(direction, currentRef, oldViewer))
+                    return;
                 if (direction !== 1)
                     return;
                 if (this.publicApiLoading) {

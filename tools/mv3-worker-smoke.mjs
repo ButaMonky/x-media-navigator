@@ -30,8 +30,8 @@ writeFileSync(join(ext,'manifest.json'),JSON.stringify({
 },null,2));
 const probe=`
 (async()=>{
- const m=(op,session,page,manifest,href)=>chrome.runtime.sendMessage({
-  kind:'xmn-store-v1',op,profile:'alice',session,page,manifest,href
+ const m=(op,session,page,manifest,href,direction)=>chrome.runtime.sendMessage({
+  kind:'xmn-store-v1',op,profile:'alice',session,page,manifest,href,direction
  });
  if(location.pathname.endsWith('/media')){
    sessionStorage.setItem('xmn-fxembed-consent-alice','yes');
@@ -85,33 +85,68 @@ const probe=`
    ].join(','));
    // Main saved session still points to 500/400, while this exact URL is
    // owned by the separately committed 300/200 historical checkpoint.
-   location.assign('/alice/status/200/photo/1');
+   location.assign('/alice/status/300/photo/1');
    return;
  }
  const session=await m('session.get');
  const consent=await m('consent.get');
+ const phase=sessionStorage.getItem('xmn-checkpoint-smoke-phase');
+ if(location.pathname==='/alice/status/400/photo/1' &&
+    phase==='older_page_verified'){
+   const found=await m('checkpoint.find',undefined,undefined,
+     undefined,location.pathname);
+   const forward=await m('checkpoint.adjacent',undefined,undefined,
+     undefined,location.pathname,1);
+   const good=session?.session?.cursor==='NEXT'&&consent?.granted===true&&
+     found?.page===0&&forward?.page===1&&
+     forward?.href==='/alice/status/300/photo/1';
+   setTimeout(()=>{
+     const label=document.querySelector('.xmn-status')?.textContent;
+     const next=document.querySelector('.xmn-next');
+     const replies=document.getElementById('replies');
+     if(good&&label==='投稿 2 / 2+'&&next&&!next.disabled&&
+        replies?.textContent==='Original replies'){
+       sessionStorage.setItem('xmn-checkpoint-smoke-phase','newer_page_verified');
+       next.click();
+     }else{
+       document.documentElement.dataset.mv3WorkerResult='failed';
+       document.documentElement.dataset.mv3WorkerError='forward_boundary_validation';
+     }
+   },1300);
+   return;
+ }
  const checkpoint=await m('checkpoint.get',undefined,1);
  const manifest=await m('manifest.get');
  const located=await m('checkpoint.find',undefined,undefined,
    undefined,location.pathname);
- const ok=location.pathname==='/alice/status/200/photo/1'&&
+ const adjacent=await m('checkpoint.adjacent',undefined,undefined,
+   undefined,location.pathname,-1);
+ const ok=location.pathname==='/alice/status/300/photo/1'&&
    session?.ok===true&&session?.session?.refs?.length===2&&
    session.session.cursor==='NEXT'&&consent?.granted===true&&
    checkpoint?.ok===true&&checkpoint?.session?.cursor===null&&
    manifest?.ok===true&&manifest.manifest?.pages?.length===2&&
    located?.ok===true&&located?.page===1&&
-   located?.session?.refs?.at(-1)==='/alice/status/200/photo/1';
+   located?.session?.refs?.at(0)==='/alice/status/300/photo/1'&&
+   adjacent?.ok===true&&adjacent?.page===0&&
+   adjacent?.href==='/alice/status/400/photo/1';
  setTimeout(()=>{
    const label=document.querySelector('.xmn-status')?.textContent||'';
    const previous=document.querySelector('.xmn-prev');
    const viewer=document.querySelector('[data-testid="swipe-to-dismiss"]');
    const replies=document.getElementById('replies');
-   const visible=label==='投稿 2 / 2'&&previous&&!previous.disabled&&
+   const visible=label==='投稿 1 / 2'&&previous&&!previous.disabled&&
      !!viewer?.isConnected&&replies?.textContent==='Original replies';
-   document.documentElement.dataset.mv3WorkerResult=ok&&visible?'passed':'failed';
+   if(ok&&visible&&phase===null){
+     sessionStorage.setItem('xmn-checkpoint-smoke-phase','older_page_verified');
+     previous.click();
+     return;
+   }
+   const complete=ok&&visible&&phase==='newer_page_verified';
+   document.documentElement.dataset.mv3WorkerResult=complete?'passed':'failed';
    document.documentElement.dataset.mv3WorkerSignals=[
     !!session?.ok,session?.session?.refs?.length||0,!!consent?.granted,
-    !!visible,label
+    !!visible,label,phase||'no_phase'
    ].join(',');
  },1300);
 })().catch(e=>{
@@ -121,8 +156,8 @@ const probe=`
 writeFileSync(join(ext,'probe.js'),probe);
 const server=createServer((req,res)=>{
  res.setHeader('content-type','text/html; charset=utf-8');
- if(req.url?.includes('/status/200/')){
-   res.end(`<!doctype html><html><head><title>B2 historical checkpoint modal fixture</title></head><body>
+ if(req.url?.includes('/status/300/')||req.url?.includes('/status/400/')){
+   res.end(`<!doctype html><html><head><title>B2 adjacent checkpoint modal fixture</title></head><body>
     <main><div data-testid="primaryColumn"></div></main>
     <div role="dialog"><button data-testid="app-bar-close" aria-label="Close">Close</button>
      <div data-testid="swipe-to-dismiss" style="width:690px;height:420px">
