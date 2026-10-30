@@ -187,3 +187,16 @@
 - B2〜B5関連12ブランチを比較。主要作業成果は主開発に包含。独立 `task/xmn-b5-consent-once-20261030` は履歴上divergedだが、TS・生成JS・manifest・package・同意試験・同意実装記録のblob SHAは主開発と一致。未統合の機能差分とは判断しない。
 - **BLOCKED**: 今回Windows側でもBrowser接続は `Browser access requires the originating browser context` で拒否。拒否の迂回、ログイン済みChromeのCookie・token・HAR読出しは禁止。実ログインXの28→29、写真／GIF／動画、SPAと返信欄、450件超、Paint／転送／CPU-RAMは未受入。
 - 再開位置: 固定QAフォルダの `QA_README.txt` に沿い、旧XMNを一時無効化、手動 `Load unpacked`、実X受入。接続済みブラウザの同一コンテキストが使えればそこで検証。受入不合格箇所のみ別ブランチで修正。**公開mainへの統合と100%宣言は保留**。
+
+---
+
+## 2026-10-30 追記｜Chrome固定フォルダ1本化・旧QA整理
+
+- 作業ID: `XMN-CHROME-SINGLE-FOLDER-20261030`。Chrome用唯一の展開済みフォルダを `%USERPROFILE%\Downloads\X-Media-Navigator-Current` と確定。実ファイルを **v2.4.18 → v2.4.26 Consent PRIVATE QA** に更新した（Manifest V3 / background Service Worker / storage権限）。同梱10ファイルは固定QA原本とSHA-256一致。
+- 根拠は非公開Gitのv2.4.26検証済み成果物と、ZIP SHA-256 `AB3BDB42A23B79A4B2ACDCC9BDE79D7927C10390481D6DD416626396576D93E7`。この更新は配布物の配置であり、実X検証のPASS・正式公開を意味しない。
+- 旧固定版v2.4.18の6ファイルは `%USERPROFILE%\Downloads\X-Media-Navigator-Archive\versions\current-v2.4.18-before-v2.4.26-20261030` に退避（削除なし）。
+- Downloads直下に分散していた旧QA・ZIP・sha256・旧バックアップ・QA証拠など **17項目** は `X-Media-Navigator-Archive\legacy-downloads` に移した。Downloads直下のXMNは `X-Media-Navigator-Current` と `X-Media-Navigator-Archive` の2フォルダのみ。Archive内に利用方法のREADMEを保存。
+- Chrome本体の既存拡張機能の有効／無効、読込パス、再読み込みは**未変更・未確認**。旧QAをChromeが読み込んでいれば拡張管理で無効化し、Currentを一度だけ `Load unpacked` する必要がある。
+- `Update-Chrome-QA.cmd` / `tools/update-chrome-qa.ps1` は**旧FxEmbed QA別フォルダを作成するレガシー手順**であり、現時点で実行禁止。今後は安全検査とアーカイブ付きの **Current単一更新** に統一するまで使用しない。古いQAフォルダの再増殖を防ぐ。
+- `Documents` 配下の複数Git worktreeは非公開開発領域であり、未コミット差分・独立ブランチが残るため**一括削除や手動移動を行っていない**。Git保存と検査を済ませ、個別に安全性が確認できるまでは保持する。
+- 次の再開位置: Chrome側で旧XMNを無効化・Currentだけを読み込み、実Xで28→29／複数写真・動画・GIF・返信欄・長大ページングの受入。FAILだけを新ブランチで修正。正式公開ゲートは維持。
