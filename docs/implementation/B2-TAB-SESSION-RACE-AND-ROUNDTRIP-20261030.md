@@ -79,3 +79,22 @@
 - 64ページ制限は安全側の上限で、超過時の保存・退避戦略は未実装。
 - GitHub ActionsのNode/型検査/必須Chromium/生成JS一致を確認し、
   主開発正本へFF-onlyで統合する。元担当の未コミットworktreeは保護する。
+
+## GitHub Actionsの初回FAIL・修復（必須Chromiumを維持）
+
+- 初回コードコミット：`26ea869fee013ebe63cab8217267aaed59c235ad`。
+  GitHub Actions run `41004745029`：**FAIL**。
+  Node 321件とTypeScript検査は成功したが、Ubuntuの
+  `tests/browser.test.mjs`長尺40シナリオで
+  **`data-xmn-results`の結果マーカーが取得できなかった**。
+  実行時間約2.4秒でDOM途中のダンプが返った。試験自体を緩和しない。
+- 対応：`--virtual-time-budget=65000 --dump-dom`による一度きりの
+  DOM取得を、この長尺テストだけ**実時間CDPの結果マーカー監視**に変更。
+  Chrome専用の一時プロファイル・CDPポートを使い、
+  同じ40条件すべてが完了するまで一定間隔で状態を確認。
+  失敗、例外、結果不在は引き続き明確なFAIL。
+- 別テストのCanvas・セッション復元の検証方法は変更しない。
+  Chrome/Chromium必須CI品質ゲートを外さず、スキップもしない。
+- Windows Chrome for Testing 156で、変更後の4ブラウザケースが
+  **4 PASS／0 FAIL**。長尺ケースは実時間約33秒。
+  Linux CIでの再検証は修復コミットpush後の結果を正本にする。

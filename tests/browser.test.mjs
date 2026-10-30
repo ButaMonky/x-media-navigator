@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -618,6 +618,100 @@ function runChromium(url, userDataDir) {
   });
 }
 
+/** Deterministic REAL-time CDP wait; virtual-time --dump-dom may exit before
+ * a long asynchronous gallery scenario has written its result marker on Linux.
+ * Keep all 40 assertions and the mandatory browser quality gate unchanged.
+ */
+async function runChromiumUntilResult(url,userDataDir) {
+  const nap=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+  const args=['--headless=new','--no-sandbox','--disable-gpu',
+    '--disable-dev-shm-usage','--disable-background-networking',
+    '--no-first-run','--no-default-browser-check',
+    '--remote-allow-origins=*','--remote-debugging-port=0',
+    '--user-data-dir='+userDataDir,url];
+  const child=spawn(browser,args,{stdio:['ignore','ignore','pipe'],
+    windowsHide:true,detached:process.platform!=='win32'});
+  let stderr='', launchError=null, socket=null;
+  child.stderr.on('data',data=>{
+    stderr+=String(data);
+    if(stderr.length>3000)stderr=stderr.slice(-3000);
+  });
+  child.on('error',error=>{launchError=error});
+  try {
+    const portFile=join(userDataDir,'DevToolsActivePort');
+    let port=null;
+    for(let i=0;i<150;i++){
+      if(launchError)throw launchError;
+      if(existsSync(portFile)){
+        port=Number(readFileSync(portFile,'utf8').split(/\r?\n/)[0]);
+        if(Number.isInteger(port)&&port>0)break;
+      }
+      await nap(100);
+    }
+    if(!port)throw Error('DevTools port missing '+stderr.slice(-500));
+    let page=null;
+    for(let i=0;i<90;i++){
+      try{
+        const targets=await (await fetch('http://127.0.0.1:'+port+'/json/list')).json();
+        page=targets.find(item=>item.type==='page'&&item.url.startsWith(new URL(url).origin+'/'));
+        if(page)break;
+      }catch{}
+      await nap(100);
+    }
+    if(!page)throw Error('Chrome page target missing '+stderr.slice(-500));
+    socket=new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>reject(Error('CDP socket timeout')),6000);
+      socket.addEventListener('open',()=>{clearTimeout(timer);resolve()},{once:true});
+      socket.addEventListener('error',()=>{clearTimeout(timer);reject(Error('CDP socket failure'))},{once:true});
+    });
+    const pending=new Map();
+    let sequence=0;
+    socket.addEventListener('message',event=>{
+      let reply;
+      try{reply=JSON.parse(String(event.data))}catch{return}
+      const state=pending.get(reply.id);
+      if(!state)return;
+      clearTimeout(state.timer);
+      pending.delete(reply.id);
+      if(reply.error)state.reject(Error(JSON.stringify(reply.error)));
+      else state.resolve(reply.result);
+    });
+    const command=(method,params={})=>new Promise((resolve,reject)=>{
+      const id=++sequence;
+      const timer=setTimeout(()=>{
+        pending.delete(id);
+        reject(Error('CDP '+method+' timed out'));
+      },6000);
+      pending.set(id,{resolve,reject,timer});
+      socket.send(JSON.stringify({id,method,params}));
+    });
+    await command('Runtime.enable');
+    let latest='';
+    for(let i=0;i<300;i++){
+      const reply=await command('Runtime.evaluate',{
+        expression:"document.body?.getAttribute('data-xmn-results')||''",
+        returnByValue:true
+      });
+      latest=reply?.result?.value??'';
+      if(latest)return latest;
+      await nap(250);
+    }
+    throw Error('Browser never finished synthetic gallery after 75s; '+stderr.slice(-500));
+  }finally{
+    if(socket)try{socket.close()}catch{}
+    if(child.pid){
+      if(process.platform==='win32'){
+        try{execFileSync('taskkill.exe',['/PID',String(child.pid),'/T','/F'],
+          {stdio:'ignore',timeout:10000})}catch{child.kill('SIGKILL')}
+      }else{
+        try{process.kill(-child.pid,'SIGKILL')}catch{child.kill('SIGKILL')}
+      }
+    }
+    await nap(500);
+  }
+}
+
 test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, reflow, lazy load, graceful fallback', {
   skip: process.env.XMN_RUN_CHROMIUM !== '1' ? 'Requires XMN_RUN_CHROMIUM=1 and functioning headless Chromium' : !existsSync(browser) ? 'Chromium not installed' : false,
 }, async () => {
@@ -634,10 +728,7 @@ test('Chromium synthetic-X DOM: gallery edges, native arrows, post grouping, ref
   const dir = mkdtempSync(join(tmpdir(), 'xmn-chromium-'));
   try {
     const port = server.address().port;
-    const output = await runChromium(`http://127.0.0.1:${port}/alice/media`, dir);
-    const match = output.match(/data-xmn-results="([^"]+)"/);
-    assert.ok(match, 'Missing browser result marker; output: ' + output.slice(-1000));
-    const report = match[1].replace(/&quot;/g,'"').replace(/&amp;/g,'&');
+    const report = await runChromiumUntilResult(`http://127.0.0.1:${port}/alice/media`, dir);
     assert.ok(!report.includes('FAIL') && !report.includes('EXCEPTION'), report);
     assert.equal(report.split('|').length, 40, report);
   } finally {

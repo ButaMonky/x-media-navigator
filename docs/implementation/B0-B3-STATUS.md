@@ -379,3 +379,13 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 細部：`docs/implementation/B2-TAB-SESSION-RACE-AND-ROUNDTRIP-20261030.md`。
 - 公開main・安定Draft PR #17・通常/QAインストールは変更せず、
   CIを確認してからFF-onlyで開発正本に統合。
+
+### 継続監査｜Linux必須Chromium結果マーカーの競合
+
+- `26ea869` GitHub CI run `41004745029` は、Node/TS成功、
+  必須Chromium合成の結果マーカー不在によるFAIL。
+- 長尺40シナリオを実時間CDP待機へ置換（全40条件維持）。
+  一時Chromeプロファイル・独立CDPを用いるため、
+  Xサイトやユーザーブラウザ・履歴は操作しない。
+- Windows Chrome for Testing 156の合成4ケースPASS。
+  修復後のGitHub CIを確認するまで統合しない。
