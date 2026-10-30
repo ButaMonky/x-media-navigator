@@ -42,5 +42,8 @@ jobs:
           npm run test:mv3:fourphoto
           npm run test:mv3:deny
           npm run test:mv3:unverified
+          npm run test:mv3:history
+          npm run test:mv3:bfcache
+          npm run test:mv3:reject
       - name: Verify committed compiled JS is up to date
         run: git diff --exit-code -- extension/content_script.js extension/background.js

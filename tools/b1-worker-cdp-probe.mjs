@@ -6,7 +6,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, readFileSync,
   existsSync, rmSync } from 'node:fs';
 import {tmpdir} from 'node:os';
-import {join} from 'node:path';
+import {join,resolve,dirname,basename} from 'node:path';
 import {fileURLToPath} from 'node:url';
 const sourceRoot=fileURLToPath(new URL('..',import.meta.url));
 const browser=process.env.CHROMIUM_PATH||process.env.XMN_CHROME_FOR_TESTING||
@@ -33,6 +33,24 @@ const server=createServer((_req,res)=>{
  res.end('<!doctype html><html><head><title>XMN LOCAL WORKER CDP</title></head><body>Local only</body></html>');
 });
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+/** Retry OS/AV locks only for this disposable profile, never any user data. */
+const cleanupDisposableProfile=async()=>{
+ const folder=resolve(tmp);
+ if(dirname(folder)!==resolve(tmpdir())||
+    !basename(folder).startsWith('xmn-worker-cdp-'))
+  throw Error('Refusing to delete an unverified test directory');
+ for(let attempt=0;attempt<30;attempt++){
+  try{
+   rmSync(folder,{recursive:true,force:true,maxRetries:2,retryDelay:100});
+   return;
+  }catch(error){
+   if(attempt===29||
+      !['EPERM','EACCES','EBUSY','ENOTEMPTY'].includes(error?.code))
+    throw error;
+   await sleep(500);
+  }
+ }
+};
 const readPort=async()=>{
  for(let i=0;i<180;i++){
   const f=join(profile,'DevToolsActivePort');
@@ -77,7 +95,7 @@ try{
   '--remote-allow-origins=*','--remote-debugging-port=0',
   '--disable-extensions-except='+ext,'--load-extension='+ext,
   '--user-data-dir='+profile,local];
- child=spawn(browser,args,{stdio:['ignore','ignore','pipe'],windowsHide:true});
+ child=spawn(browser,args,{stdio:['ignore','ignore','pipe'],windowsHide:true,detached:process.platform!=='win32'});
  let browserErrors='';
  child.stderr.on('data',b=>browserErrors+=String(b).slice(-750));
  const port=await readPort();
@@ -109,12 +127,16 @@ try{
 }finally{
  await new Promise(resolve=>server.close(resolve));
  if(child?.pid){
-  try{execFileSync('taskkill.exe',['/PID',String(child.pid),'/T','/F'],
-    {windowsHide:true,timeout:8000,stdio:'ignore'});}catch{
-   try{child.kill('SIGKILL')}catch{}
+  if(process.platform==='win32'){
+   try{execFileSync('taskkill.exe',['/PID',String(child.pid),'/T','/F'],
+     {windowsHide:true,timeout:10000,stdio:'ignore'});}catch{
+    try{child.kill('SIGKILL')}catch{}
+   }
+  }else{
+   try{process.kill(-child.pid,'SIGKILL')}catch{try{child.kill('SIGKILL')}catch{}}
   }
-  await sleep(400);
+  await sleep(500);
  }
- try{rmSync(tmp,{recursive:true,force:true,maxRetries:8,retryDelay:250})}
+ try{await cleanupDisposableProfile()}
  catch(e){console.error('Temporary browser profile cleanup failed:',e.message);process.exitCode=2}
 }

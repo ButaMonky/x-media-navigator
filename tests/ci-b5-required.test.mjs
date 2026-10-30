@@ -6,7 +6,9 @@ const cases=[
  ['test:mv3:native','mv3-b5-native-28-to-29-smoke.mjs'],
  ['test:mv3:fourphoto','mv3-b5-four-photos-to-next-smoke.mjs'],
  ['test:mv3:deny','mv3-b5-deny-consent-smoke.mjs'],
- ['test:mv3:unverified','mv3-b5-unverified-cursor-smoke.mjs']
+ ['test:mv3:unverified','mv3-b5-unverified-cursor-smoke.mjs'],
+ ['test:mv3:history','mv3-history-jump-smoke.mjs'],
+ ['test:mv3:bfcache','mv3-history-back-forward-smoke.mjs']
 ];
 test('B5 protected CI runs all real Chrome MV3 acceptance and refusal cases',()=>{
  const workflow=get('.github/workflows/check.yml');
@@ -20,6 +22,7 @@ test('B5 protected CI runs all real Chrome MV3 acceptance and refusal cases',()=
    assert.ok(workflow.includes('npm run '+name),name);
    assert.equal(pkg.scripts[name],'npm run build && node tools/'+file);
  }
+ assert.match(workflow,/npm run test:mv3:reject/,'mandatory foreign-origin rejection');
  assert.match(workflow,/Verify committed compiled JS is up to date/);
 });
 test('B5 CI smoke always uses temporary profile, localhost, bounded CDP',()=>{

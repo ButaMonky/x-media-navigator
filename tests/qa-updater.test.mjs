@@ -32,7 +32,7 @@ test('QA manifest, package and lockfile share the same Chrome version',()=>{
   assert.equal(pkg.version,lock.version);
   assert.equal(pkg.version,lock.packages[''].version);
   assert.equal(pkg.scripts['qa:update'].includes('update-chrome-qa.ps1'),true);
-  assert.match(manifest.version_name,/(?:FxEmbed QA|B0-B3 candidate|B4 private QA candidate|B5 private QA candidate)/);
+  assert.match(manifest.version_name,/(?:FxEmbed QA|B0-B3 candidate|B4 private QA candidate|B5 private QA candidate|History private QA candidate)/);
 });
 
 test('user diagnostics contain named events but never log full media URLs or cursor values',()=>{

@@ -654,3 +654,25 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - Node350件（341PASS・0FAIL・3SKIP・実X TODO6）、TypeScript PASS。
 - 根拠・残作業：`docs/implementation/B3-CKPT-CAPACITY-BRIDGE-20261030.md`。
 - 実Xの受入・公開は未了。既存QA版や並行担当の作業ツリーは変更しない。
+
+---
+
+## 2026-10-30｜B5 Chrome履歴のWorker整合・BFCache・新QA v2.4.24
+
+- 開発正本`3e2a6ab`から独立ブランチ
+  `task/xmn-b5-history-hardening-20261030`で、
+  ブラウザHistoryの非隣接ページ復元をWorkerで原子的に実装。
+- `checkpoint.restore`がトップフレーム正確URLに属する不変ページだけを
+  選び、現在の`manifest.activePage`と`session`を一緒に更新。
+  Worker拒否・不一致・保存失敗時は既存状態を維持。
+- BFCache`pageshow.persisted`による昔の画面へ復帰した場合も、
+  Xの画像と返信欄を必要以上に再生成せず保存ページを正しく復元。
+- Worker3件、Controller3件のRED→GREEN。
+  Node356件（347PASS、0FAIL、3SKIP、実X TODO6）、TS PASS、
+  実Chromeで3ページの行き来・Back/Forwardの2ケースPASS。
+- Linux GitHub CIの必須MV3ゲートは既存4ケースに履歴2ケースを追加。
+- 新しいQA候補はv2.4.24を別フォルダへ配置し、
+  旧通常版・v2.4.20～v2.4.23旧QAを変更しない。
+- 受入詳細・未完了・再開点：
+  `docs/implementation/B5-HISTORY-ATOMIC-QA-20261030.md`。
+- 実Xログイン済みの操作・性能・公開は未了。

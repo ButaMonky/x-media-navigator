@@ -4192,3 +4192,77 @@ test('B4 offline transition blocks draining a pending third image after decode c
  }finally{context.navigator=oldNav;context.Image=oldImage;document.hidden=oldHidden;
   context.window.setTimeout=oldSet;context.window.clearTimeout=oldClear;}
 });
+
+test('B5 BFCache re-checkout keeps an already-matching X viewer and media index intact',async()=>{
+ const before=state.pathname;
+ state.pathname='/alice/status/900/photo/1';
+ const refs=[ref('/alice/status/900/photo/1'),ref('/alice/status/800/photo/1')];
+ const requests=[];
+ let updates=0;
+ const instance=Object.assign(Object.create(proto),{
+  navGeneration:7,originProfile:'alice',publicSessionRestored:true,
+  refs,restoredCheckpointPage:2,viewerStateSnapshot:{key:'old'},
+  sessionStore:{
+   async loadPageManifest(profile){requests.push(['manifest',profile]);return {pages:[{},{}]};},
+   async restoreCheckpointForRoute(profile,href){
+    requests.push(['restore',profile,href]);
+    return {page:0,session:{refs:refs.map(r=>r.href)}};
+   }
+  },
+  updateViewerState(){updates++},
+  resetSession(){throw Error('Exact same page must not be torn down');}
+ });
+ try{
+  await proto.reconcileBfcacheHistoryPage.call(instance);
+  assert.equal(instance.restoredCheckpointPage,0);
+  assert.strictEqual(instance.refs,refs,'existing X media refs should remain mounted');
+  assert.equal(instance.viewerStateSnapshot,null);
+  assert.equal(updates,1);
+  assert.deepEqual(requests,[
+   ['manifest','alice'],
+   ['restore','alice','/alice/status/900/photo/1']
+  ]);
+ }finally{state.pathname=before}
+});
+test('B5 BFCache without a verified manifest leaves X native media session untouched',async()=>{
+ const before=state.pathname;
+ state.pathname='/alice/status/900/photo/1';
+ const refs=[ref('/alice/status/900/photo/1')];
+ let attempts=0;
+ const instance=Object.assign(Object.create(proto),{
+  navGeneration:3,originProfile:'alice',publicSessionRestored:false,
+  refs,restoredCheckpointPage:null,
+  sessionStore:{
+   async loadPageManifest(){attempts++;return null;},
+   async restoreCheckpointForRoute(){throw Error('Unverified restoration must not run')}
+  },
+  resetSession(){throw Error('Native X viewer must not be torn down')}
+ });
+ try{
+  await proto.reconcileBfcacheHistoryPage.call(instance);
+  assert.strictEqual(instance.refs,refs);
+  assert.equal(attempts,1);
+ }finally{state.pathname=before}
+});
+test('B5 BFCache route changed before Worker reply prevents stale historical checkout',async()=>{
+ const before=state.pathname;
+ state.pathname='/alice/status/900/photo/1';
+ let resolve;
+ const pending=new Promise(ok=>{resolve=ok});
+ let checkedOut=false;
+ const instance=Object.assign(Object.create(proto),{
+  navGeneration:1,originProfile:'alice',publicSessionRestored:true,
+  sessionStore:{
+   async loadPageManifest(){return pending;},
+   async restoreCheckpointForRoute(){checkedOut=true;return null}
+  },
+  resetSession(){throw Error('Stale historical page should not reset X')}
+ });
+ try{
+  const process=proto.reconcileBfcacheHistoryPage.call(instance);
+  state.pathname='/alice/status/800/photo/1';
+  resolve({pages:[{}]});
+  await process;
+  assert.equal(checkedOut,false);
+ }finally{state.pathname=before}
+});

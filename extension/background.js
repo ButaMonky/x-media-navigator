@@ -760,7 +760,8 @@ var XMN;
                 return { ok: true };
             });
         }
-        if (msg.op === 'checkpoint.find' || msg.op === 'checkpoint.adjacent') {
+        if (msg.op === 'checkpoint.find' || msg.op === 'checkpoint.adjacent' ||
+            msg.op === 'checkpoint.restore') {
             if (msg.op === 'checkpoint.adjacent' && msg.direction !== -1 &&
                 msg.direction !== 1)
                 return { ok: false };
@@ -837,6 +838,18 @@ var XMN;
                             page: destination ? selected - 1 : null };
                     }
                     return { ok: true, href: null, page: null };
+                }
+                if (msg.op === 'checkpoint.restore' && chosen !== null && selected !== null) {
+                    // An ordinary browser History jump can skip multiple immutable
+                    // checkpoint pages. Reading the snapshot alone leaves the Worker
+                    // stuck on a different active page and breaks later arrow navigation.
+                    // The user has ALREADY arrived at this exact verified X media route;
+                    // atomically publish the historical page and its active session.
+                    const updated = { ...manifest, activePage: selected };
+                    await chrome.storage.session.set({
+                        [key]: updated, [sessionKey(id)]: chosen
+                    });
+                    return { ok: true, session: chosen, page: selected, manifest: updated };
                 }
                 return { ok: true, session: chosen, page: selected };
             });

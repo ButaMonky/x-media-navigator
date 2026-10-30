@@ -764,6 +764,22 @@ var XMN;
             return r?.ok === true && r.session && r.manifest ?
                 { session: r.session, manifest: r.manifest } : null;
         }
+        /**
+         * A browser History jump may land on a nonadjacent verified checkpoint.
+         * Unlike checkpoint.find, Worker atomically switches its active manifest
+         * and short-lived session only after verifying the exact TOP-FRAME URL.
+         */
+        async restoreCheckpointForRoute(profile, href) {
+            const ref = XMN.mediaRefFromHref(href, profile);
+            if (!ref || ref.kind === null || ref.href !== href)
+                return null;
+            const r = await this.call('checkpoint.restore', profile, undefined, undefined, undefined, href);
+            if (r?.ok !== true || !r.session || !r.manifest ||
+                !Number.isSafeInteger(r.page) || r.page < 0 ||
+                r.page >= 64 || r.manifest.activePage !== r.page)
+                return null;
+            return { session: r.session, page: r.page };
+        }
         /** A read-only, origin-checked historical lookup for the EXACT current X URL. */
         async findCheckpointForRoute(profile, href) {
             const ref = XMN.mediaRefFromHref(href, profile);
@@ -929,7 +945,7 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.23-dev';
+    const DIAGNOSTIC_VERSION = '2.4.24-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
@@ -1107,6 +1123,11 @@ var XMN;
             // X has constructed its React modal. This never consumes the click.
             document.addEventListener('click', (event) => this.onMediaTileClick(event), true);
             document.addEventListener('visibilitychange', () => this.onVisibilityChange(), { passive: true });
+            // BFCache does not rerun the original Content Script constructor.
+            window.addEventListener('pageshow', (event) => {
+                if (event.persisted)
+                    void this.reconcileBfcacheHistoryPage().catch(() => { });
+            });
             // Chrome may change Save-Data, network quality or offline status
             // WHILE two low-priority images are already downloading. Stop them
             // immediately instead of waiting for the next navigation/idle poll.
@@ -1164,6 +1185,50 @@ var XMN;
                 return false;
             }
         }
+        /**
+         * Reconcile a genuine BFCache pageshow, NOT every ordinary X route tick.
+         * The user has returned to a preserved document that may be several
+         * checkpoint pages away from the last active Worker session.
+         */
+        async reconcileBfcacheHistoryPage() {
+            const path = window.location.pathname;
+            const match = /^\/([a-zA-Z0-9_]{1,15})\/status\/\d+/.exec(path);
+            if (!match)
+                return;
+            const profile = match[1].toLowerCase();
+            const route = XMN.mediaRefFromHref(path, profile);
+            if (!route || route.kind === null)
+                return;
+            const generation = this.navGeneration;
+            this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
+            const manifest = await this.sessionStore.loadPageManifest(profile);
+            if (!manifest || window.location.pathname !== path ||
+                generation !== this.navGeneration)
+                return;
+            const found = await this.sessionStore.restoreCheckpointForRoute(profile, route.href);
+            if (!found || window.location.pathname !== path ||
+                generation !== this.navGeneration)
+                return;
+            // If the cached controller already owns this exact immutable page,
+            // keep its X viewer, images and reply pane in place.
+            if (this.publicSessionRestored && this.originProfile === profile &&
+                this.refs.length === found.session.refs.length &&
+                this.refs.every((ref, i) => ref.href === found.session.refs[i])) {
+                this.restoredCheckpointPage = found.page;
+                this.viewerStateSnapshot = null;
+                this.updateViewerState();
+                return;
+            }
+            // The original page may have been opened before the checkpoints were
+            // first created. Do not trust that stale native X index on History Back.
+            // Repopulate only after the Worker committed an exact-URL checkout.
+            this.resetSession();
+            this.originProfile = null;
+            this.originTimeline = null;
+            await this.restorePublicMediaSession();
+            if (window.location.pathname === path)
+                this.tick();
+        }
         async restorePublicMediaSession() {
             const path = window.location.pathname;
             const match = /^\/([a-zA-Z0-9_]{1,15})\/status\/\d+/.exec(path);
@@ -1205,7 +1270,11 @@ var XMN;
                     }
                 }
                 if (!data || !data.refs.includes(route.href)) {
-                    const found = await this.sessionStore.findCheckpointForRoute?.(profile, route.href);
+                    // Browser History may jump over multiple checkpoints. Only a
+                    // Worker checkout of the exact TOP-FRAME URL makes arrows safe.
+                    const found = this.sessionStore.restoreCheckpointForRoute
+                        ? await this.sessionStore.restoreCheckpointForRoute(profile, route.href)
+                        : await this.sessionStore.findCheckpointForRoute?.(profile, route.href);
                     if (!sameRoute())
                         return;
                     if (found) {

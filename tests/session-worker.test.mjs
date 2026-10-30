@@ -836,3 +836,98 @@ test('B2 maximum 64 immutable pages remain ordered, bounded and cannot overflow'
    manifest:forged}),{ok:false});
  assert.equal((await w.send('manifest.get')).manifest.pages.length,64);
 });
+
+test('B5 history route restore atomically checks out any verified older page',async()=>{
+ const w=worker();
+ const pages=[
+  checkpointSession(900,800,'CURSOR_A'),
+  checkpointSession(700,600,'CURSOR_B'),
+  checkpointSession(500,400,null)
+ ];
+ const m=manifest([
+  {snap:pages[0],incoming:null},
+  {snap:pages[1],incoming:'CURSOR_A'},
+  {snap:pages[2],incoming:'CURSOR_B'}
+ ]);
+ await w.send('consent.set');
+ equalResponse(await w.send('session.set',1,'alice',{session:pages[0]}),{ok:true});
+ for(let page=0;page<3;page++){
+  equalResponse(await w.send('checkpoint.put',1,'alice',{
+   page,session:pages[page]}),{ok:true});
+ }
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:m}),{ok:true});
+ const restore=href=>w.raw({
+  kind:'xmn-store-v1',op:'checkpoint.restore',profile:'alice',href
+ },{...sender(),url:'https://x.com'+href});
+ const last='/alice/status/500/photo/1';
+ equalResponse(await restore(last),{
+  ok:true,session:pages[2],page:2,manifest:{...m,activePage:2}
+ });
+ equalResponse(await w.send('session.get'),{ok:true,session:pages[2]});
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:{...m,activePage:2}});
+ // A non-adjacent History Back jump must update BOTH committed state keys,
+ // not just display a read-only orphan snapshot for the previous URL.
+ const first='/alice/status/900/photo/1';
+ equalResponse(await restore(first),{
+  ok:true,session:pages[0],page:0,manifest:m
+ });
+ equalResponse(await w.send('session.get'),{ok:true,session:pages[0]});
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:m});
+ const adjacent=await w.raw({
+  kind:'xmn-store-v1',op:'checkpoint.adjacent',profile:'alice',
+  href:'/alice/status/800/photo/1',direction:1
+ },{...sender(),url:'https://x.com/alice/status/800/photo/1'});
+ equalResponse(adjacent,{
+  ok:true,href:'/alice/status/700/photo/1',page:1
+ });
+});
+test('B5 historical checkout rejects unverified URLs and never mutates active session',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ await w.send('session.set',1,'alice',{session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ const request=(href,actual=href,override={})=>w.raw({
+  kind:'xmn-store-v1',op:'checkpoint.restore',profile:'alice',href
+ },{...sender(),url:'https://x.com'+actual,...override});
+ equalResponse(await request('/alice/status/700/photo/1',
+   '/alice/status/800/photo/1'),{ok:false});
+ equalResponse(await request('/alice/status/700'),{ok:false});
+ equalResponse(await request('/alice/status/750/photo/1'),{
+  ok:true,session:null,page:null
+ });
+ equalResponse(await request('/alice/status/700/photo/1',undefined,
+  {frameId:1}),{ok:false});
+ equalResponse(await request('/alice/status/700/photo/1',undefined,
+  {tab:{id:19}}),{ok:false});
+ equalResponse(await request('/bob/status/700/photo/1'),{ok:false});
+ equalResponse(await w.send('session.get'),{ok:true,session:p0});
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:m});
+});
+test('B5 failed atomic history restore never publishes a stale active-page index',async()=>{
+ let failCheckout=false;
+ const w=worker({beforeSet:async values=>{
+  if(failCheckout&&Object.hasOwn(values,'xmn:session:1')&&
+     Object.hasOwn(values,'xmn:manifest:1:alice'))
+    throw Error('Simulated MV3 atomic storage quota failure');
+ }});
+ const p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ await w.send('session.set',1,'alice',{session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ failCheckout=true;
+ equalResponse(await w.raw({
+  kind:'xmn-store-v1',op:'checkpoint.restore',profile:'alice',
+  href:'/alice/status/700/photo/1'
+ },{...sender(),url:'https://x.com/alice/status/700/photo/1'}),
+ {ok:false});
+ equalResponse(await w.send('session.get'),{ok:true,session:p0});
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:m});
+});
