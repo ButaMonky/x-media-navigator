@@ -11,3 +11,4 @@ screenshots-private/
 *.zip
 .DS_Store
 Thumbs.db
+!archive/xmn-local-extra-recovery-20261030.zip
