@@ -12,7 +12,9 @@ test('B5 protected CI runs all real Chrome MV3 acceptance and refusal cases',()=
  const workflow=get('.github/workflows/check.yml');
  const pkg=JSON.parse(get('package.json'));
  assert.match(workflow,/Required isolated Chrome MV3 B5 acceptance and security gate/);
- assert.match(workflow,/export XMN_CHROME_FOR_TESTING=/);
+ assert.match(workflow,/browser-actions\/setup-chrome@v2/);
+ assert.match(workflow,/chrome-version: stable/);
+ assert.match(workflow,/XMN_CHROME_FOR_TESTING: \$\{\{ steps.setup-cft.outputs.chrome-path \}\}/);
  assert.match(workflow,/exit 1/);
  for(const [name,file] of cases){
    assert.ok(workflow.includes('npm run '+name),name);
@@ -32,6 +34,7 @@ test('B5 CI smoke always uses temporary profile, localhost, bounded CDP',()=>{
   assert.match(src,/process.platform==='win32'/);
   assert.match(src,/process.kill\(-child.pid,'SIGKILL'\)/);
   assert.match(src,/XMN_CHROME_FOR_TESTING/);
+  assert.doesNotMatch(src,/\/usr\/bin\/google-chrome/,'Chrome branded ignores --load-extension');
   assert.match(src,/MV3 CDP .* timed out/);
  }
 });

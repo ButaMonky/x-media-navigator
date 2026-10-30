@@ -6,8 +6,9 @@ import {join, resolve} from 'node:path';
 const root=resolve('.');
 const installed=join(process.env.LOCALAPPDATA||tmpdir(),'XMediaNavigator','QA-Browser','chrome');
 const choices=existsSync(installed)?readdirSync(installed).sort().reverse():[];
+// Branded Chrome 137+ ignores --load-extension; only Chromium/CfT
+// can run the real MV3 Worker acceptance fixtures.
 const alternatives=process.platform==='win32'?[]:[
- '/usr/bin/google-chrome','/usr/bin/google-chrome-stable',
  '/usr/bin/chromium','/usr/bin/chromium-browser'
 ];
 // Always use a disposable temporary profile and localhost-only test origin.

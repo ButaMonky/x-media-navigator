@@ -46,3 +46,25 @@
   初回実行失敗・安全拒否の場合はログ・SHA・再開点を追記。
 - 実Xの28→29、動画/GIF/混合、Paint品質、HTTP転送、
   対話UIと公開は引き続き未受入。
+
+## 2026-10-30 初回GitHub CI失敗と修正
+
+- 初回コミット `ce35705476b010fb95459fea41f0a902e03ed48b`、
+  GitHub Actions run **41020382568: FAIL**。Node 333件、
+  型検査、必須合成ChromiumはPASS。
+- 新しいB5 MV3品質ゲートの最初のケースは
+  `mv3Test=waiting`、CDP対象は`background_page`で
+  **MV3 Service Workerがロードされなかった**。
+- 原因：CIで使用した`google-chrome`は、Chrome 137以降の
+  **Chrome brandedビルドでは`--load-extension`が無効化**されている。
+  製品側のバグではなくQAブラウザ選択の誤り。
+  出典: https://groups.google.com/a/chromium.org/g/chromium-extensions/c/1-g8EFx2BBY/m/my-groups
+- 修正：`browser-actions/setup-chrome@v2`で**Chrome for Testing**を
+  導入し、返された`chrome-path`を必須MV3検査へ明示的に渡す。
+  バイナリがなければFAIL。Windowsの既存CFTも維持。
+  Chromium/CfT以外のbranded Chromeへのフォールバックは禁止。
+- 本番Chromeへのパラメータ改変やブラウザ安全仕様の迂回ではない。
+  公式が拡張機能検査をサポートする非ブランドテストビルドを使用。
+- 再開位置：修正コミットでGitHub Actionsを再実行し、
+  MV3の4ケースと生成JS一致がすべてSUCCESSしたときだけ
+  FF-only主開発統合を許可。失敗結果を無かったことにしない。
