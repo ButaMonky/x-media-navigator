@@ -640,7 +640,7 @@ async function runChromiumUntilResult(url,userDataDir) {
   try {
     const portFile=join(userDataDir,'DevToolsActivePort');
     let port=null;
-    for(let i=0;i<150;i++){
+    for(let i=0;i<450;i++){
       if(launchError)throw launchError;
       if(existsSync(portFile)){
         port=Number(readFileSync(portFile,'utf8').split(/\r?\n/)[0]);
@@ -650,7 +650,7 @@ async function runChromiumUntilResult(url,userDataDir) {
     }
     if(!port)throw Error('DevTools port missing '+stderr.slice(-500));
     let page=null;
-    for(let i=0;i<90;i++){
+    for(let i=0;i<200;i++){
       try{
         const targets=await (await fetch('http://127.0.0.1:'+port+'/json/list')).json();
         page=targets.find(item=>item.type==='page'&&item.url.startsWith(new URL(url).origin+'/'));
@@ -661,7 +661,7 @@ async function runChromiumUntilResult(url,userDataDir) {
     if(!page)throw Error('Chrome page target missing '+stderr.slice(-500));
     socket=new WebSocket(page.webSocketDebuggerUrl);
     await new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>reject(Error('CDP socket timeout')),6000);
+      const timer=setTimeout(()=>reject(Error('CDP socket timeout')),12000);
       socket.addEventListener('open',()=>{clearTimeout(timer);resolve()},{once:true});
       socket.addEventListener('error',()=>{clearTimeout(timer);reject(Error('CDP socket failure'))},{once:true});
     });
@@ -682,13 +682,13 @@ async function runChromiumUntilResult(url,userDataDir) {
       const timer=setTimeout(()=>{
         pending.delete(id);
         reject(Error('CDP '+method+' timed out'));
-      },6000);
+      },15000);
       pending.set(id,{resolve,reject,timer});
       socket.send(JSON.stringify({id,method,params}));
     });
     await command('Runtime.enable');
     let latest='';
-    for(let i=0;i<300;i++){
+    for(let i=0;i<480;i++){
       const reply=await command('Runtime.evaluate',{
         expression:"document.body?.getAttribute('data-xmn-results')||''",
         returnByValue:true
@@ -697,7 +697,7 @@ async function runChromiumUntilResult(url,userDataDir) {
       if(latest)return latest;
       await nap(250);
     }
-    throw Error('Browser never finished synthetic gallery after 75s; '+stderr.slice(-500));
+    throw Error('Browser never finished synthetic gallery after 120s; '+stderr.slice(-500));
   }finally{
     if(socket)try{socket.close()}catch{}
     if(child.pid){
