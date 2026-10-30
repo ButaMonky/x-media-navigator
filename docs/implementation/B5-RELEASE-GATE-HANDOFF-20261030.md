@@ -68,3 +68,39 @@
 - 受入に失敗した場合のみ、**この文書と現在のSHA**を出発点に、
   再現条件・失敗・再開手順を新しい専用ブランチで記録して修正。
   旧成果と固定QAフォルダは再作成・破壊しない。
+
+---
+
+## 2026-10-30追記｜v2.4.25 最終ローカルQA正本
+
+- 作業ID：`XMN-B2-PREFLIGHT-RACE-FINAL-20261030`
+- 主開発コードSHA：`2746b80f7af13fe0010b2f0f0e51577d9e648845`
+- 非公開開発：`task/xmn-b0-b3-20261029`（同一SHA）。
+- GitHub Actions：タスクrun `41036306470` **FAIL**、
+  原因：Linuxの一時Chromeで未認可origin拒否probeが開始されなかった。
+  修復後のタスクrun `41037258731` **SUCCESS**、
+  主開発run `41037655056` **SUCCESS**。
+- 修正：Worker manifest照会中の同時右キーによる
+  FxEmbed二重取得を世代別ロックで防止。64ページ確定後は
+  重複Worker照会・同意確認・背景APIを停止し、
+  画面の投稿数「+」表示を更新。
+- Node **362件／353PASS／0FAIL／3SKIP／実X TODO6**、
+  型検査、合成Chromium4件、
+  Chrome for Testingの隔離MV3 11系統PASS。
+  GitHub CIの必須MV3 7ケースも全成功。
+- 最新の別置きQAフォルダ：
+  `%USERPROFILE%\Downloads\X-Media-Navigator-v2.4.25-PREFLIGHT-QA-20261030`
+- 最新ZIPバックアップ：
+  `%USERPROFILE%\Downloads\X-Media-Navigator-v2.4.25-PREFLIGHT-QA-20261030.zip`
+- ZIP SHA-256：
+  `D7B56CCD2FC4A7C1D15400866212A73E053A6E22ACD577F495C7F64832375930`。
+  同ディレクトリに`.sha256.txt`の照合用記録あり。
+  ZIP内10ファイル検証済み。既存v2.4.18および旧QAは不変更。
+- 本成果を**公開済み・100％と記録しない**。
+  Windowsの実ログイン済みXで28→29、動画/GIF/混合、
+  実返信DOMとSPA、画像Paint・転送・CPU/RAM、450件以上、
+  最終的な公開判断は残る。ローカルChatGPT Browser接続は
+  originating browser context不足のため引き続き利用できない。
+- 再開位置：
+  `docs/implementation/B2-PREFLIGHT-RACE-20261030.md`と本節。
+  Chromeへ手動で新QAをLoad unpackedし、実機受入後のみ公開検討。

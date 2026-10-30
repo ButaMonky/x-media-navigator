@@ -716,3 +716,22 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   `docs/implementation/B2-PREFLIGHT-RACE-20261030.md`。
 - 既存QA v2.4.24以前と公開mainを保護し、
   新しい独立v2.4.25 QAフォルダのみ生成可能。
+
+---
+
+## 2026-10-30｜B2プリフライト競合排除とv2.4.25 QAの保存
+
+- 主開発 `2746b80`、GitHub Actions run `41037655056` SUCCESS。
+- 外部APIへの二重アクセスをRED→GREENで修正。
+  64ページ上限到達後の余分なmanifest・同意照会も抑制。
+- Node362件（353 PASS・0 FAIL・3 SKIP・実X TODO6）、
+  型検査、合成Chromium4件、実MV3独立11系統PASS。
+- 新しいv2.4.25非公開QAは既存版とは別フォルダに保存。
+  配布ZIPとSHA256も保存。Chromeには自動インストールしていない。
+- 旧CI FAIL `41036306470`は別途記録し、
+  未初期化localhost試験ページだけを回復する厳密な修正で
+  Linuxの安全拒否検査を通過。
+- **実ログインXの最終受入と公開判断は未完了**。
+  詳細・安全拒否・再開位置：
+  `docs/implementation/B5-RELEASE-GATE-HANDOFF-20261030.md`、
+  `docs/implementation/B2-PREFLIGHT-RACE-20261030.md`。
