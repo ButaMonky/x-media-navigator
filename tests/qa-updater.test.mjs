@@ -20,18 +20,18 @@ test('the only supported updater targets Current and disables legacy QA folders'
   assert.doesNotMatch(ps,/Start-Process\s+(?:chrome|msedge)/i);
 });
 
-test('manifest, package and lockfile share the v2.4.27 native QA version',()=>{
+test('manifest, package and lockfile share the v2.4.28 native QA version',()=>{
   const manifest=JSON.parse(get('extension/manifest.json'));
   const pkg=JSON.parse(get('package.json'));
   const lock=JSON.parse(get('package-lock.json'));
   assert.equal(manifest.manifest_version,3);
   assert.deepEqual(manifest.permissions,['storage']);
-  assert.equal(manifest.version,'2.4.27');
-  assert.match(manifest.name,/Native QA 2\.4\.27/);
-  assert.match(manifest.version_name,/2\.4\.27 Native private QA candidate/);
+  assert.equal(manifest.version,'2.4.28');
+  assert.match(manifest.name,/Native QA 2\.4\.28/);
+  assert.match(manifest.version_name,/2\.4\.28 Native private QA candidate/);
   assert.equal(pkg.version,lock.version);
   assert.equal(pkg.version,lock.packages[''].version);
-  assert.equal(pkg.version,'2.4.27-dev.1');
+  assert.equal(pkg.version,'2.4.28-dev.1');
   assert.match(pkg.scripts['qa:update'],/update-current\.ps1/);
 });
 

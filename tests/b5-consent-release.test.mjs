@@ -4,17 +4,17 @@ import {readFileSync} from 'node:fs';
 
 const get = relative=>readFileSync(new URL('../'+relative,import.meta.url),'utf8');
 
-test('historic consent QA staging remains protected in native v2.4.27',()=>{
+test('historic consent QA staging remains protected in native v2.4.28',()=>{
  const m=JSON.parse(get('extension/manifest.json'));
  const pkg=JSON.parse(get('package.json'));
  const lock=JSON.parse(get('package-lock.json'));
  const stage=get('tools/stage-b5-private-qa.ps1');
  assert.equal(m.manifest_version,3);
- assert.equal(m.version,'2.4.27');
- assert.match(m.name,/Native QA 2\.4\.27/);
- assert.match(m.version_name,/2\.4\.27 Native private QA candidate/);
+ assert.equal(m.version,'2.4.28');
+ assert.match(m.name,/Native QA 2\.4\.28/);
+ assert.match(m.version_name,/2\.4\.28 Native private QA candidate/);
  assert.deepEqual(m.permissions,['storage']);
- assert.equal(pkg.version,'2.4.27-dev.1');
+ assert.equal(pkg.version,'2.4.28-dev.1');
  assert.equal(lock.version,pkg.version);
  assert.equal(lock.packages[''].version,pkg.version);
  assert.match(stage,/task\/xmn-b5-consent-once-20261030/);

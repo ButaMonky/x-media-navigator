@@ -1,5 +1,8 @@
 # X Media Navigator — TypeScript rebuild (private beta)
 
+> **2026-10-31 新アイコン v2.4.28（非公開QA）**：承認済みの青いネオンギャラリー＋左右矢印デザインをChrome拡張用16/48/128pxのPNGに変換し、extension/icon*.pngを置き換えました。機能・権限・外部APIの既定OFFはv2.4.27から変更していません。更新先は従来どおり Downloads\X-Media-Navigator-Current の1か所のみです。Chromeの拡張機能管理から再読み込みし、必要ならChrome自体を再起動してください。アイコンの検証結果は [v2.4.28のQA](docs/qa/2026-10-31-v2428-neon-icon.md) を参照。
+
+
 > **2026-10-31 ネイティブ優先 v2.4.27（非公開QA候補）**：Xのメディア一覧で確認できた投稿リンクだけを左右移動に使います。FxEmbedの自動取得・同意確認・バックグラウンド先行取得を通常利用では行いません。既知写真の少数先読みとXネイティブSPA移動は維持。読み込み済み一覧の終端ではビューアを保持し、Xのメディア一覧に戻って手動スクロールで続きを読み込む案内を出します。以前の裏側自動スクロールは復活させません。
 > **更新先は1か所だけ**：Downloads\X-Media-Navigator-Current。GitHub CI成功後、Update-Chrome-Current.cmdでこの固定フォルダのみ更新します。旧Update-Chrome-QA.cmdは実行を拒否します。一般公開は原作者の再配布条件と実機の最終受入確認まで保留です。詳細は [v2.4.27 QA](docs/qa/2026-10-31-v2427-native-primary.md)。
 

@@ -945,7 +945,7 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.27-dev';
+    const DIAGNOSTIC_VERSION = '2.4.28-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
