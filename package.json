@@ -1,6 +1,6 @@
 {
   "name": "x-media-navigator",
-  "version": "2.4.21-dev.1",
+  "version": "2.4.22-dev.1",
   "private": true,
   "description": "TypeScript rebuild of X media profile navigation; private development",
   "scripts": {
@@ -13,6 +13,7 @@
     "test:mv3": "node tools/mv3-worker-smoke.mjs",
     "test:mv3:archive": "npm run build && node tools/mv3-archive-bridge-smoke.mjs",
     "test:mv3:roundtrip": "npm run build && node tools/mv3-archive-roundtrip-smoke.mjs",
+    "test:mv3:b5": "npm run build && node tools/mv3-b5-28-to-29-smoke.mjs",
     "test:mv3:reject": "node tools/b1-worker-cdp-probe.mjs",
     "test:navigation-isolated": "node tools/navigation-isolated-probe.mjs",
     "qa:update": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/update-chrome-qa.ps1"

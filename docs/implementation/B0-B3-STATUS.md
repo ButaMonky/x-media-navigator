@@ -489,3 +489,32 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 次の再開点は既存の独立候補を、旧XMNを無効化したChromeに
   ユーザーが手動Load unpackedして実機受入を行うこと。
   完成・公開の判断はその受入証拠取得後のみ。
+
+---
+
+## 2026-10-30｜B5初回28→29、1〜4枚マトリクス、v2.4.22独立QA
+
+- 作業ID：`XMN-B5-FIRST-CLICK-28-29-20261030`。
+  開発正本`b2d06fd`から独立ブランチ
+  `task/xmn-b5-28to29-20261030`で連続実施。
+- **Chrome for Testing + 実製品MV3 Worker + 実Content Script**
+  の使い捨てlocalhost：28既知投稿から1回の右操作で
+  合成29番目取得→文書遷移→29番目の表示・返信欄→
+  前1回で28番目に戻る、セッションの29件保持を検証PASS。
+  `npm run test:mv3:b5`、`firstClick29Verified=true`。
+- 写真1〜4枚、計10枚の途中・最初・最後のキー境界を確認。
+  **枚数が分かる中間画像でも追加の未知境界プローブを
+  起動していた実不具合**をRED（6起動）→GREEN（0起動）に修正。
+  動画の左右キーはネイティブ操作を維持。
+- 個人情報を記録しない手動実Xの集計用診断
+  `tools/b5-readonly-audit.js`を追加（Node VM安全試験2件）。
+- 実コード変更のためChrome MV3を`2.4.22`へバージョンアップ。
+  `tools/stage-b5-private-qa.ps1`は新しい同名上書き禁止の
+  QAフォルダだけを作成し、GitHub同一SHA CI SUCCESS、
+  Node・TS・実Chrome B5試験・未認可元拒否を検査。
+- 旧通常v2.4.18、FxEmbed QA v2.4.20、B4 QA v2.4.21、
+  公開main、安定Draft PR #17、ユーザーのChromeプロフィールは不変更。
+- コード・再開位置・受入条件：
+  `docs/implementation/B5-28-TO-29-20261030.md`。
+- **実Xの受入はまだ未実施**。ライブの通信・Paint・
+  返信欄・動画/GIF・混合の結果を合成試験から推測しない。

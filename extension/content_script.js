@@ -919,7 +919,7 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.21-dev';
+    const DIAGNOSTIC_VERSION = '2.4.22-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
@@ -2710,7 +2710,8 @@ var XMN;
             if (direction === null) {
                 // X may not expose a gallery counter. Give its own ArrowRight handler
                 // first chance to change photos, then offer a non-skipping fallback.
-                if (current && current.kind === 'photo' && event.key === 'ArrowRight' &&
+                if (photoCount === null && current && current.kind === 'photo' &&
+                    event.key === 'ArrowRight' &&
                     XMN.postShortcutDirection(event) === 1 && !nativeNext) {
                     this.handleUnknownRightBoundary(event, current);
                 }

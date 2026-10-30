@@ -3974,3 +3974,46 @@ test('R-042 rejects non-chronological new prefix before a verified X anchor',()=
   assert.ok(!ctrl.indexes.has('600:photo:1'));
  }finally{state.root=oldRoot;state.pathname=oldPath}
 });
+
+test('B5 matrix: photo 1–4 keeps native carousel control until the exact last image',()=>{
+ const previous=state.pathname;
+ const moved=[];
+ let unnecessaryProbes=0;
+ const controller={
+   viewer:{isConnected:true},originProfile:'alice',navigationBusy:false,
+   activeIndex(){return this.active},photoCount(){return this.total},
+   nativeGalleryArrowAvailable(){return false},
+   handleUnknownRightBoundary(){unnecessaryProbes++},
+   navigate(direction){moved.push(direction)}
+ };
+ try{
+   for(let total=1;total<=4;total++){
+     controller.total=total;
+     controller.refs=[ref('/alice/status/600/photo/1'),
+       ...Array.from({length:total},(_,i)=>ref('/alice/status/500/photo/'+(i+1))),
+       ref('/alice/status/400/photo/1')];
+     for(let number=1;number<=total;number++){
+       controller.active=number;
+       state.pathname='/alice/status/500/photo/'+number;
+       const right=keyEvent('ArrowRight');
+       proto.onKeyDown.call(controller,right);
+       assert.equal(right.prevented,number===total,
+         'right interception photo '+number+' / '+total);
+       const left=keyEvent('ArrowLeft');
+       proto.onKeyDown.call(controller,left);
+       assert.equal(left.prevented,number===1,
+         'left interception photo '+number+' / '+total);
+     }
+   }
+   state.pathname='/alice/status/500/video/1';
+   const videoRight=keyEvent('ArrowRight');
+   proto.onKeyDown.call(controller,videoRight);
+   const videoLeft=keyEvent('ArrowLeft');
+   proto.onKeyDown.call(controller,videoLeft);
+   assert.equal(videoRight.prevented,false,'video seeks remain X-owned');
+   assert.equal(videoLeft.prevented,false,'video rewind remains X-owned');
+   assert.deepEqual(moved,[1,-1,-1,1,-1,1,-1,1]);
+   assert.equal(unnecessaryProbes,0,
+     'a proven 1–4 photo album must not trigger speculative unknown-edge probes');
+ }finally{state.pathname=previous}
+});

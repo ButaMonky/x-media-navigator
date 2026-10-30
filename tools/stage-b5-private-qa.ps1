@@ -1,11 +1,11 @@
 # Stage an immutable, side-by-side unpacked QA candidate. Never install it.
 # The ordinary Chrome profile, existing QA folder and stable version are untouched.
 [CmdletBinding()]
-param([string]$Destination = (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.21-B4-QA-20261030'))
+param([string]$Destination = (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.22-B5-QA-20261030'))
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$branch = 'task/xmn-b5-private-qa-20261030'
+$branch = 'task/xmn-b5-28to29-20261030'
 $files = @('manifest.json','content_script.js','background.js',
   'style.css','icon16.png','icon48.png','icon128.png')
 $source = Join-Path $root 'extension'
@@ -36,8 +36,8 @@ if (Test-Path -LiteralPath $Destination) {
 }
 $sha = Assert-VerifiedSource
 $manifest = Get-Content (Join-Path $source 'manifest.json') -Encoding UTF8 -Raw | ConvertFrom-Json
-if ($manifest.manifest_version -ne 3 -or $manifest.version -ne '2.4.21' -or
-    $manifest.version_name -notlike '*B4 private QA candidate*') {
+if ($manifest.manifest_version -ne 3 -or $manifest.version -ne '2.4.22' -or
+    $manifest.version_name -notlike '*B5 private QA candidate*') {
   throw 'Unexpected extension version or release channel'
 }
 if (@($manifest.permissions).Count -ne 1 -or $manifest.permissions[0] -ne 'storage') {
@@ -50,7 +50,8 @@ foreach ($file in $files) {
 }
 $readOnly = @(
   (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-Current'),
-  (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-FxEmbed-QA-20261029')
+  (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-FxEmbed-QA-20261029'),
+  (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.21-B4-QA-20261030')
 )
 $protected = @{}
 foreach ($folder in $readOnly) {
@@ -74,8 +75,26 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'QA TypeScript check failed' }
   & npm.cmd test
   if ($LASTEXITCODE -ne 0) { throw 'QA Node suite failed' }
+  & npm.cmd run test:mv3:b5
+  if ($LASTEXITCODE -ne 0) { throw 'QA real-Chrome MV3 28-to-29 synthetic gate failed' }
+  & npm.cmd run test:mv3:reject
+  if ($LASTEXITCODE -ne 0) { throw 'QA MV3 unauthorized-origin rejection failed' }
   if ((Assert-VerifiedSource) -ne $sha) {
     throw 'Source changed during QA verification'
+  }
+  # Source integrity alone is insufficient; GitHub must have passed all
+  # required Node, TypeScript, Chromium, and generated JavaScript gates.
+  $ciJson = & gh run list --repo ButaMonky/x-media-navigator --branch $branch --limit 10 --json headSha,status,conclusion
+  if ($LASTEXITCODE -ne 0 -or !$ciJson) {
+    throw 'GitHub Actions verification is unavailable; QA staging refused'
+  }
+  $runs = @($ciJson | ConvertFrom-Json)
+  $approved = @($runs | Where-Object {
+    $_.headSha -eq $sha -and $_.status -eq 'completed' -and
+    $_.conclusion -eq 'success'
+  })
+  if ($approved.Count -eq 0) {
+    throw 'Required GitHub CI has not succeeded for this exact QA commit'
   }
 } finally {
   Set-Location $oldPath
@@ -90,6 +109,12 @@ try {
   foreach ($file in $files) {
     Copy-Item -LiteralPath (Join-Path $source $file) -Destination (Join-Path $stage $file) -ErrorAction Stop
   }
+  # This manual diagnostic is not referenced in the extension manifest.
+  $manualAudit = Join-Path $root 'tools\b5-readonly-audit.js'
+  if (!(Test-Path -LiteralPath $manualAudit -PathType Leaf)) {
+    throw 'Missing read-only B5 acceptance snippet'
+  }
+  Copy-Item -LiteralPath $manualAudit -Destination (Join-Path $stage 'B5_READONLY_AUDIT.js') -ErrorAction Stop
   $digests = @()
   foreach ($file in $files) {
     $sourceDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $source $file)).Hash
@@ -97,13 +122,19 @@ try {
     if ($sourceDigest -ne $stageDigest) { throw "Asset hash mismatch: $file" }
     $digests += ($stageDigest + '  ' + $file)
   }
+  $manualDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $manualAudit).Hash
+  $copyDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $stage 'B5_READONLY_AUDIT.js')).Hash
+  if ($manualDigest -ne $copyDigest) {
+    throw 'Read-only B5 QA snippet hash mismatch'
+  }
+  $digests += ($manualDigest + '  B5_READONLY_AUDIT.js')
   [IO.File]::WriteAllLines((Join-Path $stage 'SHA256SUMS.txt'),
     $digests,[Text.UTF8Encoding]::new($false))
   $readme = @"
-X Media Navigator v2.4.21 — PRIVATE B4 QA candidate (NOT RELEASED)
+X Media Navigator v2.4.22 — PRIVATE B5 QA candidate (NOT RELEASED)
 Verified private Git source: $sha
 This folder is a NEW side-by-side Chrome unpacked extension candidate.
-The stable v2.4.18 and older QA v2.4.20 folders have not been changed.
+The stable v2.4.18, older QA v2.4.20 and B4 QA v2.4.21 folders have not been changed.
 
 To test manually:
 1. Disable ALL older X Media Navigator extensions temporarily.
@@ -116,6 +147,9 @@ To test manually:
 5. Test disabled network, rapid repeated keys, page refresh and Back/Forward.
 6. Check the preview is not painted over X replies or other photos.
 7. If any real X behavior differs, do not publish or overwrite stable Chrome.
+8. Optional: manually run B5_READONLY_AUDIT.js in Chrome DevTools Snippets
+   while the X viewer is open. It reports only aggregate counts/booleans.
+   A DOM-visible image is NOT proof of Paint; inspect the screen yourself.
 
 FxEmbed is a third-party service; explicitly approving continuation shares
 the public account handle and normal network metadata with that service.
