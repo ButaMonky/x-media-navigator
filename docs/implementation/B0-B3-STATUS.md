@@ -389,3 +389,33 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   Xサイトやユーザーブラウザ・履歴は操作しない。
 - Windows Chrome for Testing 156の合成4ケースPASS。
   修復後のGitHub CIを確認するまで統合しない。
+
+---
+
+## 2026-10-30｜B2タブ隔離・旧文書競合とChrome E2Eの主正本採用
+
+- 開発正本`task/xmn-b0-b3-20261029`は非公開の
+  `task/xmn-b2-hardening-20261030`を**FF-only**統合。
+- 修正`26ea869`：タブ終了中の同意書込、期限切れ読込の後発削除、
+  プロフィール切替、古いプロフィールのセッション削除を
+  実際のWorker状態機械でRED→GREEN。全操作をタブ所有で直列化し
+  相手プロフィールの有効な公開セッションを保護。
+- 追加`tools/mv3-archive-roundtrip-smoke.mjs`：
+  Chrome for Testingで440既知＋20追加の不変保存
+  →新ページ→旧ページへ戻るまで実製品Content Script/Workerを確認。
+  既存MV3正規往復・保存・外部元拒否も合格。
+- Node **321件（312PASS・0FAIL・3SKIP・実X TODO6）**、
+  TypeScript、合成Chromium4件、MV3試験4系統PASS。
+  64ページ上限の65ページ目拒否も維持。
+- CI初回run `41004745029` はUbuntuの長尺合成テストで
+  マーカー未取得のFAILを記録。修正`6d9ffe6`では
+  **同じ40シナリオの必須判定を維持して実時間CDP監視**へ切替。
+- 非公開専用ブランチ run `41005235139` **SUCCESS**、
+  主正本 run `41005392051` **SUCCESS**。
+- 根拠・失敗・再開点：
+  `docs/implementation/B2-TAB-SESSION-RACE-AND-ROUNDTRIP-20261030.md`。
+- 公開main、安定Draft PR #17、通常Chrome v2.4.18、
+  既存QA v2.4.20、ユーザープロフィールは変更なし。
+- **未完了**：B4実サイト描画/通信計測、B5の認証済みX 28→29・
+  写真/動画/GIF/混合・返信欄・UI受入と公開判断、上限64ページ満杯時の運用。
+  CIやlocalhost検証を実X受入と混同しない。
