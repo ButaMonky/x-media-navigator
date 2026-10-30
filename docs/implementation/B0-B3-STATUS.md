@@ -439,3 +439,20 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   `docs/implementation/B4-GRID-VALIDATION-20261030.md`。
 - GitHub CIを通してからFF-onlyで開発正本へ統合。
   公開main/通常版/旧QA/安定Draft PRは不変更。
+
+---
+
+## 2026-10-30｜B5非公開v2.4.21候補・安全な独立配布準備
+
+- B4で解消したR-042／R-043とChrome合成・MV3検証を元に
+  `task/xmn-b5-private-qa-20261030`で独立QA候補を準備。
+- manifest識別子は`Private QA 2.4.21`に限定。
+  Chromeの既存v2.4.18／FxEmbed QA v2.4.20には触れない。
+- 再現可能な`tools/stage-b5-private-qa.ps1`は
+  GitHub正本・clean・型検査・Node検査・ファイルハッシュを確認し、
+  **新しいフォルダだけを作成**する。既存の拡張の更新・起動は行わない。
+- 未コミット状態ではステージングを実行せずに拒否する
+  ネガティブ試験を実施。実行拒否時に生成ディレクトリなし。
+- 受入チェックリストと未完了内容は
+  `docs/implementation/B5-PRIVATE-QA-20261030.md`。
+- 実ログインXでの28→29・GIF/混合・返信欄・Paint計測・公開判断は未完了。
