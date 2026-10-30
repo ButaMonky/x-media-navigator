@@ -4266,3 +4266,69 @@ test('B5 BFCache route changed before Worker reply prevents stale historical che
   assert.equal(checkedOut,false);
  }finally{state.pathname=before}
 });
+
+test('B2 archive capacity updates cached post label without implying more extension pages',()=>{
+ const oldPath=state.pathname;
+ state.pathname='/alice/status/500/photo/1';
+ const refs=[ref('/alice/status/600/photo/1'),ref('/alice/status/500/photo/1')];
+ const prev={disabled:false},next={disabled:false};
+ const label={textContent:'',title:''};
+ const viewer={isConnected:true,querySelector(selector){
+   return selector==='.xmn-prev'?prev:
+     selector==='.xmn-next'?next:selector==='.xmn-status'?label:null;
+ }};
+ let scans=0;
+ const ctl=Object.assign(Object.create(proto),{
+   originProfile:'alice',refs,viewer,navigationBusy:false,
+   publicApiCursor:'MORE',publicApiExhausted:false,
+   checkpointCapacityReached:false,publicSessionRestored:true,
+   restoredCheckpointPage:63,
+   activeIndex(){scans++;return 1},
+   schedulePublicMediaWarmup(){},
+   statusOrdinalCache:null,viewerStateSnapshot:null
+ });
+ try{
+   proto.updateViewerState.call(ctl);
+   assert.equal(label.textContent,'投稿 2 / 2+');
+   ctl.checkpointCapacityReached=true;
+   proto.updateViewerState.call(ctl);
+   assert.equal(label.textContent,'投稿 2 / 2');
+   assert.match(label.title,/64ページ/);
+   assert.equal(scans,2,'capacity policy must invalidate the cached label exactly once');
+   proto.updateViewerState.call(ctl);
+   assert.equal(scans,2,'idle polls should not rescan the index');
+ }finally{state.pathname=oldPath}
+});
+
+test('B2 two rapid boundary arrows show only one external-service consent prompt',async()=>{
+ const prevPath=state.pathname,prevConfirm=context.window.confirm;
+ state.pathname='/alice/status/300/photo/1';
+ let entered,release;
+ const waiting=new Promise(resolve=>release=resolve);
+ const started=new Promise(resolve=>entered=resolve);
+ let consentReads=0,prompts=0,network=0;
+ context.window.confirm=()=>{prompts++;return false};
+ const refs=[ref('/alice/status/400/photo/1'),ref('/alice/status/300/photo/1')];
+ const controller=Object.assign(Object.create(proto),{
+  originProfile:'alice',originTimeline:'alice|photo',navGeneration:21,
+  refs,indexes:new Map(refs.map((r,i)=>[r.key,i])),
+  navigationBusy:false,checkpointBoundaryPending:false,
+  publicApiLoading:false,publicApiCursor:'CURSOR',
+  publicSessionRestored:false,
+  viewer:{isConnected:true},activeIndex(){return 1},
+  sessionStore:{async hasConsent(){consentReads++;entered();await waiting;return false}},
+  toast(){},updateViewerState(){},
+  fetchPublicMediaPage:async()=>{network++;return null}
+ });
+ try {
+  const first=proto.navigate.call(controller,1);
+  await started;
+  const second=proto.navigate.call(controller,1);
+  release();
+  await Promise.all([first,second]);
+  assert.equal(consentReads,1,'same route must not request consent twice');
+  assert.equal(prompts,1,'the user sees just one third-party permission prompt');
+  assert.equal(network,0);
+  assert.equal(controller.publicConsentPendingGeneration,null);
+ }finally{release();state.pathname=prevPath;context.window.confirm=prevConfirm}
+});

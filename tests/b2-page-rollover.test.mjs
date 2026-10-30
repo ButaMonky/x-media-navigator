@@ -429,3 +429,112 @@ test('B2 missing immutable manifest refuses continuation instead of fetching',as
   assert.equal(ctl.refs.length,2);
  }finally{current.pathname=prior;document.hidden=hidden}
 });
+
+test('B2 concurrent FxEmbed boundary checks own one manifest preflight',async()=>{
+ const before=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';
+ document.hidden=false;
+ const snap=currentPage([400,300],'RACE-CURSOR');
+ let release,entered;const gate=new Promise(resolve=>{release=resolve});
+ const started=new Promise(resolve=>{entered=resolve});
+ let reads=0,requests=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+   async loadPageManifest(){
+     reads++;entered();await gate;
+     return {activePage:0,pages:[{page:0},{page:1}]};
+   }
+ });
+ ctl.restoredCheckpointPage=0;
+ ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{requests++;throw Error('Saved next page must be used')};
+ try {
+   const first=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+   await started;
+   const second=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+   release();
+   assert.deepEqual(await Promise.all([first,second]),[false,false]);
+   assert.equal(reads,1,'two near-simultaneous arrows must share one preflight');
+   assert.equal(requests,0,'never fetch an already committed page');
+   assert.equal(ctl.publicApiLoading,false);
+ }finally{release();current.pathname=before;document.hidden=hidden}
+});
+
+test('B2 rapid arrows share one provider fetch when the restored final page can extend',async()=>{
+ const before=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-ONLY');
+ let entered,release;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
+ let reads=0,requests=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){reads++;entered();await gate;
+   return {activePage:0,pages:[{page:0}]} }
+ });
+ ctl.restoredCheckpointPage=0;ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{requests++;return null};
+ try{
+  const first=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  await ready;
+  const second=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  release();
+  assert.deepEqual(await Promise.all([first,second]),[false,false]);
+  assert.equal(reads,1,'only one worker manifest read per concurrent boundary');
+  assert.equal(requests,1,'only one volunteer API request per concurrent boundary');
+  assert.equal(ctl.publicApiLoading,false);
+  assert.equal(ctl.publicApiPreflightGeneration,null);
+ }finally{release();current.pathname=before;document.hidden=hidden}
+});
+test('B2 manifest error releases the preflight claim for a later safe retry',async()=>{
+ const before=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-ERROR');
+ let reads=0,requests=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){reads++;throw Error('Transient MV3 storage unavailable')}
+ });
+ ctl.restoredCheckpointPage=0;ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{requests++;return null};
+ try{
+  assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true),false);
+  assert.equal(ctl.publicApiPreflightGeneration,null);
+  assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true),false);
+  assert.equal(reads,2);
+  assert.equal(requests,0,'storage failures must not permit fallback API requests');
+ }finally{current.pathname=before;document.hidden=hidden}
+});
+
+test('B2 previous route must not clear the newer route preflight claim',async()=>{
+ const before=current.pathname,hidden=document.hidden;
+ current.pathname='/alice/status/300/photo/1';document.hidden=false;
+ const snap=currentPage([400,300],'CURSOR-GEN');
+ let releaseOld,releaseNew,oldEntered,newEntered;
+ const oldGate=new Promise(r=>releaseOld=r),newGate=new Promise(r=>releaseNew=r);
+ const oldReady=new Promise(r=>oldEntered=r),newReady=new Promise(r=>newEntered=r);
+ let reads=0,fetches=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){
+   reads++;
+   if(reads===1){oldEntered();await oldGate}
+   else{newEntered();await newGate}
+   return {activePage:0,pages:[{page:0}]};
+  }
+ });
+ ctl.restoredCheckpointPage=0;ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{fetches++;return null};
+ try{
+  const obsolete=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  await oldReady;
+  ctl.navGeneration++;
+  current.pathname='/alice/status/400/photo/1';
+  const active=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  await newReady;
+  releaseOld();await obsolete;
+  assert.equal(ctl.publicApiPreflightGeneration,ctl.navGeneration,
+   'obsolete generation cannot unlock the newer in-flight preflight');
+  const duplicate=await X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+  assert.equal(duplicate,false);
+  assert.equal(reads,2);
+  releaseNew();await active;
+  assert.equal(fetches,1,'only the current route may contact the provider');
+  assert.equal(ctl.publicApiPreflightGeneration,null);
+ }finally{releaseOld();releaseNew();current.pathname=before;document.hidden=hidden}
+});

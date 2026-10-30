@@ -1,11 +1,11 @@
 # Stage an immutable, side-by-side unpacked QA candidate. Never install it.
 # The ordinary Chrome profile, existing QA folder and stable version are untouched.
 [CmdletBinding()]
-param([string]$Destination = (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.24-HISTORY-QA-20261030'))
+param([string]$Destination = (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.25-PREFLIGHT-QA-20261030'))
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$branch = 'task/xmn-b5-history-hardening-20261030'
+$branch = 'task/xmn-b2-preflight-20261030'
 $files = @('manifest.json','content_script.js','background.js',
   'style.css','icon16.png','icon48.png','icon128.png')
 $source = Join-Path $root 'extension'
@@ -36,8 +36,8 @@ if (Test-Path -LiteralPath $Destination) {
 }
 $sha = Assert-VerifiedSource
 $manifest = Get-Content (Join-Path $source 'manifest.json') -Encoding UTF8 -Raw | ConvertFrom-Json
-if ($manifest.manifest_version -ne 3 -or $manifest.version -ne '2.4.24' -or
-    $manifest.version_name -notlike '*History private QA candidate*') {
+if ($manifest.manifest_version -ne 3 -or $manifest.version -ne '2.4.25' -or
+    $manifest.version_name -notlike '*B2 preflight private QA candidate*') {
   throw 'Unexpected extension version or release channel'
 }
 if (@($manifest.permissions).Count -ne 1 -or $manifest.permissions[0] -ne 'storage') {
@@ -53,7 +53,8 @@ $readOnly = @(
   (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-FxEmbed-QA-20261029'),
   (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.21-B4-QA-20261030'),
   (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.22-B5-QA-20261030'),
-  (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.23-B5-QA-20261030')
+  (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.23-B5-QA-20261030'),
+  (Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-v2.4.24-HISTORY-QA-20261030')
 )
 $protected = @{}
 foreach ($folder in $readOnly) {
@@ -137,10 +138,10 @@ try {
   [IO.File]::WriteAllLines((Join-Path $stage 'SHA256SUMS.txt'),
     $digests,[Text.UTF8Encoding]::new($false))
   $readme = @"
-X Media Navigator v2.4.24 — PRIVATE HISTORY QA candidate (NOT RELEASED)
+X Media Navigator v2.4.25 — PRIVATE B2 PREFLIGHT QA candidate (NOT RELEASED)
 Verified private Git source: $sha
 This folder is a NEW side-by-side Chrome unpacked extension candidate.
-The stable v2.4.18, QA v2.4.20, B4 QA v2.4.21 and B5 QA v2.4.22/2.4.23 folders have not been changed.
+The stable v2.4.18 and all older QA v2.4.20 through v2.4.24 folders have not been changed.
 
 To test manually:
 1. Disable ALL older X Media Navigator extensions temporarily.
@@ -148,13 +149,15 @@ To test manually:
    and select this new versioned folder.
 3. Start with an X account's public Media tab, use left/right arrows,
    and verify multiple-photo posts, GIF/video, and 28 -> 29.
+   If X requires sign-in, authenticate manually in your own browser;
+   never export cookies, passwords, tokens or signed-in network logs.
 4. Confirm that replies remain correct during native SPA transitions.
    Between separately archived pages, full document navigation is expected.
 5. Test disabled network, rapid repeated keys, page refresh and Back/Forward.
 6. Check the preview is not painted over X replies or other photos.
 7. Test browser Back/Forward after archiving at least 3 checkpoint pages.
 8. If any real X behavior differs, do not publish or overwrite stable Chrome.
-8. Optional: manually run B5_READONLY_AUDIT.js in Chrome DevTools Snippets
+9. Optional: manually run B5_READONLY_AUDIT.js in Chrome DevTools Snippets
    while the X viewer is open. It reports only aggregate counts/booleans.
    A DOM-visible image is NOT proof of Paint; inspect the screen yourself.
 
@@ -162,7 +165,7 @@ FxEmbed is a third-party service; explicitly approving continuation shares
 the public account handle and normal network metadata with that service.
 No X cookies or credentials are sent intentionally.
 Never share raw HAR, signed-in network logs, cookies or access tokens.
-Source evidence: docs/implementation/B5-PROVIDER-INTEGRITY-20261030.md
+Source evidence: docs/implementation/B2-PREFLIGHT-20261030.md
 "@
   [IO.File]::WriteAllText((Join-Path $stage 'QA_README.txt'),
     $readme,[Text.UTF8Encoding]::new($false))

@@ -945,7 +945,7 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.24-dev';
+    const DIAGNOSTIC_VERSION = '2.4.25-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
@@ -1075,6 +1075,12 @@ var XMN;
             this.pendingDocumentHandoff = null;
             this.checkpointBoundaryPending = false;
             this.restoredCheckpointPage = null;
+            // Own an asynchronous manifest preflight until it completes. Two keys
+            // in the same route must not query the Worker or API concurrently.
+            this.publicApiPreflightGeneration = null;
+            // Consent prompts are user-visible. Two rapid arrows may not open two
+            // third-party permission dialogs before either MV3 read finishes.
+            this.publicConsentPendingGeneration = null;
             // A checkpoint with a committed next page or full 64-page quota must not
             // repeatedly contact the volunteer provider for unusable pagination.
             this.checkpointContinuationBlocked = false;
@@ -1481,7 +1487,10 @@ var XMN;
          */
         async schedulePublicMediaWarmup(currentIndex) {
             if (currentIndex === null || !this.publicApiAnchorFound ||
-                !this.publicApiCursor || this.publicApiExhausted || this.publicApiLoading ||
+                !this.publicApiCursor || this.publicApiExhausted ||
+                this.checkpointCapacityReached || this.checkpointContinuationBlocked || this.publicApiLoading ||
+                (this.publicApiPreflightGeneration != null &&
+                    this.publicApiPreflightGeneration === this.navGeneration) ||
                 this.navigationBusy || !this.viewer?.isConnected || document.hidden ||
                 this.publicApiWarmTimer !== null ||
                 this.publicApiWarmCursor === this.publicApiCursor || !this.originProfile ||
@@ -1492,8 +1501,12 @@ var XMN;
             if (!await this.sessionStore.hasConsent(profile))
                 return;
             if (this.originProfile !== profile || !this.viewer?.isConnected ||
-                this.publicApiLoading || this.navigationBusy || document.hidden ||
+                this.publicApiLoading ||
+                (this.publicApiPreflightGeneration != null &&
+                    this.publicApiPreflightGeneration === this.navGeneration) ||
+                this.navigationBusy || document.hidden ||
                 !this.publicApiCursor || this.publicApiExhausted ||
+                this.checkpointCapacityReached || this.checkpointContinuationBlocked ||
                 this.publicApiWarmTimer !== null ||
                 this.publicApiWarmCursor === this.publicApiCursor ||
                 this.publicApiRetryAt > Date.now())
@@ -1513,6 +1526,9 @@ var XMN;
             this.publicApiWarmTimer = window.setTimeout(() => {
                 this.publicApiWarmTimer = null;
                 if (this.publicApiCursor !== requestedCursor || this.publicApiLoading ||
+                    (this.publicApiPreflightGeneration != null &&
+                        this.publicApiPreflightGeneration === this.navGeneration) ||
+                    this.checkpointCapacityReached || this.checkpointContinuationBlocked ||
                     this.navigationBusy || !this.viewer?.isConnected || document.hidden)
                     return;
                 // Mark only an actually started call; a cancelled timer may be retried.
@@ -1599,7 +1615,9 @@ var XMN;
         }
         /** Append only validated, chronologically older media records. */
         async loadPublicMediaContinuation(background = false) {
-            if (!this.originProfile || this.publicApiLoading || document.hidden ||
+            if (!this.originProfile || this.publicApiLoading ||
+                (this.publicApiPreflightGeneration != null &&
+                    this.publicApiPreflightGeneration === this.navGeneration) || document.hidden ||
                 (typeof navigator !== 'undefined' && navigator.onLine === false) ||
                 this.publicApiExhausted)
                 return false;
@@ -1625,12 +1643,19 @@ var XMN;
                 window.location.pathname === initialPath && !document.hidden;
             if (this.restoredCheckpointPage != null) {
                 this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
+                // Capture before yielding to MV3. Clear only OUR generation claim; an
+                // older page cannot release the next route's in-flight manifest check.
+                this.publicApiPreflightGeneration = generation;
                 let manifest = null;
                 try {
                     manifest = await this.sessionStore.loadPageManifest(profile);
                 }
                 catch {
                     return false;
+                }
+                finally {
+                    if (this.publicApiPreflightGeneration === generation)
+                        this.publicApiPreflightGeneration = null;
                 }
                 if (!stillSameSession() || !manifest ||
                     manifest.activePage !== this.restoredCheckpointPage)
@@ -1639,7 +1664,12 @@ var XMN;
                 const savedNeighbor = manifest.activePage < manifest.pages.length - 1;
                 if (capacity || savedNeighbor) {
                     this.checkpointContinuationBlocked = true;
+                    const changed = this.checkpointCapacityReached !== capacity;
                     this.checkpointCapacityReached = capacity;
+                    if (changed) {
+                        this.viewerStateSnapshot = null;
+                        this.updateViewerState();
+                    }
                     diagnostic('checkpoint.continuation_blocked', {
                         reason: capacity ? 'page_capacity' : 'already_committed'
                     });
@@ -2004,6 +2034,8 @@ var XMN;
             this.publicApiExhausted = false;
             this.publicSessionRestored = false;
             this.publicApiLoading = false;
+            this.publicApiPreflightGeneration = null;
+            this.publicConsentPendingGeneration = null;
             this.pendingBoundary = null;
             this.pendingDocumentHandoff = null;
             this.checkpointBoundaryPending = false;
@@ -2662,7 +2694,7 @@ var XMN;
                 return;
             // Media refs are append-only within a session; only their count,
             // current route, or navigation busy state changes the post controls.
-            const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}|${this.restoredCheckpointPage ?? -1}`;
+            const key = `${window.location.pathname}|${this.originProfile ?? ''}|${this.refs.length}|${this.navigationBusy ? 1 : 0}|${this.publicApiCursor ? 1 : 0}|${this.publicApiExhausted ? 1 : 0}|${this.restoredCheckpointPage ?? -1}|${this.checkpointCapacityReached ? 1 : 0}`;
             if (this.viewerStateSnapshot?.viewer === viewer && this.viewerStateSnapshot.key === key)
                 return;
             const current = this.activeIndex();
@@ -2694,14 +2726,17 @@ var XMN;
                 const index = currentRef ? ordinal.byStatus.get(currentRef.statusId) ?? -1 : -1;
                 // Known indexed posts are not X's complete historical total.
                 // A continuation cursor means older posts may still be obtainable.
-                const mayContinue = !!this.publicApiCursor && !this.publicApiExhausted;
+                const mayContinue = !!this.publicApiCursor && !this.publicApiExhausted &&
+                    !this.checkpointCapacityReached;
                 const label = index < 0 ? '投稿の位置を確認中' :
                     `投稿 ${index + 1} / ${ordinal.byStatus.size}${mayContinue ? '+' : ''}`;
                 if (indicator.textContent !== label)
                     indicator.textContent = label;
-                indicator.title = mayContinue
-                    ? '現在読み込み済みの投稿数です。続きを取得できる可能性があります。'
-                    : '現在読み込み済みの投稿数です。';
+                indicator.title = this.checkpointCapacityReached
+                    ? '保存済みの上限64ページに達しました。さらに過去の投稿はXのメディア一覧で確認してください。'
+                    : mayContinue
+                        ? '現在読み込み済みの投稿数です。続きを取得できる可能性があります。'
+                        : '現在読み込み済みの投稿数です。';
             }
             this.viewerStateSnapshot = { viewer, key };
             this.schedulePublicMediaWarmup?.(current);
@@ -4020,7 +4055,9 @@ var XMN;
                     return;
                 if (direction !== 1)
                     return;
-                if (this.publicApiLoading) {
+                if (this.publicApiLoading ||
+                    (this.publicApiPreflightGeneration != null &&
+                        this.publicApiPreflightGeneration === this.navGeneration)) {
                     // One pending intent only; its path and generation are checked again
                     // after the public index is committed. Never queue multiple arrows.
                     this.pendingBoundary = { path: window.location.pathname,
@@ -4030,35 +4067,46 @@ var XMN;
                     this.toast('次の投稿を公開APIから取得中です');
                     return;
                 }
+                if (this.publicConsentPendingGeneration != null &&
+                    this.publicConsentPendingGeneration === this.navGeneration)
+                    return;
                 // This uses a separate public third-party API, not X's official API.
                 // Ask only once per tab/profile before disclosing the public handle.
                 const consentProfile = this.originProfile;
                 const consentPath = window.location.pathname;
                 const consentGeneration = this.navGeneration;
                 this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
-                const approved = await this.sessionStore.hasConsent(consentProfile);
-                if (this.originProfile !== consentProfile ||
-                    this.navGeneration !== consentGeneration ||
-                    window.location.pathname !== consentPath || !oldViewer.isConnected)
-                    return;
-                if (!approved) {
-                    const message = '続きの投稿を外部サービス FxEmbed の公開APIで取得しますか？' +
-                        '公開プロフィール名と接続元IP等の通信情報がFxEmbedに伝わります。' +
-                        'XのCookie・ログイン情報・閲覧履歴は送りません。';
-                    if (typeof window.confirm !== 'function' || !window.confirm(message)) {
-                        diagnostic('fxembed.consent_declined');
-                        this.toast('ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
-                        return;
-                    }
-                    if (!await this.sessionStore.grantConsent(consentProfile)) {
-                        this.toast('拡張専用の一時保存を利用できないため、公開APIには接続しません');
-                        return;
-                    }
+                this.publicConsentPendingGeneration = consentGeneration;
+                try {
+                    const approved = await this.sessionStore.hasConsent(consentProfile);
                     if (this.originProfile !== consentProfile ||
                         this.navGeneration !== consentGeneration ||
                         window.location.pathname !== consentPath || !oldViewer.isConnected)
                         return;
-                    diagnostic('fxembed.consent_granted');
+                    if (!approved) {
+                        const message = '続きの投稿を外部サービス FxEmbed の公開APIで取得しますか？' +
+                            '公開プロフィール名と接続元IP等の通信情報がFxEmbedに伝わります。' +
+                            'XのCookie・ログイン情報・閲覧履歴は送りません。';
+                        if (typeof window.confirm !== 'function' || !window.confirm(message)) {
+                            diagnostic('fxembed.consent_declined');
+                            this.toast('ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
+                            return;
+                        }
+                        if (!await this.sessionStore.grantConsent(consentProfile)) {
+                            this.toast('拡張専用の一時保存を利用できないため、公開APIには接続しません');
+                            return;
+                        }
+                        if (this.originProfile !== consentProfile ||
+                            this.navGeneration !== consentGeneration ||
+                            window.location.pathname !== consentPath || !oldViewer.isConnected)
+                            return;
+                        diagnostic('fxembed.consent_granted');
+                    }
+                }
+                finally {
+                    // An obsolete consent flow must not release the next route's lock.
+                    if (this.publicConsentPendingGeneration === consentGeneration)
+                        this.publicConsentPendingGeneration = null;
                 }
                 const appended = await this.loadPublicMediaContinuation();
                 if (!appended) {

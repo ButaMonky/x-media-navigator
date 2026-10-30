@@ -694,3 +694,22 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   動画/GIF/混合・SPA/返信欄/画像速度の観測と公開判断のみ。
 - 完了詳細、出力場所、BLOCKEDの原因・再開位置：
   `docs/implementation/B5-RELEASE-GATE-HANDOFF-20261030.md`。
+
+---
+
+## 2026-10-30｜B2 連続キー・事前照合の二重API取得を修正
+
+- 専用ブランチ`task/xmn-b2-preflight-20261030`。
+  基準`b951b94`、新版v2.4.25（旧QAはすべて保護）。
+- WorkerのManifest確認中は`publicApiLoading`がまだfalseで、
+  連続右キー／ウォームアップにより重複照合・通信が起こり得た。
+  世代別`publicApiPreflightGeneration`で一件だけ通すよう修正。
+- 古い経路の非同期完了は新しい経路のpreflightを解除しない。
+  失敗・中断時はロックを解放して安全に再試行。
+- 64ページ上限に到達後は取得可能の「+」を表示せず、
+  拡張の上限とX側で続きを見る説明を表示。長い索引を再走査しない。
+- 追加のRED→GREEN5件と配布保護2件を含め、
+  Node364件（355PASS・0FAIL・3SKIP・実X TODO6）、型検査PASS。
+- 受入・未完了の詳細：`docs/implementation/B2-PREFLIGHT-20261030.md`。
+- 公開XのMediaはログイン必須で実機受入不可。安全拒否迂回や
+  Chromeのアカウントデータ読出しはせず、公開完了は保留。
