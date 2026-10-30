@@ -554,3 +554,34 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 実Xでログイン済みの画廊/動画/GIFと返信欄の受入・公開は未完了。
   既存のB5版QAフォルダを更新せず、主正本へのFF-only統合は
   GitHub CI成功後のみ行う。
+
+---
+
+## 2026-10-30｜B5 ネイティブ媒体の初回矢印QA・同期済みチェックポイント
+
+- 主開発正本 `task/xmn-b0-b3-20261029`は、
+  並行担当の`f2c7980`（B5 QA正本／重複ステージ拒否の記録）を保持したまま
+  `task/xmn-b5-native-integration-20261030`の
+  `db03cb72605bd5efa0714ca57ecea7efd7099d95`へ**FF-only**統合。
+- 新しく実Chromeの使い捨てMV3環境で、最初からAPI seedを使わない
+  **ネイティブ28件からの右キー1回→APIで検証した29件目→左キーで復帰**、
+  4枚投稿の**photo/4**から次投稿へ進む操作、同意拒否と
+  不正なアンカー時の停止を4独立シナリオでPASS。
+  Xログイン済みサイトを検証したものではない。
+- 正本のNode **331件：322PASS、0FAIL、3SKIP、実X TODO6**、
+  TypeScript検査PASS。追加4つのMV3検査はWindows
+  Chrome for TestingでPASS。
+- GitHub Actions `41016739249`（原独立証拠ブランチ）、
+  `41017279285`（並行docs維持の統合ブランチ）、
+  `41017538802`（主開発ブランチの同一SHA）は**SUCCESS**。
+- 既存の非公開B5 `v2.4.22` QAフォルダは
+  **元の検証済み実装コミット`f85dc47`のまま不変更**。
+  新しい統合コミットはテスト／研究資料／npm試験コマンドのみ。
+  7個のChrome拡張アセットは、Windows CRLFと生成JSのLFを
+  **LFに正規化したSHA-256内容が7/7一致**。生のbyte hashの違いは
+  改行コードだけであり、QA更新や上書きは禁止。
+- 実際のXでの28→29・動画/GIF・返信欄とPaint・ネットワーク測定、
+  同意や権限の実機受入および公開は未完了。
+- 次の正本再開位置：
+  `docs/implementation/B5-NATIVE-FIRST-ARROW-20261030.md`と
+  `docs/implementation/B5-28-TO-29-20261030.md`を参照。
