@@ -1023,6 +1023,7 @@ var XMN;
             this.prefetchQueue = [];
             this.prefetchWanted = new Set();
             this.prefetchInFlight = 0;
+            this.prefetchPolicyStopping = false;
             this.prefetchFailed = new Set();
             this.prefetchTooLarge = new Set();
             this.prefetchFailurePath = '';
@@ -1092,6 +1093,14 @@ var XMN;
             // X has constructed its React modal. This never consumes the click.
             document.addEventListener('click', (event) => this.onMediaTileClick(event), true);
             document.addEventListener('visibilitychange', () => this.onVisibilityChange(), { passive: true });
+            // Chrome may change Save-Data, network quality or offline status
+            // WHILE two low-priority images are already downloading. Stop them
+            // immediately instead of waiting for the next navigation/idle poll.
+            window.addEventListener('offline', () => this.onNetworkPolicyChange(), { passive: true });
+            window.addEventListener('online', () => this.onNetworkPolicyChange(), { passive: true });
+            const connection = typeof navigator === 'undefined' ? null :
+                navigator.connection;
+            connection?.addEventListener?.('change', () => this.onNetworkPolicyChange());
             window.addEventListener('resize', () => {
                 this.controlsPaneAnchor = null;
                 this.controlsLayoutPath = '';
@@ -2937,6 +2946,52 @@ var XMN;
             if (this.viewer?.isConnected && this.originProfile)
                 this.schedulePreload();
         }
+        /** Only speculative CDN images obey these network policy controls.
+         * The native X photo itself is owned by the website and is never aborted.
+         */
+        optionalPrefetchAllowed() {
+            if (typeof navigator === 'undefined')
+                return true;
+            const connection = navigator.connection;
+            return navigator.onLine !== false && !connection?.saveData &&
+                !/^(slow-2g|2g)$/.test(connection?.effectiveType ?? '');
+        }
+        /** Cancel only outstanding optional transfers, not decoded cache or the
+         * exact photo presently serving a visible transition. A cancel() can
+         * synchronously call drainPrefetchQueue(), hence the re-entry guard.
+         */
+        suspendOptionalPrefetch() {
+            if (this.prefetchPolicyStopping)
+                return;
+            this.prefetchPolicyStopping = true;
+            try {
+                if (this.preloadTimer != null && typeof window.clearTimeout === 'function')
+                    window.clearTimeout(this.preloadTimer);
+                this.preloadTimer = null;
+                this.preloadForPath = '';
+                this.prefetchQueue = [];
+                this.prefetchWanted.clear();
+                for (const entry of [...this.prefetched.values()]) {
+                    if (entry.loading && !this.handoff?.host.contains(entry.image))
+                        entry.cancel?.();
+                }
+            }
+            finally {
+                this.prefetchPolicyStopping = false;
+            }
+        }
+        /** A slow/offline/Data-Saver transition must take effect during fetch,
+         * not only on the next click. Online restoration reuses normal limits.
+         */
+        onNetworkPolicyChange() {
+            if (!this.optionalPrefetchAllowed()) {
+                this.suspendOptionalPrefetch();
+                return;
+            }
+            this.preloadForPath = '';
+            if (!document.hidden && this.viewer?.isConnected && this.originProfile)
+                this.schedulePreload();
+        }
         /** Prefetch before X opens the modal, but only after a real media-tile click. */
         onMediaTileClick(event) {
             if (!this.originProfile || this.pendingGrid || this.navigationBusy ||
@@ -3010,12 +3065,14 @@ var XMN;
             return model?.select(this.refs[index].statusId, 450) ?? null;
         }
         preloadAdjacentImages(preopen) {
-            if ((!this.viewer?.isConnected && !preopen) || !this.originProfile || document.hidden ||
-                (typeof navigator !== 'undefined' && navigator.onLine === false))
+            if ((!this.viewer?.isConnected && !preopen) || !this.originProfile ||
+                document.hidden)
                 return;
+            if (!this.optionalPrefetchAllowed()) {
+                this.suspendOptionalPrefetch();
+                return;
+            }
             const connection = navigator.connection;
-            if (connection?.saveData || /^(slow-2g|2g)$/.test(connection?.effectiveType ?? ''))
-                return;
             const index = preopen?.index ?? this.activeIndex();
             const current = preopen?.current ?? XMN.mediaRefFromHref(window.location.pathname, this.originProfile);
             if (index === null || !current || this.refs[index]?.statusId !== current.statusId)
@@ -3143,6 +3200,10 @@ var XMN;
             const activeModal = !!this.viewer?.isConnected;
             const openedFromGrid = allowMediaGrid &&
                 XMN.mediaProfileFromPath(window.location.pathname) === this.originProfile;
+            if (!this.optionalPrefetchAllowed()) {
+                this.suspendOptionalPrefetch();
+                return;
+            }
             if (document.hidden || (!activeModal && !openedFromGrid) || this.navigationBusy)
                 return;
             while (this.prefetchInFlight < PREFETCH_MAX_CONCURRENT && this.prefetchQueue.length) {
