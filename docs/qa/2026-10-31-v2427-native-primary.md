@@ -43,3 +43,12 @@
 4. 実Xで長大一覧、メモリ・通信量・描画の最終確認。全投稿の無制限取得・非公開投稿の発見は仕様として保証しない。
 
 次の再開位置：GitHub CI成功→固定Currentを更新→Chrome拡張カード再読み込み→実X最終受入。重大な不合格時は新ブランチで記録し、公開mainを変更しない。
+
+## CI修正記録・MV3移行（2026-10-31追記）
+
+- Feature branch initially at bffe315aaf5d881c795f9d08fe31735c09013a85: GitHub Actions run 41094532945 failed in npm test because historical FxEmbed tests expected opt-in behavior without explicitly enabling it. Fix commit a169eca4bf2be0e55a9567d25ab22da1ac175038, keeping historical tests available only under explicit test flags.
+- Run 41106715906 passed Node suite and isolated synthetic browser checks but failed at \`test:mv3:native\`: the original MV3 fixture was actually a **consented FxEmbed request and full-document restore**, incompatible with new native-only default. This was a stale acceptance assumption, not evidence of a real-X navigation failure.
+- New required native MV3 fixture tests: at 28 known posts, right arrow keeps existing X-like viewer and replies while refusing external API and consent; after a user-simulated X media-grid append of the exact 29th native link, one right arrow activates the X-owned SPA link and retains the modal. No fabricated ID, hidden scroll, or third-party request. Isolated localhost, no logged-in X or browser credentials.
+- Other three MV3 historical provider fixtures retain original consent/invalidation assertions but now set \`experimentalThirdPartyApiEnabled=true\` explicitly in their isolated test Controller.
+- MV3 history and BFCache historical fixtures create a second explicitly opted-in isolated test Controller on restored pages. The normal production startup continues with the parameterless constructor, native-only by default. The opt-in constructor requires a private extension-side option and does not expose a user-facing switch or remove FxEmbed consent checks.
+- Windows local \`npm run check\` and \`node --test --test-force-exit --test-concurrency=4 tests/*.test.mjs\`: **372 total / 363 PASS / 0 FAIL / 3 SKIP / 6 TODO**, exit 0. Chrome-for-Testing MV3 fixture changes must still pass GitHub CI before promotion.

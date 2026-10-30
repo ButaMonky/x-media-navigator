@@ -87,3 +87,29 @@ test('cached public cursor cannot advertise automatic fetching in native-only UI
   assert.match(status.title,/読み込み済み/);
   assert.equal(nextButton.disabled,false,'right click can show a clear boundary message');
 });
+
+test('legacy provider can only start with an explicit isolated extension-side option',async()=>{
+  const oldRestore=proto.restorePublicMediaSession;
+  const oldTick=proto.tick;
+  const oldRoute=proto.installRouteObserver;
+  let calls=0;
+  proto.restorePublicMediaSession=async()=>{calls++;};
+  proto.tick=()=>{};
+  proto.installRouteObserver=()=>false;
+  try{
+    const isolated=new context.XMN.Controller({enableLegacyProviderForIsolatedQa:true});
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(isolated.experimentalThirdPartyApiEnabled,true);
+    assert.equal(calls,1,'explicit QA opt-in may test historical Worker sessions');
+    const native=new context.XMN.Controller();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(native.experimentalThirdPartyApiEnabled,false);
+    assert.equal(calls,1,'normal construction must not restore external data');
+  }finally{
+    proto.restorePublicMediaSession=oldRestore;
+    proto.tick=oldTick;
+    proto.installRouteObserver=oldRoute;
+  }
+});

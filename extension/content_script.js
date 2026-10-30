@@ -1027,7 +1027,7 @@ var XMN;
     }
     /** Store canonical media refs; ephemeral DOM handles are bounded and revalidated. */
     class Controller {
-        constructor() {
+        constructor(options = {}) {
             this.sessionStore = new XMN.SessionStore();
             this.originProfile = null;
             this.originTimeline = null;
@@ -1118,6 +1118,10 @@ var XMN;
             this.pendingSourceTiles = new Set();
             this.navigationBusy = false;
             this.navGeneration = 0;
+            // Only an isolated extension-side test can explicitly opt into legacy
+            // provider behavior. Normal production construction supplies no options.
+            this.experimentalThirdPartyApiEnabled =
+                options.enableLegacyProviderForIsolatedQa === true;
             XMN.clearLegacyPageSession();
             const startup = this.experimentalThirdPartyApiEnabled
                 ? this.restorePublicMediaSession() : Promise.resolve();
@@ -2740,7 +2744,7 @@ var XMN;
                     ? '保存済みの上限64ページに達しました。続きはXのメディア一覧で確認してください。'
                     : mayContinue
                         ? '現在読み込み済みの投稿数です。続きを取得できる可能性があります。'
-                        : '現在読み込み済みの投稿数です。';
+                        : 'Xのメディア一覧で読み込み済みの投稿数です。全件数ではありません。';
             }
             this.viewerStateSnapshot = { viewer, key };
             if (this.experimentalThirdPartyApiEnabled)

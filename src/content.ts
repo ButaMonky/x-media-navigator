@@ -225,7 +225,11 @@ namespace XMN {
     private navGeneration = 0;
     private refreshId: number;
 
-    constructor() {
+    constructor(options: { enableLegacyProviderForIsolatedQa?: boolean } = {}) {
+      // Only an isolated extension-side test can explicitly opt into legacy
+      // provider behavior. Normal production construction supplies no options.
+      this.experimentalThirdPartyApiEnabled =
+        options.enableLegacyProviderForIsolatedQa === true;
       clearLegacyPageSession();
       const startup = this.experimentalThirdPartyApiEnabled
         ? this.restorePublicMediaSession() : Promise.resolve();
