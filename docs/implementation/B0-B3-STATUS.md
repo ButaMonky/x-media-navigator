@@ -317,3 +317,11 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 主正本のB3非同期保存競合の巻戻し修正も統合済み。Node 292件中283 PASS・0 FAIL、3 SKIP、6 LIVE-X TODO。合成Chromium4/4、Chrome for Testing実Worker往復、Edge拒否テスト合格。
 - **この段階で自動450参照超ページングはまだ未実装**。B2の次作業は「カーソルで取得した新ページを完全投稿群としてWorkerへコミットし、履歴を失わずウィンドウ切替」。
 - 実Xの28→29、GIF/動画、返信欄・低画質の実画面/速度は引き続き未受入。公開・通常版・安定版には手を触れない。
+
+## 主開発正本への採用確定｜2026-10-30
+
+- 保存済みページ双方向移動を、独立`task/xmn-b2-adjacent-rescue-20261030`の`70a33fdd34e2a6260fecec8aa0bd93ce13c10dfa`から`task/xmn-b0-b3-20261029`へ **FF-only** 統合・GitHub push済み。
+- 独立ブランチ GitHub Actions **run `40986049304` SUCCESS**、主開発正本の同一SHAに対する **run `40986198510` SUCCESS**（Node・TypeScript・必須Chromium・生成JS整合）。
+- 元の`x-media-navigator-b2-adjacent`作業ツリーには既存未コミット差分が残るが、上書き・破棄・コミット代行はしていない。採用した差分は新たな独立作業ツリーで検査したもの。
+- 次の再開点はB2 **自動ページ確定／450参照超の保存／cursor継続と逆方向復元**。別作業ツリー`x-media-navigator-b2-transition`の未コミット変更と、採用済み隣接ページAPIの衝突をまず照合する。未検証のまま直接統合しない。
+- 安定ブランチ／公開main／通常版v2.4.18／QAインストールv2.4.20／既存Draft PR #17は変更なし。本番Xでの動作確認・公開は保留。
