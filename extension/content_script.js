@@ -945,7 +945,7 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.25-dev';
+    const DIAGNOSTIC_VERSION = '2.4.26-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
@@ -1081,6 +1081,8 @@ var XMN;
             this.checkpointCapacityReached = false;
             // Avoid two provider fetches while awaiting an asynchronous manifest read.
             this.publicApiPreflightGeneration = null;
+            // Avoid duplicate prompts while the Worker checks one public-service consent.
+            this.publicConsentPendingGeneration = null;
             // Warm only after the user has explicitly allowed this external provider.
             this.publicApiWarmCursor = null;
             this.publicApiWarmTimer = null;
@@ -2037,6 +2039,7 @@ var XMN;
             this.checkpointContinuationBlocked = false;
             this.checkpointCapacityReached = false;
             this.publicApiPreflightGeneration = null;
+            this.publicConsentPendingGeneration = null;
             this.publicApiWarmCursor = null;
             if (this.publicApiWarmTimer !== null)
                 window.clearTimeout(this.publicApiWarmTimer);
@@ -4060,35 +4063,54 @@ var XMN;
                     this.toast('次の投稿を公開APIから取得中です');
                     return;
                 }
+                if (this.publicConsentPendingGeneration != null &&
+                    this.publicConsentPendingGeneration === this.navGeneration)
+                    return;
                 // This uses a separate public third-party API, not X's official API.
                 // Ask only once per tab/profile before disclosing the public handle.
                 const consentProfile = this.originProfile;
                 const consentPath = window.location.pathname;
                 const consentGeneration = this.navGeneration;
                 this.sessionStore ?? (this.sessionStore = new XMN.SessionStore());
-                const approved = await this.sessionStore.hasConsent(consentProfile);
-                if (this.originProfile !== consentProfile ||
-                    this.navGeneration !== consentGeneration ||
-                    window.location.pathname !== consentPath || !oldViewer.isConnected)
-                    return;
-                if (!approved) {
-                    const message = '続きの投稿を外部サービス FxEmbed の公開APIで取得しますか？' +
-                        '公開プロフィール名と接続元IP等の通信情報がFxEmbedに伝わります。' +
-                        'XのCookie・ログイン情報・閲覧履歴は送りません。';
-                    if (typeof window.confirm !== 'function' || !window.confirm(message)) {
-                        diagnostic('fxembed.consent_declined');
-                        this.toast('ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
-                        return;
+                this.publicConsentPendingGeneration = consentGeneration;
+                try {
+                    let approved;
+                    try {
+                        approved = await this.sessionStore.hasConsent(consentProfile);
                     }
-                    if (!await this.sessionStore.grantConsent(consentProfile)) {
-                        this.toast('拡張専用の一時保存を利用できないため、公開APIには接続しません');
+                    catch {
+                        diagnostic('fxembed.consent_store_failed');
+                        this.toast('一時保存の同意状態を確認できないため外部APIには接続しません');
                         return;
                     }
                     if (this.originProfile !== consentProfile ||
                         this.navGeneration !== consentGeneration ||
                         window.location.pathname !== consentPath || !oldViewer.isConnected)
                         return;
-                    diagnostic('fxembed.consent_granted');
+                    if (!approved) {
+                        const message = '続きの投稿を外部サービス FxEmbed の公開APIで取得しますか？' +
+                            '公開プロフィール名と接続元IP等の通信情報がFxEmbedに伝わります。' +
+                            'XのCookie・ログイン情報・閲覧履歴は送りません。';
+                        if (typeof window.confirm !== 'function' || !window.confirm(message)) {
+                            diagnostic('fxembed.consent_declined');
+                            this.toast('ここまでが読み込み済みです。続きはXのメディア一覧で読み込んでください');
+                            return;
+                        }
+                        if (!await this.sessionStore.grantConsent(consentProfile)) {
+                            this.toast('拡張専用の一時保存を利用できないため、公開APIには接続しません');
+                            return;
+                        }
+                        if (this.originProfile !== consentProfile ||
+                            this.navGeneration !== consentGeneration ||
+                            window.location.pathname !== consentPath || !oldViewer.isConnected)
+                            return;
+                        diagnostic('fxembed.consent_granted');
+                    }
+                }
+                finally {
+                    // Obsolete requests cannot unlock the next document's consent step.
+                    if (this.publicConsentPendingGeneration === consentGeneration)
+                        this.publicConsentPendingGeneration = null;
                 }
                 const appended = await this.loadPublicMediaContinuation();
                 if (!appended) {

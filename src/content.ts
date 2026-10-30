@@ -13,7 +13,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.25-dev';
+  const DIAGNOSTIC_VERSION = '2.4.26-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -181,6 +181,8 @@ namespace XMN {
     private checkpointCapacityReached=false;
     // Avoid two provider fetches while awaiting an asynchronous manifest read.
     private publicApiPreflightGeneration:number|null=null;
+    // Avoid duplicate prompts while the Worker checks one public-service consent.
+    private publicConsentPendingGeneration:number|null=null;
     // Warm only after the user has explicitly allowed this external provider.
     private publicApiWarmCursor: string | null = null;
     private publicApiWarmTimer: number | null = null;
@@ -1085,6 +1087,7 @@ namespace XMN {
       this.checkpointContinuationBlocked = false;
       this.checkpointCapacityReached = false;
       this.publicApiPreflightGeneration = null;
+      this.publicConsentPendingGeneration = null;
       this.publicApiWarmCursor = null;
       if (this.publicApiWarmTimer !== null) window.clearTimeout(this.publicApiWarmTimer);
       this.publicApiWarmTimer = null;
@@ -2993,13 +2996,23 @@ namespace XMN {
           this.toast('次の投稿を公開APIから取得中です');
           return;
         }
+        if(this.publicConsentPendingGeneration != null &&
+           this.publicConsentPendingGeneration===this.navGeneration) return;
         // This uses a separate public third-party API, not X's official API.
         // Ask only once per tab/profile before disclosing the public handle.
         const consentProfile = this.originProfile;
         const consentPath = window.location.pathname;
         const consentGeneration = this.navGeneration;
         this.sessionStore ??= new SessionStore();
-        const approved = await this.sessionStore.hasConsent(consentProfile);
+        this.publicConsentPendingGeneration=consentGeneration;
+        try {
+        let approved: boolean;
+        try { approved = await this.sessionStore.hasConsent(consentProfile); }
+        catch {
+          diagnostic('fxembed.consent_store_failed');
+          this.toast('一時保存の同意状態を確認できないため外部APIには接続しません');
+          return;
+        }
         if (this.originProfile !== consentProfile ||
             this.navGeneration !== consentGeneration ||
             window.location.pathname !== consentPath || !oldViewer.isConnected) return;
@@ -3020,6 +3033,11 @@ namespace XMN {
               this.navGeneration !== consentGeneration ||
               window.location.pathname !== consentPath || !oldViewer.isConnected) return;
           diagnostic('fxembed.consent_granted');
+        }
+        } finally {
+          // Obsolete requests cannot unlock the next document's consent step.
+          if(this.publicConsentPendingGeneration===consentGeneration)
+            this.publicConsentPendingGeneration=null;
         }
         const appended = await this.loadPublicMediaContinuation();
         if (!appended) {
