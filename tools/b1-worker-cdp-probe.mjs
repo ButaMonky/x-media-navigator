@@ -68,10 +68,31 @@ const getTargets=async port=>{
  if(!res.ok)throw Error('DevTools list HTTP '+res.status);
  return res.json();
 };
+/** Recover only an uninitialized, disposable localhost test page once.
+ * An already-started refusal check is never reloaded or replayed.
+ */
+const reloadDisposablePage=async target=>new Promise((resolve,reject)=>{
+ const ws=new WebSocket(target.webSocketDebuggerUrl);
+ const timeout=setTimeout(()=>{ws.close();reject(Error('MV3 localhost reload timed out'))},12000);
+ ws.addEventListener('open',()=>ws.send(JSON.stringify({
+  id:1,method:'Page.reload',params:{ignoreCache:true}
+ })));
+ ws.addEventListener('message',event=>{
+  let message;
+  try{message=JSON.parse(String(event.data))}catch{return}
+  if(message.id!==1)return;
+  clearTimeout(timeout);ws.close();
+  if(message.error)reject(Error(JSON.stringify(message.error)));
+  else resolve();
+ });
+ ws.addEventListener('error',()=>{
+  clearTimeout(timeout);reject(Error('MV3 localhost reload CDP error'));
+ });
+});
 const evaluate=async (target,expression)=>{
  return new Promise((resolve,reject)=>{
   const ws=new WebSocket(target.webSocketDebuggerUrl);
-  const timer=setTimeout(()=>{ws.close();reject(Error('CDP timed out'))},5000);
+  const timer=setTimeout(()=>{ws.close();reject(Error('CDP timed out'))},12000);
   ws.addEventListener('open',()=>ws.send(JSON.stringify({id:1,method:'Runtime.evaluate',
     params:{expression,returnByValue:true,awaitPromise:true}})));
   ws.addEventListener('message',ev=>{
@@ -100,8 +121,12 @@ try{
  child.stderr.on('data',b=>browserErrors+=String(b).slice(-750));
  const port=await readPort();
  let state='unknown',content='unknown',workerDetected=false;
- for(let i=0;i<35;i++){
-  const targets=await getTargets(port);
+ let startupReloaded=false;
+ for(let i=0;i<100;i++){
+  let targets=[];
+  try{targets=await getTargets(port)}catch{
+   await sleep(250);continue;
+  }
   workerDetected ||= targets.some(t=>t.type==='service_worker' &&
     t.url.startsWith('chrome-extension://'));
   const page=targets.find(t=>t.type==='page' && t.url.startsWith(local));
@@ -116,12 +141,21 @@ try{
    }catch{}
   }
   if(state!=='waiting' && state!=='not-set' && state!=='unknown')break;
+  // Chrome for Testing can open the initial document before installing
+  // its unpacked extension. The Worker exists but probe.js was never
+  // injected. Restore ONLY this exact disposable page before the probe
+  // begins, without retrying any real origin-rejection result.
+  if(i>=12 && !startupReloaded && workerDetected && page &&
+     page.url===local && state==='not-set' && content==='not-set'){
+    startupReloaded=true;
+    await reloadDisposablePage(page);
+  }
   await sleep(250);
  }
  const result={contentScriptLoaded:content==='loaded',
   actualMv3WorkerTargetDetected:workerDetected,
   workerStatus:state,foreignOriginRejected:state==='rejected-localhost',
-  temporaryProfileOnly:true,realXVisited:false,authenticationRead:false};
+  startupReloaded,temporaryProfileOnly:true,realXVisited:false,authenticationRead:false};
  console.log(JSON.stringify(result,null,2));
  if(!result.contentScriptLoaded || !result.foreignOriginRejected)process.exitCode=2;
 }finally{

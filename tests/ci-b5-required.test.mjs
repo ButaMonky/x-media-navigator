@@ -41,3 +41,18 @@ test('B5 CI smoke always uses temporary profile, localhost, bounded CDP',()=>{
   assert.match(src,/MV3 CDP .* timed out/);
  }
 });
+
+test('B1 worker origin-rejection CI recovers only an untouched disposable first page',()=>{
+ const worker=get('tools/b1-worker-cdp-probe.mjs');
+ const workflow=get('.github/workflows/check.yml');
+ assert.match(workflow,/npm run test:mv3:reject/);
+ assert.match(worker,/workerDetected && page &&/);
+ assert.match(worker,/page\.url===local && state==='not-set' && content==='not-set'/);
+ assert.match(worker,/if\(i>=12 && !startupReloaded/);
+ assert.match(worker,/startupReloaded=true;/);
+ assert.match(worker,/method:'Page\.reload'/);
+ assert.match(worker,/foreignOriginRejected:state==='rejected-localhost'/);
+ assert.match(worker,/!result\.contentScriptLoaded \|\| !result\.foreignOriginRejected/);
+ assert.match(worker,/refusing|Refusing|xmn-worker-cdp-/);
+ assert.doesNotMatch(worker,/x\.com\/.*(?:worker-check|probe)/);
+});

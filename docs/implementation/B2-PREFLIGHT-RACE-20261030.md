@@ -82,3 +82,26 @@
   必須Chrome MV3 7ケースと生成JS一致を**省略しない**。
 - 上記は一時Chromeプロフィールとlocalhostでの検証であり、
   認証済み実Xでの操作確認を代替しない。
+
+## GitHub Actionsの初回失敗と厳格な再試行
+
+- 初回コミット `e16ec2341f82c9bf86acf7ffabb21058ef5b80cb`
+  のGitHub Actions run `41036306470` は**FAIL**。
+- Linux Chromeの必須MV3試験で、28→29、4枚目、同意拒否、
+  不正なAPIアンカー、履歴ジャンプ、Back/Forwardの6ケースが
+  すべてPASSした後、**最後の未認可オリジン拒否試験だけ**
+  `contentScriptLoaded=false`, `workerStatus=not-set` で失敗。
+  実Workerターゲットは見えており、最初のlocalhostテスト文書に
+  probe.jsが装着されない起動タイミング競合と判断。
+- `tools/b1-worker-cdp-probe.mjs`で、本物のChrome Workerが
+  存在し、最初の**使い捨てlocalhostページ**で、
+  スクリプト・判定が一度も始まっていない場合に限り
+  CDP `Page.reload`を**最大1回**だけ行う。
+- 既に`waiting`になった判定や、拒否・失敗などの応答は
+  再読み込みしない。ログイン済みX・通常Chromeプロファイルには
+  絶対に接続せず、元の未認可元拒否条件を維持。
+- DevToolsの読取待機は12秒、画面初期化の最大観測時間は
+  おおむね25秒に延長。期限切れは引き続き**FAIL**。
+- 修正後、独立Windows Chromeの`test:mv3:reject`はPASS。
+  次のGitHub CIが成功するまで、非公開QAの生成と開発正本統合は
+  行わない。
