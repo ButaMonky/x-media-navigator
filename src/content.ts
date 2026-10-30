@@ -13,7 +13,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.22-dev';
+  const DIAGNOSTIC_VERSION = '2.4.23-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -174,6 +174,10 @@ namespace XMN {
     private pendingDocumentHandoff: {target:string;started:number;generation:number}|null=null;
     private checkpointBoundaryPending=false;
     private restoredCheckpointPage:number|null=null;
+    // A committed next page or 64-page cap must not cause repeated external
+    // requests for a page that cannot be used. Reset on a new route session.
+    private checkpointContinuationBlocked=false;
+    private checkpointCapacityReached=false;
     // Warm only after the user has explicitly allowed this external provider.
     private publicApiWarmCursor: string | null = null;
     private publicApiWarmTimer: number | null = null;
@@ -375,10 +379,28 @@ namespace XMN {
     private async readBoundedPublicBody(response: Response): Promise<string|null> {
       const maxBytes=4_000_000;
       if(!response.body){
-        // Test fixtures and old browsers have no stream. The bound is applied
-        // immediately after text() in this compatibility fallback.
+        // A compatibility-only path (old browser / text-only test fixture).
+        // UTF-16 string.length is NOT the wire byte size: 1.5M Japanese
+        // characters can exceed a 4MB payload limit without exceeding 4M
+        // JS code units. Check length first to avoid unnecessary allocations,
+        // then count the actual UTF-8 bytes for non-ASCII data.
         const text=await response.text();
-        return text.length<=maxBytes ? text : null;
+        if(text.length>maxBytes)return null;
+        // Count precisely without allocating a second 4MB Uint8Array.
+        // TextEncoder may also be unavailable in isolated test contexts.
+        let bytes=0;
+        for(let i=0;i<text.length;i++){
+          const unit=text.charCodeAt(i);
+          if(unit<=0x7f)bytes++;
+          else if(unit<=0x7ff)bytes+=2;
+          else if(unit>=0xd800 && unit<=0xdbff && i+1<text.length &&
+            text.charCodeAt(i+1)>=0xdc00 && text.charCodeAt(i+1)<=0xdfff){
+            bytes+=4;
+            i++; // Valid surrogate pair is one four-byte UTF-8 code point.
+          }else bytes+=3; // BMP or U+FFFD for a lone surrogate.
+          if(bytes>maxBytes)return null;
+        }
+        return text;
       }
       const reader=response.body.getReader();
       const decoder=new TextDecoder();
@@ -531,7 +553,8 @@ namespace XMN {
         this.publicApiWarmCursor = requestedCursor;
         diagnostic('fxembed.warmup', { remainingPosts: remaining });
         void this.loadPublicMediaContinuation(true).then(ok=>{
-          if(!ok && this.publicApiWarmCursor===requestedCursor)
+          if(!ok && !this.checkpointContinuationBlocked &&
+             this.publicApiWarmCursor===requestedCursor)
             this.publicApiWarmCursor=null;
         }).catch(()=>{
           if(this.publicApiWarmCursor===requestedCursor)
@@ -625,6 +648,28 @@ namespace XMN {
         generation === this.navGeneration && this.originProfile === profile &&
         this.originTimeline === timeline &&
         window.location.pathname === initialPath && !document.hidden;
+      if(this.restoredCheckpointPage!=null){
+        this.sessionStore ??= new SessionStore();
+        let manifest:PublicPageManifest|null=null;
+        try{
+          manifest=await this.sessionStore.loadPageManifest(profile);
+        }catch{return false}
+        if(!stillSameSession() || !manifest ||
+           manifest.activePage!==this.restoredCheckpointPage)
+          return false;
+        const full=manifest.pages.length>=64;
+        const alreadyHasNext=manifest.activePage<manifest.pages.length-1;
+        if(full||alreadyHasNext){
+          this.checkpointContinuationBlocked=true;
+          this.checkpointCapacityReached=full;
+          diagnostic('checkpoint.continuation_blocked',{
+            reason:full?'page_capacity':'already_committed'
+          });
+          return false; // No FxEmbed fetch or mutations.
+        }
+      }
+      this.checkpointContinuationBlocked=false;
+      this.checkpointCapacityReached=false;
       this.publicApiLoading = true;
       if (!background) {
         this.navigationBusy = true;
@@ -966,6 +1011,8 @@ namespace XMN {
       this.pendingDocumentHandoff = null;
       this.checkpointBoundaryPending = false;
       this.restoredCheckpointPage = null;
+      this.checkpointContinuationBlocked = false;
+      this.checkpointCapacityReached = false;
       this.publicApiWarmCursor = null;
       if (this.publicApiWarmTimer !== null) window.clearTimeout(this.publicApiWarmTimer);
       this.publicApiWarmTimer = null;
@@ -2848,7 +2895,11 @@ namespace XMN {
         }
         const appended = await this.loadPublicMediaContinuation();
         if (!appended) {
-          this.toast('公開APIで次の投稿を確認できませんでした。Xのメディア一覧で読み込んでください');
+          this.toast(this.checkpointCapacityReached
+            ? '保存済みの上限64ページに達しました。Xのメディア一覧で続きを確認してください'
+            : this.checkpointContinuationBlocked
+              ? '次の保存済みページは、投稿の境界から移動できます'
+              : '公開APIで次の投稿を確認できませんでした。Xのメディア一覧で読み込んでください');
           return;
         }
         // Newly verified public URL can now be navigated as a native X page,

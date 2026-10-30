@@ -337,3 +337,95 @@ test('B2 re-fetching a previously committed neighbor must not mark current page 
   assert.deepEqual(ctl.refs.map(x=>x.key),[ref(400).key,ref(300).key]);
  }finally{current.pathname=before;document.hidden=hidden}
 });
+
+test('B2 when 64 checkpoint pages are full, repeated arrows cannot hammer FxEmbed',async()=>{
+ const oldPath=current.pathname,oldHidden=document.hidden;
+ document.hidden=false;current.pathname='/alice/status/300/photo/1';
+ let fetches=0;const snap=currentPage([400,300],'MORE-PAGES');
+ const pages=Array.from({length:64},(_,i)=>({page:i}));
+ const store={async loadPageManifest(){return {
+  schema:1,profile:'alice',timeline:'alice|photo',
+  expires:snap.expires,activePage:63,pages
+ }}};
+ const ctl=continuationCtl(snap,[ref(200)],store,null);
+ ctl.restoredCheckpointPage=63;ctl.publicSessionRestored=true;
+ ctl.navigationBusy=false;
+ ctl.fetchPublicMediaPage=async()=>{fetches++;throw Error('No network at capacity')};
+ try{
+  for(let i=0;i<3;i++)
+   assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(
+      ctl,true),false);
+  assert.equal(fetches,0,'capacity is local, must not query FxEmbed');
+  assert.equal(ctl.publicApiLoading,false);
+  assert.equal(ctl.publicApiCursor,'MORE-PAGES');
+  assert.equal(ctl.refs.length,2);
+  assert.equal(ctl.publicApiExhausted,false,
+    'local 64-page limit does not mean FxEmbed itself is exhausted');
+  assert.equal(ctl.checkpointContinuationBlocked,true);
+  assert.equal(ctl.checkpointCapacityReached,true);
+ }finally{current.pathname=oldPath;document.hidden=oldHidden;}
+});
+test('B2 already-committed neighbor must not request an extra public API page',async()=>{
+ const oldPath=current.pathname,oldHidden=document.hidden;
+ document.hidden=false;current.pathname='/alice/status/300/photo/1';
+ const snap=currentPage([400,300],'MORE-PAGES');
+ let fetches=0;
+ const store={async loadPageManifest(){return {
+  schema:1,profile:'alice',timeline:'alice|photo',
+  expires:snap.expires,activePage:0,pages:[{page:0},{page:1}]
+ }}};
+ const ctl=continuationCtl(snap,[ref(200)],store,null);
+ ctl.restoredCheckpointPage=0;ctl.publicSessionRestored=true;
+ ctl.navigationBusy=false;
+ ctl.fetchPublicMediaPage=async()=>{fetches++;throw Error('Already committed')};
+ try{
+  assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(
+   ctl,false),false);
+  assert.equal(fetches,0);
+  assert.equal(ctl.publicApiLoading,false);
+  assert.equal(ctl.navigationBusy,false);
+  assert.equal(ctl.checkpointContinuationBlocked,true);
+  assert.equal(ctl.checkpointCapacityReached,false);
+ }finally{current.pathname=oldPath;document.hidden=oldHidden;}
+});
+
+test('B2 delayed manifest lookup cannot fetch after navigation invalidates its session',async()=>{
+ const prior=current.pathname,hidden=document.hidden;
+ document.hidden=false;current.pathname='/alice/status/300/photo/1';
+ let resolve;
+ const waiting=new Promise(r=>{resolve=r});
+ const snap=currentPage([400,300],'CURSOR-CHECK');
+ let fetches=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+  async loadPageManifest(){return waiting}
+ },null);
+ ctl.restoredCheckpointPage=0;ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{fetches++;throw Error('stale fetch')};
+ try{
+   const pending=X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true);
+   current.pathname='/alice/status/999/photo/1';
+   ctl.navGeneration++;
+   resolve({schema:1,profile:'alice',timeline:'alice|photo',
+    expires:snap.expires,activePage:0,pages:[{page:0}]});
+   assert.equal(await pending,false);
+   assert.equal(fetches,0);
+   assert.equal(ctl.refs.length,2);
+   assert.equal(ctl.publicApiLoading,false);
+ }finally{current.pathname=prior;document.hidden=hidden}
+});
+test('B2 missing immutable manifest refuses continuation instead of fetching',async()=>{
+ const prior=current.pathname,hidden=document.hidden;
+ document.hidden=false;current.pathname='/alice/status/300/photo/1';
+ const snap=currentPage([400,300],'CURSOR-CHECK');
+ let fetches=0;
+ const ctl=continuationCtl(snap,[ref(200)],{
+   async loadPageManifest(){return null}
+ },null);
+ ctl.restoredCheckpointPage=0;ctl.publicSessionRestored=true;
+ ctl.fetchPublicMediaPage=async()=>{fetches++;throw Error('missing manifest fetch')};
+ try{
+  assert.equal(await X.Controller.prototype.loadPublicMediaContinuation.call(ctl,true),false);
+  assert.equal(fetches,0);
+  assert.equal(ctl.refs.length,2);
+ }finally{current.pathname=prior;document.hidden=hidden}
+});

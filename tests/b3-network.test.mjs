@@ -117,3 +117,54 @@ test('B3 nonadvancing pagination cursor imposes backoff',async()=>{
  assert.equal(await proto.loadPublicMediaContinuation.call(ctl,true),false);
  assert.ok(ctl.publicApiRetryAt>Date.now());
 });
+
+test('B3 unstreamed third-party response enforces UTF-8 bytes, not UTF-16 characters',async()=>{
+ const ctl=make();
+ const payload='日本語'.repeat(480_000);
+ assert.ok(payload.length<4_000_000);
+ assert.ok(new TextEncoder().encode(payload).byteLength>4_000_000);
+ assert.equal(await proto.readBoundedPublicBody.call(ctl,{
+   body:null,async text(){return payload}
+ }),null,'multi-byte UTF-8 must not bypass wire-body limit');
+});
+test('B3 unstreamed response accepts exactly the 4MB boundary, rejects one over',async()=>{
+ const ctl=make();
+ for(const [amount,accepted] of [
+   [4_000_000,true],[4_000_001,false]
+ ]){
+   const message='a'.repeat(amount);
+   const result=await proto.readBoundedPublicBody.call(ctl,{
+     body:null,async text(){return message}
+   });
+   assert.equal(result===message,accepted,'ascii '+amount);
+ }
+});
+test('B3 unstreamed multi-byte response within 4MB still decodes',async()=>{
+ const ctl=make();
+ const message='☀️'.repeat(400_000);
+ assert.ok(new TextEncoder().encode(message).byteLength<4_000_000);
+ assert.equal(await proto.readBoundedPublicBody.call(ctl,{
+   body:null,async text(){return message}
+ }),message);
+});
+
+test('B3 compatibility path counts emoji pairs as four UTF-8 bytes',async()=>{
+ const ctl=make();
+ const exact='😀'.repeat(1_000_000);
+ const over=exact+'😀';
+ const read=text=>proto.readBoundedPublicBody.call(ctl,{
+  body:null,async text(){return text}
+ });
+ assert.equal(await read(exact),exact,'exactly 4MB is permitted');
+ assert.equal(await read(over),null,'4MB plus one emoji must be refused');
+});
+test('B3 invalid UTF-16 surrogate is budgeted as replacement UTF-8',async()=>{
+ const ctl=make();
+ const exact='x'.repeat(3_999_997)+'\uD800';
+ const tooLong=exact+'x';
+ const read=text=>proto.readBoundedPublicBody.call(ctl,{
+  body:null,async text(){return text}
+ });
+ assert.equal(await read(exact),exact);
+ assert.equal(await read(tooLong),null);
+});

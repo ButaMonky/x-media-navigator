@@ -585,3 +585,25 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 次の正本再開位置：
   `docs/implementation/B5-NATIVE-FIRST-ARROW-20261030.md`と
   `docs/implementation/B5-28-TO-29-20261030.md`を参照。
+
+---
+
+## 2026-10-30｜B3受信サイズ境界とB2保存ページ上限・QA v2.4.23
+
+- 独立`task/xmn-b3-stream-safety-20261030`で、新たに
+  B3の4MB上限をUTF-16文字数で判定していた不具合をRED→GREEN。
+  日本語、絵文字/孤立サロゲート、ASCIIの厳密4MB境界を検証。
+  B3ストリーミング側は既存の制限を保持。
+- B2は64ページ満杯または保存済みの次ページが存在する場合、
+  **FxEmbedへ新規問い合わせをしない**仕様へ修正。
+  3回連続境界操作でもAPI0回、ローカル容量をAPI終端と誤認しない。
+  セッション変更・manifest消失もfail-closed。
+- Chrome MV3候補を**v2.4.23**へ昇格し、既存v2.4.22
+  同一番号の異なるJSを上書きする危険を回避。
+  ステージングはSHA一致、GitHub CI成功、Node/TS/MV3
+  再検証に成功した新規専用フォルダだけ。
+- ノード340件（331 PASS・0 FAIL・3 SKIP・実X TODO6）、
+  Chromium合成4 PASS、MV3実Chrome/Edgeゲート9系統PASS。
+  研究記録：`docs/implementation/B3-B2-SAFETY-20261030.md`。
+- 公開main・Chrome通常インストール・旧QAの変更なし。
+  認証済みX本番受入／公開判断は継続して保留。
