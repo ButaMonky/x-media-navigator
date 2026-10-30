@@ -294,3 +294,16 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - When the current short-lived tab session lacks the document URL, the Content Script can now restore that exact historical page through `SessionStore.findCheckpointForRoute()`. A new route, changed session generation, bare status or unverified URL is ignored, without revisiting FxEmbed or replacing X's replies panel.
 - Tests: 282 total, 273 PASS, 0 FAIL, 3 SKIP, 6 actual-X TODO; TypeScript PASS; synthetic Edge Chromium 4/4 PASS; actual Chrome for Testing MV3 cross-document historical restore PASS; unauthorized localhost sender rejected in actual Edge MV3.
 - **Still pending**: automatically moving across immutable pages with keyboard/buttons; eviction and checkpoint creation when a 450-ref FxEmbed window fills; real signed-in X acceptance, Paint/CPU/memory measurements, and any release/deployment.
+
+---
+
+## 2026-10-30｜B3非同期保存競合のFF-only統合（再開点更新）
+
+- 主開発正本 `task/xmn-b0-b3-20261029` は、`e93c323` から検証済み独立ブランチ `task/xmn-b5-qa-synthetic-20261030` の `e2b264d` へ **FF-only** 前進。
+- 過去のR1〜R5研究やB0〜B3を作り直したものではない。今回初めて独立再現したB3非同期保存競合について、修正 `9fe6a0e` とCI証拠 `e2b264d` を主正本へ取り込んだ。
+- 非同期Worker保存中にタブ非表示・セッション失効が起こった時、未確定のFxEmbed追加参照／カーソル／終端が表示側に残る問題を安全に巻き戻す。新世代のセッションには触れない。
+- 追加RED→GREEN試験3件。Node **285件＝276 PASS・0 FAIL・3 SKIP・実X TODO 6**、TypeScript型検査PASS、Edge合成Chromium **4 PASS**。
+- Chrome for Testing MV3正当経路PASS。別途Edge MV3拒否経路は最初の連続起動時に`contentScriptLoaded=false`で **FAIL**、単独再実行で `foreignOriginRejected=true` **PASS**。一時プロファイル試験の起動タイミング不安定候補で、初回失敗を隠さず残す。実Xでは未検証。
+- 元の独立タスクブランチのCI run `40915164292` と `40915646723` は SUCCESS。主正本ブランチのpush後CIは別途確認し、成功を先取りしない。
+- B2の隣接ページ／ページ境界遷移担当worktreeには、`src/content.ts`等への **未コミット編集が残る**。これらを消去・上書きせず、担当成果が保存されたら最新の差分を照合して移植・FF-only統合する。
+- **未完了**：B2の450参照超を扱う安全なページ作成・廃棄・往復とカーソル再開、B4の実X描画・通信測定、B5の認証済みXでの受入（28→29／写真・動画・GIF／返信欄）。通常インストール・公開版・Draft PR #17は据置き。
