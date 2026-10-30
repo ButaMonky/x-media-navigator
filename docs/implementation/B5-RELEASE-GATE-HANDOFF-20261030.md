@@ -172,3 +172,18 @@
 - Node／型検査／Chromium合成／7つの必須MV3／
   コミット済みJS生成一致の全ゲートが成功。
 - Windows検証が終わった後の公開mainへの無断変更は行わない。
+
+
+---
+
+## 2026-10-30 追加監査｜Windows接続・固定QA整合性
+
+- 作業ID: `XMN-B5-RESUME-INTEGRITY-20261030`。非公開主開発: `task/xmn-b0-b3-20261029`。
+- ローカルの主開発ワークツリーは clean、HEAD は `8c06f7cc6e2b052f373e664c0f8013989e76337e` で GitHub と一致。公開main、Stable Draft PR #17、既存Chromeプロフィールには変更を加えていない。
+- 同一HEADの GitHub Actions run `41068125352` は **SUCCESS**。完了済みNode368件／MV3 11系統などは再実行しなかった。
+- 固定QA `X-Media-Navigator-v2.4.26-CONSENT-QA-20261030` フォルダとZIPが存在。ZIP SHA-256 `AB3BDB42A23B79A4B2ACDCC9BDE79D7927C10390481D6DD416626396576D93E7` は保存記録と一致。ZIP／展開先とも10ファイル。
+- 展開先の `SHA256SUMS.txt` の対象8ファイルは **8/8一致**。manifest.jsonはUTF-8として正常にパースし、MV3／v2.4.26／storage権限のみを確認。
+- 現行 `extension/` のアセットと固定QAを比較。画像3つとCSSはバイト単位一致。生成JS 2本のバイト差はCRLF/LF改行コードのみで、`git diff --no-index --ignore-space-at-eol` は両方exit 0。PowerShell既定文字コードのmanifest解析失敗はUTF-8指定で解消（製品不具合ではない）。
+- B2〜B5関連12ブランチを比較。主要作業成果は主開発に包含。独立 `task/xmn-b5-consent-once-20261030` は履歴上divergedだが、TS・生成JS・manifest・package・同意試験・同意実装記録のblob SHAは主開発と一致。未統合の機能差分とは判断しない。
+- **BLOCKED**: 今回Windows側でもBrowser接続は `Browser access requires the originating browser context` で拒否。拒否の迂回、ログイン済みChromeのCookie・token・HAR読出しは禁止。実ログインXの28→29、写真／GIF／動画、SPAと返信欄、450件超、Paint／転送／CPU-RAMは未受入。
+- 再開位置: 固定QAフォルダの `QA_README.txt` に沿い、旧XMNを一時無効化、手動 `Load unpacked`、実X受入。接続済みブラウザの同一コンテキストが使えればそこで検証。受入不合格箇所のみ別ブランチで修正。**公開mainへの統合と100%宣言は保留**。
