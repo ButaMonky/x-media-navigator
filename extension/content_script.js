@@ -449,6 +449,31 @@ var XMN;
         return true;
     }
     XMN.publicPageMatchesDescriptor = publicPageMatchesDescriptor;
+    function planPublicBoundaryTransition(input, profile, sourceRef, direction, verifiedTargetRoute) {
+        const m = parsePublicPageManifest(input, profile);
+        if (!m || (direction !== 1 && direction !== -1))
+            return null;
+        const expectedActivePage = m.activePage;
+        const targetPage = expectedActivePage + direction;
+        if (targetPage < 0 || targetPage >= m.pages.length)
+            return null;
+        const source = m.pages[expectedActivePage];
+        const target = m.pages[targetPage];
+        if (sourceRef !== (direction === 1 ? source.lastRef : source.firstRef))
+            return null;
+        // On a reverse hop the last post may contain multiple photos: Worker
+        // must prove that the destination is the first media of that post.
+        const targetRef = direction === 1 ? target.firstRef :
+            (verifiedTargetRoute ?? target.lastRef);
+        const parsed = XMN.mediaRefFromHref(targetRef, profile);
+        const tail = XMN.mediaRefFromHref(target.lastRef, profile);
+        if (!parsed || parsed.href !== targetRef || !tail ||
+            (direction === -1 && parsed.statusId !== tail.statusId) ||
+            (direction === 1 && targetRef !== target.firstRef))
+            return null;
+        return { expectedActivePage, targetPage, direction, sourceRef, targetRef };
+    }
+    XMN.planPublicBoundaryTransition = planPublicBoundaryTransition;
 })(XMN || (XMN = {}));
 /// <reference path="./core.ts" />
 /**
@@ -658,12 +683,13 @@ var XMN;
 var XMN;
 (function (XMN) {
     class SessionStore {
-        async call(op, profile, session, page, manifest, href, direction) {
+        async call(op, profile, session, page, manifest, href, direction, transition) {
             try {
                 if (typeof chrome === 'undefined' || !chrome.runtime?.sendMessage)
                     return null;
                 const data = await chrome.runtime.sendMessage({
-                    kind: 'xmn-store-v1', op, profile, session, page, manifest, href, direction
+                    kind: 'xmn-store-v1', op, profile, session, page, manifest, href, direction,
+                    transition
                 });
                 if (!data || typeof data !== 'object')
                     return null;
@@ -722,6 +748,11 @@ var XMN;
         }
         async clearPageManifest(profile) {
             return (await this.call('manifest.clear', profile))?.ok === true;
+        }
+        async activatePage(profile, transition) {
+            const r = await this.call('manifest.activate', profile, undefined, undefined, undefined, undefined, undefined, transition);
+            return r?.ok === true && r.session && r.manifest ?
+                { session: r.session, manifest: r.manifest } : null;
         }
         /** A read-only, origin-checked historical lookup for the EXACT current X URL. */
         async findCheckpointForRoute(profile, href) {
@@ -1013,15 +1044,55 @@ var XMN;
                 return;
             let data = await this.sessionStore.load(profile);
             let restoredPage = null;
-            // A full-document back/forward visit may target a committed historical
-            // page instead of the newest session. The worker verifies ALL immutable
-            // pages and the exact active URL before returning a page snapshot.
+            const sameRoute = () => window.location.pathname === path &&
+                generation === this.navGeneration && this.originProfile === null;
+            if (!sameRoute())
+                return;
+            // A URL change alone never authorizes page activation. The trusted
+            // Worker checks the exact TOP-FRAME route and immutable page snapshots.
             if ((!data || !data.refs.includes(route.href)) && route.kind !== null) {
-                const found = await this.sessionStore.findCheckpointForRoute?.(profile, route.href);
-                if (found) {
-                    data = found.session;
-                    restoredPage = found.page;
+                const manifest = await this.sessionStore.loadPageManifest?.(profile);
+                if (!sameRoute())
+                    return;
+                if (manifest) {
+                    for (const direction of [1, -1]) {
+                        const active = manifest.pages[manifest.activePage];
+                        const sourceRef = direction === 1 ? active.lastRef : active.firstRef;
+                        const plan = XMN.planPublicBoundaryTransition(manifest, profile, sourceRef, direction, route.href);
+                        if (!plan || plan.targetRef !== route.href)
+                            continue;
+                        const activated = await this.sessionStore.activatePage?.(profile, plan);
+                        if (!sameRoute())
+                            return;
+                        if (activated?.manifest?.activePage === plan.targetPage) {
+                            data = activated.session;
+                            restoredPage = plan.targetPage;
+                        }
+                        break;
+                    }
                 }
+                if (!data || !data.refs.includes(route.href)) {
+                    const found = await this.sessionStore.findCheckpointForRoute?.(profile, route.href);
+                    if (!sameRoute())
+                        return;
+                    if (found) {
+                        data = found.session;
+                        restoredPage = found.page;
+                    }
+                }
+            }
+            // session.get may already point to the active checkpoint after
+            // navigation; recover its index to enable the historical back button.
+            if (data && restoredPage === null && route.kind !== null &&
+                data.refs.includes(route.href)) {
+                const manifest = await this.sessionStore.loadPageManifest?.(profile);
+                if (!sameRoute())
+                    return;
+                const desc = manifest?.pages[manifest.activePage];
+                if (desc && desc.firstRef === data.refs[0] &&
+                    desc.lastRef === data.refs[data.refs.length - 1] &&
+                    desc.mediaCount === data.refs.length && desc.outgoingCursor === data.cursor)
+                    restoredPage = manifest.activePage;
             }
             if (!data || window.location.pathname !== path ||
                 generation !== this.navGeneration || this.originProfile !== null)

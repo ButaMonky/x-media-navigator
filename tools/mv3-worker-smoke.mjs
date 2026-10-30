@@ -57,7 +57,7 @@ const probe=`
    const archived=await m('checkpoint.get',undefined,0);
    const pageManifest={
      schema:1,profile:'alice',timeline:'alice|photo',
-     expires:snapshot.expires,activePage:1,pages:[{
+     expires:snapshot.expires,activePage:0,pages:[{
        page:0,firstRef:snapshot.refs[0],lastRef:snapshot.refs.at(-1),
        mediaCount:2,incomingCursor:null,outgoingCursor:'NEXT'
      },{
@@ -88,6 +88,9 @@ const probe=`
    location.assign('/alice/status/300/photo/1');
    return;
  }
+ // Controller and the disposable probe run independently. Allow the
+ // genuine product script to complete the MV3 page activation transaction.
+ await new Promise(resolve=>setTimeout(resolve,350));
  const session=await m('session.get');
  const consent=await m('consent.get');
  const phase=sessionStorage.getItem('xmn-checkpoint-smoke-phase');
@@ -97,7 +100,9 @@ const probe=`
      undefined,location.pathname);
    const forward=await m('checkpoint.adjacent',undefined,undefined,
      undefined,location.pathname,1);
+   const manifest=await m('manifest.get');
    const good=session?.session?.cursor==='NEXT'&&consent?.granted===true&&
+     manifest?.manifest?.activePage===0&&
      found?.page===0&&forward?.page===1&&
      forward?.href==='/alice/status/300/photo/1';
    setTimeout(()=>{
@@ -123,9 +128,10 @@ const probe=`
    undefined,location.pathname,-1);
  const ok=location.pathname==='/alice/status/300/photo/1'&&
    session?.ok===true&&session?.session?.refs?.length===2&&
-   session.session.cursor==='NEXT'&&consent?.granted===true&&
+   session.session.cursor===null&&consent?.granted===true&&
    checkpoint?.ok===true&&checkpoint?.session?.cursor===null&&
-   manifest?.ok===true&&manifest.manifest?.pages?.length===2&&
+   manifest?.ok===true&&manifest.manifest?.activePage===1&&
+   manifest.manifest?.pages?.length===2&&
    located?.ok===true&&located?.page===1&&
    located?.session?.refs?.at(0)==='/alice/status/300/photo/1'&&
    adjacent?.ok===true&&adjacent?.page===0&&

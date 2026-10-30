@@ -266,7 +266,15 @@ test('B2 manifest proves two complete pages and an unmodified forward cursor',as
  await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
  equalResponse(await w.send('manifest.put',1,'alice',{manifest:m}),{ok:true});
  const next={...m,activePage:1};
- equalResponse(await w.send('manifest.put',1,'alice',{manifest:next}),{ok:true});
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:next}),{ok:false},
+  'an active-page change requires a verified target document');
+ const transition={
+  expectedActivePage:0,targetPage:1,direction:1,
+  sourceRef:p0.refs.at(-1),targetRef:p1.refs[0]
+ };
+ equalResponse(await w.raw({kind:'xmn-store-v1',op:'manifest.activate',
+  profile:'alice',transition},{...sender(),url:'https://x.com'+p1.refs[0]}),
+  {ok:true,session:p1,manifest:next});
  equalResponse(await w.send('manifest.get'),{ok:true,manifest:next});
  equalResponse(await w.send('checkpoint.get',1,'alice',{page:0}),
    {ok:true,session:p0});
@@ -467,8 +475,22 @@ test('B2 committed adjacent-page hop returns only saved URLs in both directions'
    {ok:true,href:'/alice/status/700/photo/1',page:1});
  equalResponse(await adjacent('/alice/status/800/photo/2',1),
    {ok:true,href:'/alice/status/700/photo/1',page:1});
+ const forward={
+   expectedActivePage:0,targetPage:1,direction:1,
+   sourceRef:p0.refs.at(-1),targetRef:p1.refs[0]
+ };
+ equalResponse(await w.raw({kind:'xmn-store-v1',op:'manifest.activate',
+   profile:'alice',transition:forward},{
+   ...sender(),url:'https://x.com'+p1.refs[0]
+ }),{ok:true,session:p1,manifest:{
+   ...manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]),
+   activePage:1
+ }});
  equalResponse(await adjacent('/alice/status/700/photo/1',-1),
    {ok:true,href:'/alice/status/800/photo/1',page:0});
+ equalResponse(await adjacent('/alice/status/800/photo/1',1),
+   {ok:true,href:null,page:null},
+   'stale source pages cannot navigate while another page is active');
  equalResponse(await adjacent('/alice/status/900/photo/1',1),
    {ok:true,href:null,page:null});
  equalResponse(await adjacent('/alice/status/600/photo/1',1),
@@ -480,4 +502,72 @@ test('B2 committed adjacent-page hop returns only saved URLs in both directions'
    '/alice/status/900/photo/1'),{ok:false});
  equalResponse(await adjacent('/alice/status/700/photo/1',-1,
    '/alice/status/700/photo/1',2),{ok:false});
+});
+
+test('B2 verified page activation moves forward and backward only after target X route',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,null);
+ const base=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}]);
+ await w.send('consent.set');
+ await w.send('checkpoint.put',1,'alice',{page:0,session:p0});
+ await w.send('checkpoint.put',1,'alice',{page:1,session:p1});
+ equalResponse(await w.send('manifest.put',1,'alice',{manifest:base}),{ok:true});
+ const forward={
+  expectedActivePage:0,targetPage:1,direction:1,
+  sourceRef:p0.refs.at(-1),targetRef:p1.refs[0]
+ };
+ const forwardMessage={kind:'xmn-store-v1',op:'manifest.activate',
+  profile:'alice',transition:forward};
+ equalResponse(await w.raw(forwardMessage,sender()),{ok:false},
+  'worker must not advance while X still displays the source page');
+ equalResponse(await w.raw(forwardMessage,{...sender(),
+  url:'https://x.com'+p1.refs[0]}),{
+  ok:true,session:p1,manifest:{...base,activePage:1}
+ });
+ equalResponse(await w.send('manifest.get'),{
+  ok:true,manifest:{...base,activePage:1}
+ });
+ equalResponse(await w.raw(forwardMessage,{...sender(),
+  url:'https://x.com'+p1.refs[0]}),{ok:false},
+  'a repeated right key cannot activate the same stale generation twice');
+ const backward={
+  expectedActivePage:1,targetPage:0,direction:-1,
+  sourceRef:p1.refs[0],targetRef:p0.refs.at(-1)
+ };
+ equalResponse(await w.raw({...forwardMessage,transition:backward},
+  {...sender(),url:'https://x.com'+p0.refs.at(-1)}),{
+  ok:true,session:p0,manifest:base
+ });
+});
+test('B2 active page transition refuses skips, wrong boundaries and unrelated tabs',async()=>{
+ const w=worker(),p0=checkpointSession(900,800,'CURSOR_A');
+ const p1=checkpointSession(700,600,'CURSOR_B');
+ const p2=checkpointSession(500,400,null);
+ const m=manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'},
+  {snap:p2,incoming:'CURSOR_B'}]);
+ await w.send('consent.set');
+ for(const [idx,page] of [p0,p1,p2].entries()){
+  await w.send('checkpoint.put',1,'alice',{page:idx,session:page});
+ }
+ await w.send('manifest.put',1,'alice',{manifest:m});
+ const valid={expectedActivePage:0,targetPage:1,direction:1,
+  sourceRef:p0.refs[1],targetRef:p1.refs[0]};
+ const send=(transition,url='https://x.com'+p1.refs[0],tab=1)=>{
+  return w.raw({kind:'xmn-store-v1',op:'manifest.activate',
+   profile:'alice',transition},{...sender(tab),url});
+ };
+ for(const t of [
+  {...valid,targetPage:2},
+  {...valid,expectedActivePage:1},
+  {...valid,sourceRef:p0.refs[0]},
+  {...valid,targetRef:p1.refs[1]},
+  {...valid,direction:-1},
+  {...valid,extraPrivateData:'malicious'},
+  {...valid,targetPage:'1'},
+ ]){
+  equalResponse(await send(t),{ok:false});
+ }
+ equalResponse(await send(valid,'https://x.com'+p1.refs[1]),{ok:false});
+ equalResponse(await send(valid,undefined,2),{ok:false});
+ equalResponse(await w.send('manifest.get'),{ok:true,manifest:m});
 });

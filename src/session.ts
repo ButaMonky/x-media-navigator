@@ -23,12 +23,14 @@ namespace XMN {
  export class SessionStore {
   private async call(
     op:string,profile:string,session?:PublicSession,page?:number,
-    manifest?:PublicPageManifest,href?:string,direction?:-1|1
+    manifest?:PublicPageManifest,href?:string,direction?:-1|1,
+    transition?:PublicBoundaryTransition
   ):Promise<StoreReply|null>{
    try {
     if(typeof chrome==='undefined'||!chrome.runtime?.sendMessage)return null;
     const data=await chrome.runtime.sendMessage({
-     kind:'xmn-store-v1',op,profile,session,page,manifest,href,direction});
+     kind:'xmn-store-v1',op,profile,session,page,manifest,href,direction,
+     transition});
     if(!data||typeof data!=='object')return null;
     return data as StoreReply;
    }catch{return null}
@@ -80,6 +82,14 @@ namespace XMN {
   }
   async clearPageManifest(profile:string):Promise<boolean>{
    return (await this.call('manifest.clear',profile))?.ok===true;
+  }
+  async activatePage(
+    profile:string,transition:PublicBoundaryTransition
+  ):Promise<{session:PublicSession;manifest:PublicPageManifest}|null>{
+    const r=await this.call('manifest.activate',profile,
+      undefined,undefined,undefined,undefined,undefined,transition);
+    return r?.ok===true&&r.session&&r.manifest ?
+      {session:r.session,manifest:r.manifest} : null;
   }
   /** A read-only, origin-checked historical lookup for the EXACT current X URL. */
   async findCheckpointForRoute(

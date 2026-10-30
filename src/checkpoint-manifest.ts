@@ -103,4 +103,36 @@ namespace XMN {
     // No split post may cross a committed page boundary.
     return true;
   }
+  /** A boundary decision is only tentative until the trusted Worker checks
+   * the exact media URL against the entire immutable page snapshot. */
+  export interface PublicBoundaryTransition {
+    expectedActivePage:number;
+    targetPage:number;
+    direction:-1|1;
+    sourceRef:string;
+    targetRef:string;
+  }
+  export function planPublicBoundaryTransition(
+    input:unknown,profile:string,sourceRef:string,direction:-1|1,
+    verifiedTargetRoute?:string
+  ):PublicBoundaryTransition|null{
+    const m=parsePublicPageManifest(input,profile);
+    if(!m||(direction!==1&&direction!==-1))return null;
+    const expectedActivePage=m.activePage;
+    const targetPage=expectedActivePage+direction;
+    if(targetPage<0||targetPage>=m.pages.length)return null;
+    const source=m.pages[expectedActivePage];
+    const target=m.pages[targetPage];
+    if(sourceRef!==(direction===1?source.lastRef:source.firstRef))return null;
+    // On a reverse hop the last post may contain multiple photos: Worker
+    // must prove that the destination is the first media of that post.
+    const targetRef=direction===1?target.firstRef:
+      (verifiedTargetRoute??target.lastRef);
+    const parsed=mediaRefFromHref(targetRef,profile);
+    const tail=mediaRefFromHref(target.lastRef,profile);
+    if(!parsed||parsed.href!==targetRef||!tail||
+      (direction===-1&&parsed.statusId!==tail.statusId)||
+      (direction===1&&targetRef!==target.firstRef))return null;
+    return {expectedActivePage,targetPage,direction,sourceRef,targetRef};
+  }
 }

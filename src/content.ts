@@ -286,15 +286,48 @@ namespace XMN {
       if(!route)return;
       let data=await this.sessionStore.load(profile);
       let restoredPage:number|null=null;
-      // A full-document back/forward visit may target a committed historical
-      // page instead of the newest session. The worker verifies ALL immutable
-      // pages and the exact active URL before returning a page snapshot.
+      const sameRoute=()=>window.location.pathname===path &&
+        generation===this.navGeneration && this.originProfile===null;
+      if(!sameRoute())return;
+      // A URL change alone never authorizes page activation. The trusted
+      // Worker checks the exact TOP-FRAME route and immutable page snapshots.
       if((!data || !data.refs.includes(route.href)) && route.kind!==null){
-        const found=await this.sessionStore.findCheckpointForRoute?.(profile,route.href);
-        if(found){
-          data=found.session;
-          restoredPage=found.page;
+        const manifest=await this.sessionStore.loadPageManifest?.(profile);
+        if(!sameRoute())return;
+        if(manifest){
+          for(const direction of [1,-1] as const){
+            const active=manifest.pages[manifest.activePage];
+            const sourceRef=direction===1?active.lastRef:active.firstRef;
+            const plan=planPublicBoundaryTransition(
+              manifest,profile,sourceRef,direction,route.href);
+            if(!plan||plan.targetRef!==route.href)continue;
+            const activated=await this.sessionStore.activatePage?.(profile,plan);
+            if(!sameRoute())return;
+            if(activated?.manifest?.activePage===plan.targetPage){
+              data=activated.session;
+              restoredPage=plan.targetPage;
+            }
+            break;
+          }
         }
+        if(!data || !data.refs.includes(route.href)){
+          const found=await this.sessionStore.findCheckpointForRoute?.(
+            profile,route.href);
+          if(!sameRoute())return;
+          if(found){data=found.session;restoredPage=found.page;}
+        }
+      }
+      // session.get may already point to the active checkpoint after
+      // navigation; recover its index to enable the historical back button.
+      if(data && restoredPage===null && route.kind!==null &&
+         data.refs.includes(route.href)){
+        const manifest=await this.sessionStore.loadPageManifest?.(profile);
+        if(!sameRoute())return;
+        const desc=manifest?.pages[manifest.activePage];
+        if(desc && desc.firstRef===data.refs[0] &&
+           desc.lastRef===data.refs[data.refs.length-1] &&
+           desc.mediaCount===data.refs.length && desc.outgoingCursor===data.cursor)
+          restoredPage=manifest!.activePage;
       }
       if(!data || window.location.pathname!==path ||
          generation!==this.navGeneration || this.originProfile!==null) return;

@@ -4,6 +4,7 @@ type Sender = { tab?: { id?: number }, frameId?: number, url?: string };
 type Message = {
   kind?: string; op?: string; profile?: string; session?: unknown;
   page?: unknown; manifest?: unknown; href?: unknown; direction?: unknown;
+  transition?: unknown;
 };
 declare const chrome: {
  runtime: { onMessage: { addListener(cb: (
@@ -255,7 +256,9 @@ namespace XMN {
          }
        }
        if(msg.op==='checkpoint.adjacent'){
-         if(chosen===null||selected===null)return {ok:true,href:null,page:null};
+         if(chosen===null||selected===null ||
+            selected!==manifest.activePage)
+           return {ok:true,href:null,page:null};
          const ownRefs=chosen.refs as string[];
          const firstStatus=mediaRefFromHref(ownRefs[0],profile)?.statusId;
          const lastStatus=mediaRefFromHref(ownRefs[ownRefs.length-1],profile)?.statusId;
@@ -281,7 +284,8 @@ namespace XMN {
        return {ok:true,session:chosen,page:selected};
      });
    }
-   if(msg.op==='manifest.get'||msg.op==='manifest.put'){
+   if(msg.op==='manifest.get'||msg.op==='manifest.put'||
+      msg.op==='manifest.activate'){
      const consent=(await chrome.storage.session.get(consentKey(id,profile)))[consentKey(id,profile)];
      if(consent!==true)return {ok:false};
      const key=manifestKey(id,profile);
@@ -296,11 +300,61 @@ namespace XMN {
          }
          return {ok:true,manifest:current};
        }
+       if(msg.op==='manifest.activate'){
+         const current=parsePublicPageManifest(saved,profile);
+         if(!current||!await verifyManifestPages(current,id,profile))
+           return {ok:false};
+         const raw=msg.transition;
+         if(!raw||typeof raw!=='object'||Array.isArray(raw))return {ok:false};
+         const t=raw as Record<string,unknown>;
+         const fields=['expectedActivePage','targetPage','direction',
+           'sourceRef','targetRef'];
+         if(Object.keys(t).length!==fields.length||
+           Object.keys(t).some(field=>!fields.includes(field))||
+           typeof t.sourceRef!=='string'||typeof t.targetRef!=='string'||
+           (t.direction!==1&&t.direction!==-1)||
+           !Number.isSafeInteger(t.expectedActivePage)||
+           !Number.isSafeInteger(t.targetPage))return {ok:false};
+         const expected=planPublicBoundaryTransition(
+           current,profile,t.sourceRef,t.direction as -1|1,t.targetRef);
+         if(!expected||fields.some(field=>
+           t[field]!==expected[field as keyof PublicBoundaryTransition]))
+           return {ok:false};
+         try{
+           if(new URL(sender.url||'').pathname!==expected.targetRef)
+             return {ok:false};
+         }catch{return {ok:false}}
+         const desc=current.pages[expected.targetPage];
+         const target=(await chrome.storage.session.get(
+           checkpointKey(id,profile,expected.targetPage)))[
+             checkpointKey(id,profile,expected.targetPage)];
+         if(!validateSession(target,profile)||!publicPageMatchesDescriptor(
+           target,desc,profile,current.timeline,current.expires))
+           return {ok:false};
+         const refs=target.refs as string[];
+         const lastStatus=mediaRefFromHref(refs[refs.length-1],profile)?.statusId;
+         const backFirst=refs.find(url=>
+           mediaRefFromHref(url,profile)?.statusId===lastStatus);
+         // Rewinding to the last post must open its FIRST media, not the
+         // last image of a multiple-photo album.
+         if(expected.direction===-1 && expected.targetRef!==backFirst)
+           return {ok:false};
+         if(expected.direction===1 && expected.targetRef!==refs[0])
+           return {ok:false};
+         const updated:PublicPageManifest={
+           ...current,activePage:expected.targetPage
+         };
+         await chrome.storage.session.set({
+           [key]:updated,[sessionKey(id)]:target
+         });
+         return {ok:true,session:target,manifest:updated};
+       }
        const next=parsePublicPageManifest(msg.manifest,profile);
-       if(!next)return {ok:false};
+       if(!next||(saved===undefined && next.activePage!==0))return {ok:false};
        if(saved!==undefined){
          const previous=parsePublicPageManifest(saved,profile);
          if(!previous || previous.timeline!==next.timeline ||
+            next.activePage!==previous.activePage ||
             next.expires>previous.expires ||
             next.pages.length<previous.pages.length ||
             previous.pages.some((desc,i)=>
