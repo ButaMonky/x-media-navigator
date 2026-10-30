@@ -445,3 +445,39 @@ test('B2 route lookup fails closed if any committed checkpoint is corrupted',asy
  assert.equal(w.memory.has('xmn:manifest:1:alice'),false,
   'a partially corrupted multi-page manifest is not usable');
 });
+
+test('B2 committed adjacent-page hop returns only saved URLs in both directions',async()=>{
+ const w=worker();
+ const p0=checkpointSession(900,800,'CURSOR_A');
+ p0.refs=['/alice/status/900/photo/1','/alice/status/800/photo/1',
+  '/alice/status/800/photo/2'];
+ p0.apiKeys=['800:photo:1','800:photo:2'];
+ const p1=checkpointSession(700,600,null);
+ await w.send('consent.set');
+ equalResponse(await w.send('checkpoint.put',1,'alice',{page:0,session:p0}),{ok:true});
+ equalResponse(await w.send('checkpoint.put',1,'alice',{page:1,session:p1}),{ok:true});
+ equalResponse(await w.send('manifest.put',1,'alice',{
+   manifest:manifest([{snap:p0,incoming:null},{snap:p1,incoming:'CURSOR_A'}])
+ }),{ok:true});
+ const adjacent=(route,direction,href=route,tab=1)=>w.raw({
+   kind:'xmn-store-v1',op:'checkpoint.adjacent',profile:'alice',
+   href,direction
+ },{...sender(tab),url:'https://x.com'+route});
+ equalResponse(await adjacent('/alice/status/800/photo/1',1),
+   {ok:true,href:'/alice/status/700/photo/1',page:1});
+ equalResponse(await adjacent('/alice/status/800/photo/2',1),
+   {ok:true,href:'/alice/status/700/photo/1',page:1});
+ equalResponse(await adjacent('/alice/status/700/photo/1',-1),
+   {ok:true,href:'/alice/status/800/photo/1',page:0});
+ equalResponse(await adjacent('/alice/status/900/photo/1',1),
+   {ok:true,href:null,page:null});
+ equalResponse(await adjacent('/alice/status/600/photo/1',1),
+   {ok:true,href:null,page:null});
+ equalResponse(await adjacent('/alice/status/800/photo/1',-1),
+   {ok:true,href:null,page:null});
+ equalResponse(await adjacent('/alice/status/800/photo/1',0),{ok:false});
+ equalResponse(await adjacent('/alice/status/800/photo/1',1,
+   '/alice/status/900/photo/1'),{ok:false});
+ equalResponse(await adjacent('/alice/status/700/photo/1',-1,
+   '/alice/status/700/photo/1',2),{ok:false});
+});

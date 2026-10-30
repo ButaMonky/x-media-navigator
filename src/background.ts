@@ -3,7 +3,7 @@
 type Sender = { tab?: { id?: number }, frameId?: number, url?: string };
 type Message = {
   kind?: string; op?: string; profile?: string; session?: unknown;
-  page?: unknown; manifest?: unknown; href?: unknown;
+  page?: unknown; manifest?: unknown; href?: unknown; direction?: unknown;
 };
 declare const chrome: {
  runtime: { onMessage: { addListener(cb: (
@@ -209,7 +209,9 @@ namespace XMN {
        return {ok:true};
      });
    }
-   if(msg.op==='checkpoint.find'){
+   if(msg.op==='checkpoint.find'||msg.op==='checkpoint.adjacent'){
+     if(msg.op==='checkpoint.adjacent' && msg.direction!==-1 &&
+        msg.direction!==1)return {ok:false};
      // A historical page may be selected only by the exact public media URL
      // already displayed in this TOP-FRAME X tab. No cross-post lookup.
      if(typeof msg.href!=='string'||msg.href.length>128)return {ok:false};
@@ -251,6 +253,30 @@ namespace XMN {
            chosen=data;
            selected=manifest.pages[i].page;
          }
+       }
+       if(msg.op==='checkpoint.adjacent'){
+         if(chosen===null||selected===null)return {ok:true,href:null,page:null};
+         const ownRefs=chosen.refs as string[];
+         const firstStatus=mediaRefFromHref(ownRefs[0],profile)?.statusId;
+         const lastStatus=mediaRefFromHref(ownRefs[ownRefs.length-1],profile)?.statusId;
+         if(msg.direction===1 && ref.statusId===lastStatus &&
+            selected<keys.length-1){
+           const next=storage[keys[selected+1]] as Record<string,unknown>;
+           const urls=next.refs as string[];
+           return {ok:true,href:urls[0],page:selected+1};
+         }
+         if(msg.direction===-1 && ref.statusId===firstStatus &&
+            selected>0){
+           const previous=storage[keys[selected-1]] as Record<string,unknown>;
+           const urls=previous.refs as string[];
+           const tail=mediaRefFromHref(urls[urls.length-1],profile)?.statusId;
+           // Navigate to the FIRST image of the adjoining (newer) post.
+           const destination=urls.find(url=>
+             mediaRefFromHref(url,profile)?.statusId===tail);
+           return {ok:true,href:destination??null,
+             page:destination?selected-1:null};
+         }
+         return {ok:true,href:null,page:null};
        }
        return {ok:true,session:chosen,page:selected};
      });

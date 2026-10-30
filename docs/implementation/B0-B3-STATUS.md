@@ -294,3 +294,13 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - When the current short-lived tab session lacks the document URL, the Content Script can now restore that exact historical page through `SessionStore.findCheckpointForRoute()`. A new route, changed session generation, bare status or unverified URL is ignored, without revisiting FxEmbed or replacing X's replies panel.
 - Tests: 282 total, 273 PASS, 0 FAIL, 3 SKIP, 6 actual-X TODO; TypeScript PASS; synthetic Edge Chromium 4/4 PASS; actual Chrome for Testing MV3 cross-document historical restore PASS; unauthorized localhost sender rejected in actual Edge MV3.
 - **Still pending**: automatically moving across immutable pages with keyboard/buttons; eviction and checkpoint creation when a 450-ref FxEmbed window fills; real signed-in X acceptance, Paint/CPU/memory measurements, and any release/deployment.
+
+---
+
+## B2 adjacent committed-page navigation (2026-10-29)
+
+- Task `XMN-B2-ADJACENT-20261029`: details and test evidence in `docs/implementation/B2-ADJACENT-PAGING.md`. Dedicated integration branch inherits `e93c323` with no forced merges or impact on public main.
+- MV3 `checkpoint.adjacent` returns only the exact precommitted adjacent public media URL, after consent, top-frame route ownership, valid page manifest and every stored page have been checked.
+- Controller can cross from an already restored historical page to the immediately newer/older verified page via **ordinary X document navigation**; no fabricated CDN URL or React SPA/History writes. The historical-page back button is enabled and repeating keys cannot issue duplicate navigation.
+- Local Chrome for Testing MV3 synthetic three-document round trip (older 300 → newer 400 → older 300) passes with the original replies panel and per-page position labels intact. Real signed-in X remains unverified.
+- Remaining full feature: automatic archival + transition when the 450-ref provider limit is reached, and quota-safe ordered page swaps. Separate this from the already verified two-page navigation and do not claim unlimited scrolling.

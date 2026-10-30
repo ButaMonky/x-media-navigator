@@ -18,17 +18,17 @@ namespace XMN {
  }
  type StoreReply={
   ok?:boolean; granted?:boolean; session?:PublicSession|null; pages?:number[];
-  manifest?:PublicPageManifest|null; page?:number|null;
+  manifest?:PublicPageManifest|null; page?:number|null; href?:string|null;
  };
  export class SessionStore {
   private async call(
     op:string,profile:string,session?:PublicSession,page?:number,
-    manifest?:PublicPageManifest,href?:string
+    manifest?:PublicPageManifest,href?:string,direction?:-1|1
   ):Promise<StoreReply|null>{
    try {
     if(typeof chrome==='undefined'||!chrome.runtime?.sendMessage)return null;
     const data=await chrome.runtime.sendMessage({
-     kind:'xmn-store-v1',op,profile,session,page,manifest,href});
+     kind:'xmn-store-v1',op,profile,session,page,manifest,href,direction});
     if(!data||typeof data!=='object')return null;
     return data as StoreReply;
    }catch{return null}
@@ -91,6 +91,21 @@ namespace XMN {
    if(r?.ok!==true||!r.session||!Number.isSafeInteger(r.page)||
       (r.page as number)<0||(r.page as number)>=64)return null;
    return {session:r.session,page:r.page as number};
+  }
+  /** Never generate a target URL: only a committed adjacent page is eligible. */
+  async findAdjacentCheckpoint(
+    profile:string,href:string,direction:-1|1
+  ):Promise<{href:string;page:number}|null>{
+   const current=mediaRefFromHref(href,profile);
+   if(!current||current.kind===null||current.href!==href ||
+      (direction!==-1&&direction!==1))return null;
+   const r=await this.call(
+     'checkpoint.adjacent',profile,undefined,undefined,undefined,href,direction);
+   if(r?.ok!==true||typeof r.href!=='string'||!Number.isSafeInteger(r.page)||
+      (r.page as number)<0||(r.page as number)>=64)return null;
+   const target=mediaRefFromHref(r.href,profile);
+   if(!target||target.kind===null||target.href!==r.href)return null;
+   return {href:r.href,page:r.page as number};
   }
  }
 /** Purge only our obsolete host-page keys; never read or migrate untrusted values. */
