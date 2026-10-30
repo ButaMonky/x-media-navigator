@@ -518,3 +518,19 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
   `docs/implementation/B5-28-TO-29-20261030.md`。
 - **実Xの受入はまだ未実施**。ライブの通信・Paint・
   返信欄・動画/GIF・混合の結果を合成試験から推測しない。
+
+### 2026-10-30 B5非公開v2.4.22の配布物整合性確認
+
+- B5合成Chromeで右1回28→29→左1回28の跨文書往復PASS。
+  写真1〜4枚の不要な終端チェックをRED→GREENで解消。
+- 新規非公開コミット `f85dc47`、GitHub Actions
+  run `41014982923` **SUCCESS**。
+- 新規QAディレクトリ
+  `%USERPROFILE%\Downloads\X-Media-Navigator-v2.4.22-B5-QA-20261030`
+  が作成済みで、8アセットSHA-256、source HEAD、
+  QA_READMEとSHA256SUMSの一致を独立照合済み。
+- 配置中の「同名フォルダ既存」拒否を記録し、
+  既存の正しいファイルを上書きせず使用。
+  原因となった競合プロセスは未特定。
+- 詳細・手動受入：`docs/implementation/B5-28-TO-29-20261030.md`。
+  実サイトXでのログイン済み検証・公開はまだ未完了。
