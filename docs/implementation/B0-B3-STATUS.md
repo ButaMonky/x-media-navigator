@@ -676,3 +676,21 @@ pm test 202件・185 PASS/0 FAIL/11 SKIP/6実X TODO、TypeScript型検査成功�
 - 受入詳細・未完了・再開点：
   `docs/implementation/B5-HISTORY-ATOMIC-QA-20261030.md`。
 - 実Xログイン済みの操作・性能・公開は未了。
+
+---
+
+## 2026-10-30 18:29 JST｜B5履歴修復・v2.4.24非公開QA完了と正式公開保留
+
+- 主開発`e74d91a`、GitHub Actions run `41033299416` SUCCESS。
+  Node356件（347 PASS・0 FAIL・3 SKIP・実X TODO6）、型検査、
+  合成ChromiumとChrome for Testingの必須MV3 7ケース合格。
+- v2.4.24の独立QAフォルダとZIPをWindows Downloadsへ保存済み。
+  ZIPの全10ファイルを検証し、SHA256を隣接ファイルに記録。
+  旧通常版・旧QA・公開mainを未変更のまま保護。
+- **実X受入はBLOCKED**：iOSからのChatGPT Browser接続が
+  Windowsブラウザのoriginating browser contextを要求。
+  安全拒否の迂回、Chrome Cookie／ユーザープロファイルの読出しは行わない。
+- 100％・正式公開への残りはログイン済みXでの実機受入、
+  動画/GIF/混合・SPA/返信欄/画像速度の観測と公開判断のみ。
+- 完了詳細、出力場所、BLOCKEDの原因・再開位置：
+  `docs/implementation/B5-RELEASE-GATE-HANDOFF-20261030.md`。
