@@ -2,7 +2,7 @@
    The hit-test surface remains transparent; only the arrows receive clicks. */
 .xmn-controls-layer {
   position: fixed;
-  z-index: 2147483645;
+  z-index: 2147483647;
   pointer-events: none !important;
   overflow: visible;
 }

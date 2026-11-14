@@ -904,3 +904,59 @@ test('modern X media cells and dialog photo work without legacy listitem or swip
     rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
   }
 });
+
+test('narrow modern X photo keeps arrows visible by using the dialog geometry fallback', {
+  skip: process.env.XMN_RUN_CHROMIUM !== '1' ? 'Requires Chromium' :
+    !existsSync(browser) ? 'Chromium not installed' : false,
+}, async () => {
+  const html=[
+    '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/extension/style.css"></head><body>',
+    '<main><div data-testid="primaryColumn"><div id="grid">',
+    '<div data-testid="cellInnerDiv"><a href="/alice/status/50/photo/1"><img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="></a></div>',
+    '<div data-testid="cellInnerDiv"><a href="/alice/status/40/photo/1"><img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="></a></div>',
+    '</div></div></main>',
+    '<script>',
+    'document.querySelector("#grid").addEventListener("click",event=>{',
+    'const a=event.target.closest("a[href]");if(!a)return;',
+    'event.preventDefault();history.pushState({}, "", a.getAttribute("href"));',
+    'const dialog=document.createElement("div");dialog.setAttribute("role","dialog");',
+    'dialog.style.cssText="width:70vw;height:75vh;position:relative";',
+    'const media=document.createElement("div");media.dataset.testid="tweetPhoto";',
+    'media.style.cssText="width:100px;height:240px;position:relative";',
+    'const img=document.createElement("img");',
+    'img.src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";',
+    'img.style.cssText="width:100px;height:240px;display:block";',
+    'media.appendChild(img);dialog.appendChild(media);document.body.appendChild(dialog);',
+    '});',
+    '</script><script src="/extension/content_script.js"></script><script>',
+    'setTimeout(()=>{',
+    'document.querySelector("#grid a[href]").click();',
+    'setTimeout(()=>{',
+    'const layer=document.querySelector(".xmn-controls-layer");',
+    'const bounds=layer?.getBoundingClientRect();',
+    'const visible=layer && getComputedStyle(layer).display!=="none" &&',
+    '  getComputedStyle(layer).visibility!=="hidden" && bounds &&',
+    '  bounds.width>=150 && bounds.height>=120;',
+    'const buttons=layer?.querySelectorAll(".xmn-nav-button").length||0;',
+    'document.body.setAttribute("data-xmn-results",visible&&buttons===2?"PASS":"FAIL-"+buttons+"-"+',
+    '  (layer?.style.display||"")+"-"+(bounds?.width||0));',
+    '},700);},750);',
+    '</script></body></html>'
+  ].join('');
+  const server=createServer((req,res)=>{
+    if(req.url==='/extension/content_script.js'){
+      res.writeHead(200,{'content-type':'application/javascript'});res.end(contentScript);
+    }else if(req.url==='/extension/style.css'){
+      res.writeHead(200,{'content-type':'text/css'});res.end(extensionCss);
+    }else{res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(html);}
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const dir=mkdtempSync(join(tmpdir(),'xmn-dialog-geometry-'));
+  try{
+    const report=await runChromiumUntilResult('http://127.0.0.1:'+server.address().port+'/alice/media',dir);
+    assert.equal(report,'PASS','arrows must remain visible after geometry fallback: '+report);
+  }finally{
+    await new Promise(resolve=>server.close(resolve));
+    rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
+  }
+});

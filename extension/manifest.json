@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "X Media Navigator (Native QA 2.4.29)",
+  "name": "X Media Navigator (Native QA 2.4.30)",
   "description": "Xメディア閲覧を高速化。左右キーは投稿内画像を優先し、端の画像で別投稿へ移動。前後画像を少数先読み。",
-  "version": "2.4.29",
-  "version_name": "2.4.29 Native private QA candidate",
+  "version": "2.4.30",
+  "version_name": "2.4.30 Native private QA candidate",
   "content_scripts": [
     {
       "matches": [

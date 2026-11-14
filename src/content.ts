@@ -15,7 +15,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.29-dev';
+  const DIAGNOSTIC_VERSION = '2.4.30-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -1349,7 +1349,7 @@ namespace XMN {
         ? this.activeViewerForRoute() : null;
       if (viewer && this.originProfile) {
         this.syncViewer(viewer);
-        this.reportHealth("VIEWER_READY");
+        this.reportHealth(this.controlsHealthCode());
       } else {
         this.removeViewerUI();
         if (this.originProfile && profileStatusFromPath(path,this.originProfile))
@@ -1579,6 +1579,24 @@ namespace XMN {
       }
     }
 
+    /** Report geometry and CSS state, not just that an X viewer was detected. */
+    private controlsHealthCode(): string {
+      const host = this.controlsHost;
+      if (!host?.isConnected) return 'CONTROLS_NOT_MOUNTED';
+      if (host.style.display === 'none') return 'CONTROLS_HIDDEN_GEOMETRY';
+      if (typeof getComputedStyle === 'function') {
+        const css = getComputedStyle(host);
+        if (css.display === 'none' || css.visibility === 'hidden' || css.opacity === '0')
+          return 'CONTROLS_STYLE_HIDDEN';
+      }
+      const rect = host.getBoundingClientRect?.();
+      if (rect && (rect.width < 150 || rect.height < 120))
+        return 'CONTROLS_HIDDEN_GEOMETRY';
+      if (host.querySelectorAll('.xmn-nav-button').length < 2)
+        return 'CONTROLS_NOT_MOUNTED';
+      return 'CONTROLS_LAYOUT_OK';
+    }
+
     /** Pin post controls to a stable media-pane rectangle, not moving slides. */
     private positionControls(viewer: HTMLElement): void {
       const host = this.controlsHost;
@@ -1597,16 +1615,34 @@ namespace XMN {
         const vw = viewportWidth || rect.right;
         const vh = viewportHeight || rect.bottom;
         const maxRight = vw >= 900 ? vw - Math.min(250, vw * 0.2) : vw;
-        const left = Math.max(0, rect.left);
-        const top = Math.max(0, rect.top);
-        const right = Math.min(rect.right, maxRight);
-        const bottom = Math.min(rect.bottom, vh);
-        const width = right - left, height = bottom - top;
-        if (width < 150 || height < 120 || !Number.isFinite(width) ||
-            !Number.isFinite(height)) {
+        let left = Math.max(0, rect.left);
+        let top = Math.max(0, rect.top);
+        let right = Math.min(rect.right, maxRight);
+        let bottom = Math.min(rect.bottom, vh);
+        let width = right - left, height = bottom - top;
+        const validBox = () => width >= 150 && height >= 120 &&
+          [left, top, right, bottom, width, height].every(Number.isFinite);
+        if (!validBox()) {
+          // X may animate or shrink a slide although its surrounding modal
+          // is still visible. Do not hide our entire controls layer when
+          // the media element's rectangle is temporarily too narrow.
+          const dialog = viewer.closest?.('[role="dialog"]');
+          const fallback = dialog && viewerStyleVisible(dialog as HTMLElement)
+            ? dialog.getBoundingClientRect?.() : null;
+          if (fallback) {
+            const clippedRight = Math.min(maxRight, vw >= 900 ? vw * 0.72 : vw);
+            left = Math.max(0, fallback.left);
+            top = Math.max(0, fallback.top);
+            right = Math.min(fallback.right, clippedRight);
+            bottom = Math.min(fallback.bottom, vh);
+            width = right - left; height = bottom - top;
+          }
+          if (validBox()) diagnostic('controls.geometry', {mode:'dialog_fallback'});
+        }
+        if (!validBox()) {
           host.style.display = 'none';
           this.controlsLayoutPath = '';
-          return; // Never cache a transiently invalid slide rectangle.
+          return; // No reliable on-screen image region; retry on the next tick.
         }
         anchor = { left, top, width, height, viewportWidth, viewportHeight, fullscreenRoot };
         this.controlsPaneAnchor = anchor;

@@ -1,6 +1,10 @@
 'use strict';
 // The content script saves only generic health codes; no browsing history.
 const labels={
+  CONTROLS_LAYOUT_OK:['操作ボタンを配置しました','ボタンがまだ見えない場合、X側のレイヤーとの重なりや他の拡張との干渉が考えられます。'],
+  CONTROLS_HIDDEN_GEOMETRY:['表示位置を確定できません','画像領域が小さすぎるか、Xの新しい配置に未対応です。'],
+  CONTROLS_STYLE_HIDDEN:['操作ボタンがCSSで非表示です','他のスタイルとの競合が疑われます。'],
+  CONTROLS_NOT_MOUNTED:['操作ボタンを取り付けられません','Xのビューアは検出しましたが、操作UIの作成が完了していません。'],
   VIEWER_READY:['画像ビューアを認識しています','画像・投稿移動用のUIを初期化できています。'],
   MEDIA_INDEX_READY:['メディア一覧を認識しています','画像をクリックすると移動ボタンが表示されます。'],
   MEDIA_GRID_NOT_FOUND:['メディア一覧が未検出です','Xの表示構造が変わったか、一覧がまだ読み込まれていません。'],

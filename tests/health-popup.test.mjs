@@ -12,7 +12,8 @@ test('diagnostics have a user-openable popup without extra permissions',()=>{
  assert.match(get('extension/popup.html'),/popup\.js/);
  assert.doesNotMatch(get('extension/popup.html'),/onclick=/);
  const script=get('extension/popup.js');
- for(const code of ['VIEWER_READY','MEDIA_GRID_NOT_FOUND','VIEWER_NOT_FOUND','OPEN_MEDIA_TAB_FIRST'])
+ for(const code of ['VIEWER_READY','MEDIA_GRID_NOT_FOUND','VIEWER_NOT_FOUND','OPEN_MEDIA_TAB_FIRST',
+  'CONTROLS_LAYOUT_OK','CONTROLS_HIDDEN_GEOMETRY','CONTROLS_STYLE_HIDDEN','CONTROLS_NOT_MOUNTED'])
    assert.ok(script.includes(code));
  assert.doesNotMatch(script,/\.url\b|\.href\b|cookie|authorization/i);
 });
