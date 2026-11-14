@@ -36,3 +36,23 @@ test('health distinguishes missing, hidden and positioned controls',()=>{
  controller.controlsHost=layer();
  assert.equal(proto.controlsHealthCode.call(controller),'CONTROLS_LAYOUT_OK');
 });
+
+test('a correctly sized button can still be fully occluded by a browser overlay',()=>{
+ const button={
+   getBoundingClientRect:()=>({left:150,top:150,width:50,height:50}),
+   contains:()=>false
+ };
+ const ctrl=Object.create(proto);
+ ctrl.controlsHost={
+   isConnected:true,style:{display:''},
+   querySelectorAll:()=>[button,button],
+   getBoundingClientRect:()=>({width:500,height:350})
+ };
+ ctx.window.innerWidth=1100;ctx.window.innerHeight=750;
+ ctx.document.elementFromPoint=()=>({tagName:'DIALOG'});
+ assert.equal(proto.controlsHealthCode.call(ctrl),'CONTROLS_OCCLUDED');
+ ctx.document.elementFromPoint=()=>button;
+ assert.equal(proto.controlsHealthCode.call(ctrl),'CONTROLS_LAYOUT_OK');
+ ctx.window.innerWidth=100;
+ assert.equal(proto.controlsHealthCode.call(ctrl),'CONTROLS_OUTSIDE_VIEWPORT');
+});

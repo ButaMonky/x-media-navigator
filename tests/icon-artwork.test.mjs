@@ -10,7 +10,7 @@ const icons = {
 };
 test('the approved neon gallery artwork is installed at every Chrome icon size',()=>{
   const manifest=JSON.parse(readFileSync(new URL('../extension/manifest.json',import.meta.url),'utf8'));
-  assert.equal(manifest.version,'2.4.30');
+  assert.equal(manifest.version,'2.4.31');
   assert.deepEqual(Object.keys(manifest.icons).sort(),Object.keys(icons).sort());
   for(const [size,sha] of Object.entries(icons)){
     const filename=manifest.icons[size];

@@ -960,3 +960,70 @@ test('narrow modern X photo keeps arrows visible by using the dialog geometry fa
     rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
   }
 });
+
+test('native modal and popover top layers keep XMN controls hit-testable', {
+  skip: process.env.XMN_RUN_CHROMIUM !== '1' ? 'Requires Chromium' :
+    !existsSync(browser) ? 'Chromium not installed' : false,
+}, async () => {
+  let html=[
+    '<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/extension/style.css"></head><body>',
+    '<main><div data-testid="primaryColumn"><ul id="grid">',
+    '<li role="listitem"><a href="/alice/status/50/photo/1"><img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="></a></li>',
+    '<li role="listitem"><a href="/alice/status/40/photo/1"><img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="></a></li>',
+    '</ul></div></main>',
+    '<script>',
+    'document.querySelector("#grid").addEventListener("click",event=>{',
+    'const link=event.target.closest("a[href]");if(!link)return;',
+    'event.preventDefault();history.pushState({},"",link.getAttribute("href"));',
+    'const dialog=document.createElement("dialog");dialog.id="x-modal";',
+    'dialog.setAttribute("role","dialog");',
+    'dialog.style.cssText="width:72vw;height:76vh;max-width:none;max-height:none;padding:0;border:0";',
+    'const viewer=document.createElement("div");viewer.dataset.testid="swipe-to-dismiss";',
+    'viewer.style.cssText="width:100%;height:100%;position:relative";',
+    'const photo=document.createElement("img");photo.style.cssText="width:90%;height:90%;object-fit:contain";',
+    'photo.src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";',
+    'viewer.appendChild(photo);dialog.appendChild(viewer);document.body.appendChild(dialog);dialog.showModal();',
+    '});',
+    '</script><script src="/extension/content_script.js"></script><script>',
+    'setTimeout(()=>{document.querySelector("#grid a").click();',
+    'setTimeout(()=>{',
+    'const layer=document.querySelector(".xmn-controls-layer");',
+    'const next=layer?.querySelector(".xmn-next");',
+    'const rect=next?.getBoundingClientRect();',
+    'const hit=rect?document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2):null;',
+    'const test=!!next&&!!rect&&rect.width>=20&&rect.height>=20&&',
+    '  (hit===next||next.contains(hit));',
+    'const inside=!!document.querySelector("#x-modal")?.contains(layer);',
+    'const detail=hit?.tagName||"NONE";',
+    'document.body.setAttribute("data-xmn-results",test?"PASS":"FAIL-TOP-LAYER-"+detail+"-"+inside);',
+    '},850);},800);',
+    '</script></body></html>'
+  ].join('');
+  const server=createServer((req,res)=>{
+    if(req.url==='/extension/content_script.js'){
+      res.writeHead(200,{'content-type':'application/javascript'});res.end(contentScript);
+    }else if(req.url==='/extension/style.css'){
+      res.writeHead(200,{'content-type':'text/css'});res.end(extensionCss);
+    }else{
+      res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(html);
+    }
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const dir=mkdtempSync(join(tmpdir(),'xmn-top-layer-'));
+  try{
+    const result=await runChromiumUntilResult('http://127.0.0.1:'+server.address().port+'/alice/media',dir);
+    assert.equal(result,'PASS','A native modal top-layer must not conceal the arrow controls: '+result);
+    html=html.replace('document.createElement("dialog")','document.createElement("div")')
+      .replace('dialog.showModal()','dialog.popover="manual";dialog.showPopover()');
+    const other=mkdtempSync(join(tmpdir(),'xmn-popover-layer-'));
+    try {
+      const pop=await runChromiumUntilResult('http://127.0.0.1:'+server.address().port+'/alice/media',other);
+      assert.equal(pop,'PASS','Popover top-layer should keep the arrows hit-testable: '+pop);
+    }finally{
+      rmSync(other,{recursive:true,force:true,maxRetries:8,retryDelay:250});
+    }
+  }finally{
+    await new Promise(resolve=>server.close(resolve));
+    rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
+  }
+});

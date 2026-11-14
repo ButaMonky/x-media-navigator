@@ -1,6 +1,8 @@
 'use strict';
 // The content script saves only generic health codes; no browsing history.
 const labels={
+  CONTROLS_OCCLUDED:['操作ボタンが別の画面に覆われています','Xの最前面ダイアログや別の拡張機能の表示レイヤーとの競合が疑われます。'],
+  CONTROLS_OUTSIDE_VIEWPORT:['操作ボタンが画面外です','Xの画像領域やブラウザの拡大率に合わせた配置調整が必要です。'],
   CONTROLS_LAYOUT_OK:['操作ボタンを配置しました','ボタンがまだ見えない場合、X側のレイヤーとの重なりや他の拡張との干渉が考えられます。'],
   CONTROLS_HIDDEN_GEOMETRY:['表示位置を確定できません','画像領域が小さすぎるか、Xの新しい配置に未対応です。'],
   CONTROLS_STYLE_HIDDEN:['操作ボタンがCSSで非表示です','他のスタイルとの競合が疑われます。'],

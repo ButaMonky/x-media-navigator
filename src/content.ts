@@ -15,7 +15,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.30-dev';
+  const DIAGNOSTIC_VERSION = '2.4.31-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -1592,8 +1592,22 @@ namespace XMN {
       const rect = host.getBoundingClientRect?.();
       if (rect && (rect.width < 150 || rect.height < 120))
         return 'CONTROLS_HIDDEN_GEOMETRY';
-      if (host.querySelectorAll('.xmn-nav-button').length < 2)
-        return 'CONTROLS_NOT_MOUNTED';
+      const buttons = host.querySelectorAll<HTMLButtonElement>('.xmn-nav-button');
+      if (buttons.length < 2) return 'CONTROLS_NOT_MOUNTED';
+      // A correctly sized portal can still be concealed by a native
+      // top-layer dialog or another overlay. Test each arrow at its center.
+      if (typeof document.elementFromPoint === 'function') {
+        for (const button of buttons) {
+          const box = button.getBoundingClientRect?.();
+          if (!box || box.width <= 0 || box.height <= 0) continue;
+          const x = box.left + box.width / 2, y = box.top + box.height / 2;
+          if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight)
+            return 'CONTROLS_OUTSIDE_VIEWPORT';
+          const front = document.elementFromPoint(x, y);
+          if (!front || (front !== button && !button.contains(front)))
+            return 'CONTROLS_OCCLUDED';
+        }
+      }
       return 'CONTROLS_LAYOUT_OK';
     }
 
@@ -1664,7 +1678,20 @@ namespace XMN {
     private controlContainer(viewer: HTMLElement): HTMLElement {
       if (typeof viewer.getBoundingClientRect !== 'function' || !document.body)
         return viewer; // Older DOM / lightweight test harness fallback.
-      const parent = (document.fullscreenElement || document.body) as HTMLElement;
+      // Browser top-layer dialogs/popovers sit ABOVE every body child,
+      // even when that child's z-index is the maximum integer.
+      // Anchor inside the *actual top-layer owner* only when X opened it.
+      // For the legacy role=dialog UI retain our body-owned portal.
+      let parent = (document.fullscreenElement || document.body) as HTMLElement;
+      for (const selector of ['dialog:modal', '[popover]:popover-open']) {
+        try {
+          const top = viewer.closest<HTMLElement>(selector);
+          if (top?.isConnected && top.matches?.(selector)) {
+            parent = top;
+            break;
+          }
+        } catch { /* Unsupported pseudo selector: keep the old safe portal. */ }
+      }
       let host = this.controlsHost;
       if (!host || !host.isConnected) {
         host = document.createElement('div');

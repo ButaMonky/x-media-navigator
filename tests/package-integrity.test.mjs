@@ -21,7 +21,7 @@ test('development manifest is a distinct, least-permission MV3 extension', () =>
   }
   assert.deepEqual(m.permissions,['storage']);
   assert.deepEqual(m.background,{service_worker:'background.js'});
-  assert.match(m.name, /(?:TypeScript Dev|Private QA 2\.4\.21|Private QA 2\.4\.22|Private QA 2\.4\.23|History QA 2\.4\.24|Preflight QA 2\.4\.25|Consent QA 2\.4\.26|Native QA 2\.4\.30)/);
+  assert.match(m.name, /(?:TypeScript Dev|Private QA 2\.4\.21|Private QA 2\.4\.22|Private QA 2\.4\.23|History QA 2\.4\.24|Preflight QA 2\.4\.25|Consent QA 2\.4\.26|Native QA 2\.4\.31)/);
   assert.deepEqual(m.content_scripts[0].matches, ['https://x.com/*', 'https://twitter.com/*']);
 });
 
