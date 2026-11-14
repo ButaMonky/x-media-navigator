@@ -15,7 +15,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.31-dev';
+  const DIAGNOSTIC_VERSION = '2.4.32-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -213,6 +213,11 @@ namespace XMN {
 
     private lastHealthCode = '';
     private lastHealthReportedAt = 0;
+    // Private QA: verbose, privacy-safe visual snapshots in Console only.
+    private verboseVisualEnabled = true;
+    private verboseVisualLastAt = 0;
+    private verboseVisualLastRoute = "";
+    private verboseVisualSnapshots = 0;
     private viewer: HTMLElement | null = null;
     // Portaled controls live outside X's React-owned photo carousel. X may
     // unmount or hide a slide's children on photo 2 without closing the modal.
@@ -1273,6 +1278,44 @@ namespace XMN {
       } catch { /* No diagnostics may break the photo viewer. */ }
     }
 
+    /** Print read-only visual evidence, without usernames, post IDs or URLs. */
+    private maybeLogVerboseVisual(): void {
+      if (!this.verboseVisualEnabled || document.hidden) return;
+      const path = window.location.pathname;
+      const isMedia = !!mediaProfileFromPath(path);
+      const isStatus = /\/status\//.test(path);
+      if (!isMedia && !isStatus) return;
+      const routeKey = path + window.location.search; // Never log this value.
+      const changed = routeKey !== this.verboseVisualLastRoute;
+      const now = Date.now();
+      if (!changed && now - this.verboseVisualLastAt < 2500) return;
+      if (this.verboseVisualSnapshots >= 160 && !changed) return;
+      this.verboseVisualLastRoute = routeKey;
+      this.verboseVisualLastAt = now;
+      this.verboseVisualSnapshots++;
+      try {
+        const snapshot = collectVisualDebug({
+          viewer:this.viewer,host:this.controlsHost,
+          indexedRefs:this.refs.length,
+          indexedPosts:new Set(this.refs.map(ref=>ref.statusId)).size,
+          activeIndex:this.originProfile ? this.activeIndex() : null,
+          profileReady:!!this.originProfile,gridPending:!!this.pendingGrid,
+          navigationBusy:this.navigationBusy,prefetchInFlight:this.prefetchInFlight,
+          cacheEntries:this.prefetched.size,photoTotals:this.knownPhotoTotals.size,
+          listObserverActive:!!this.listObserver,modalObserverActive:!!this.modalObserver,
+          healthCode:this.viewer ? this.controlsHealthCode() :
+            isMedia ? (this.refs.length ? "MEDIA_INDEX_READY" : "MEDIA_GRID_NOT_FOUND") :
+              "VIEWER_NOT_FOUND",
+        });
+        console.info("[XMN " + DIAGNOSTIC_VERSION + "] visual.snapshot #" +
+          this.verboseVisualSnapshots, JSON.stringify(snapshot));
+      } catch (error) {
+        diagnostic("visual.snapshot_error", {
+          name:error instanceof Error ? error.name : "unknown"
+        });
+      }
+    }
+
     private tick(): void {
       // Chromium may still dispatch throttled interval callbacks for a hidden
       // tab. Do not traverse X's media DOM while backgrounded; we reconcile
@@ -1358,6 +1401,7 @@ namespace XMN {
           this.reportHealth(this.refs?.length ? "MEDIA_INDEX_READY" : "MEDIA_GRID_NOT_FOUND");
         else if (path.includes("/status/")) this.reportHealth("OPEN_MEDIA_TAB_FIRST");
       }
+      this.maybeLogVerboseVisual();
     }
 
     /** First few anchors and DOM nodes distinguish X's data swap from our badge cleanup. */
@@ -1807,6 +1851,8 @@ namespace XMN {
           button.addEventListener('click', (event) => {
             event.preventDefault();
             event.stopPropagation();
+            diagnostic("input.button", {direction:direction===-1?"left":"right",
+              disabled:button?.disabled===true,viewerConnected:!!this.viewer?.isConnected});
             void this.navigate(direction);
           });
           container.appendChild(button);
@@ -1996,6 +2042,16 @@ namespace XMN {
     }
 
     private onKeyDown(event: KeyboardEvent): void {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        diagnostic("input.arrow", {
+          direction:event.key === "ArrowLeft" ? "left" : "right",
+          viewerConnected:!!this.viewer?.isConnected,
+          indexKnown:!!this.originProfile && (this.refs?.length ?? 0) > 0,
+          navBusy:this.navigationBusy,
+          modifier:!!(event.shiftKey || event.altKey || event.ctrlKey || event.metaKey),
+          editing:isEditingTarget(event.target),
+        });
+      }
       if(event.key==='ArrowLeft'||event.key==='Escape')this.pendingBoundary=null;
       if (!this.viewer?.isConnected || !this.originProfile ||
           isEditingTarget(event.target) || this.navigationBusy) return;

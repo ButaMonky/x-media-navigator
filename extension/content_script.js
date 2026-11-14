@@ -932,6 +932,219 @@ var XMN;
     }
     XMN.createPublicContinuationManifest = createPublicContinuationManifest;
 })(XMN || (XMN = {}));
+/** Privacy-safe, temporary verbose visual telemetry for private XMN QA.
+ * Deliberately NEVER collect URLs, handles, status IDs, labels, text content,
+ * alt text, image src, cookies, storage values, or request headers. */
+var XMN;
+(function (XMN) {
+    const VDBG_TESTIDS = new Set([
+        'swipe-to-dismiss', 'mediaViewer', 'tweetPhoto', 'cellInnerDiv',
+        'primaryColumn', 'tweet', 'app-bar-close', 'videoPlayer',
+        'tweetText', 'quotedTweet', 'quoteTweet', 'gallery', 'modal',
+    ]);
+    const VDBG_ROLES = new Set([
+        'dialog', 'group', 'button', 'list', 'listitem', 'main', 'img',
+        'presentation', 'status', 'generic', 'region', 'article', 'navigation',
+    ]);
+    function vdbgCount(root, selector) {
+        try {
+            return root?.querySelectorAll(selector)?.length ?? 0;
+        }
+        catch {
+            return -1;
+        }
+    }
+    function vdbgRect(node) {
+        if (!node || typeof node.getBoundingClientRect !== 'function')
+            return null;
+        try {
+            const b = node.getBoundingClientRect();
+            const round = (n) => Number.isFinite(n) ? Math.round(n * 10) / 10 : -1;
+            return { x: round(b.x), y: round(b.y), width: round(b.width), height: round(b.height),
+                right: round(b.right), bottom: round(b.bottom) };
+        }
+        catch {
+            return null;
+        }
+    }
+    function vdbgStyle(node) {
+        if (!node || typeof window.getComputedStyle !== 'function')
+            return null;
+        try {
+            const s = window.getComputedStyle(node);
+            return {
+                display: s.display, visibility: s.visibility, opacity: s.opacity,
+                position: s.position, zIndex: s.zIndex, pointerEvents: s.pointerEvents,
+                width: s.width, height: s.height, left: s.left, right: s.right,
+                top: s.top, bottom: s.bottom, transform: s.transform,
+                overflowX: s.overflowX, overflowY: s.overflowY, clipPath: s.clipPath?.includes("url(") ? "url_redacted" : s.clipPath,
+                contain: s.contain, contentVisibility: s.contentVisibility,
+                isolation: s.isolation, filter: s.filter?.includes("url(") ? "url_redacted" : s.filter,
+                backgroundColor: s.backgroundColor, color: s.color,
+                borderColor: s.borderColor, borderWidth: s.borderWidth,
+                fontSize: s.fontSize,
+            };
+        }
+        catch {
+            return null;
+        }
+    }
+    function vdbgNode(node) {
+        if (!node)
+            return null;
+        const rawTestid = node.getAttribute?.('data-testid');
+        const rawRole = node.getAttribute?.('role');
+        const cls = node.classList;
+        return {
+            tag: node.tagName?.toLowerCase() ?? 'unknown',
+            testid: rawTestid ? (VDBG_TESTIDS.has(rawTestid) ? rawTestid : 'other') : null,
+            role: rawRole ? (VDBG_ROLES.has(rawRole) ? rawRole : 'other') : null,
+            xmn: !!cls && ['xmn-controls-layer', 'xmn-nav-button', 'xmn-status',
+                'xmn-tile-badge', 'xmn-visual-handoff'].some(k => cls.contains(k)),
+            hiddenAttribute: node.hasAttribute?.('hidden') ?? false,
+            inertAttribute: node.hasAttribute?.('inert') ?? false,
+            ariaHidden: node.getAttribute?.('aria-hidden') === 'true',
+        };
+    }
+    function vdbgParents(node, limit = 9) {
+        const parents = [];
+        let current = node;
+        for (let i = 0; current && i < limit; i++, current = current.parentElement) {
+            parents.push({ level: i, element: vdbgNode(current), rect: vdbgRect(current),
+                style: vdbgStyle(current) });
+        }
+        return parents;
+    }
+    function vdbgHit(node) {
+        const r = node.getBoundingClientRect?.();
+        if (!r || !Number.isFinite(r.width) || !Number.isFinite(r.height) ||
+            r.width <= 0 || r.height <= 0)
+            return { status: 'zero_size' };
+        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+        if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight)
+            return { status: 'outside_viewport', point: [Math.round(x), Math.round(y)] };
+        try {
+            const top = document.elementFromPoint(x, y);
+            const stack = typeof document.elementsFromPoint === 'function'
+                ? document.elementsFromPoint(x, y).slice(0, 7).map(vdbgNode)
+                : [vdbgNode(top)];
+            return { status: top && (top === node || node.contains(top)) ? 'hit' : 'occluded',
+                point: [Math.round(x), Math.round(y)], top: vdbgNode(top), stack };
+        }
+        catch {
+            return { status: 'hit_test_unavailable' };
+        }
+    }
+    function vdbgElement(node) {
+        if (!node)
+            return null;
+        return { element: vdbgNode(node), rect: vdbgRect(node), style: vdbgStyle(node),
+            parentChain: vdbgParents(node, 7) };
+    }
+    function vdbgMode() {
+        const pathname = window.location.pathname;
+        const match = /(?:^|\/)(photo|video)\/(\d+)\/?$/.exec(pathname);
+        const route = /\/media\/?$/.test(pathname) ? 'profile_media'
+            : /\/status\/\d+/.test(pathname) ? 'post' : 'other';
+        const mode = new URLSearchParams(window.location.search).get('filter');
+        return {
+            route,
+            mediaKind: match?.[1] ?? 'unknown',
+            position: match ? Number(match[2]) : null,
+            filter: mode === 'photo' || mode === 'video' ? mode : mode ? 'other' : 'default',
+        };
+    }
+    function collectVisualDebug(input) {
+        const host = input.host, viewer = input.viewer;
+        const buttons = Array.from(document.querySelectorAll('.xmn-nav-button')).slice(0, 8);
+        const layers = Array.from(document.querySelectorAll('.xmn-controls-layer')).slice(0, 5);
+        const primary = document.querySelector('[data-testid="primaryColumn"]') ?? document.querySelector('main');
+        const mediaRoot = viewer ?? document.querySelector('[role="dialog"]');
+        const media = Array.from((mediaRoot ?? document).querySelectorAll('img,video')).slice(0, 10);
+        const dialogs = Array.from(document.querySelectorAll('dialog,[role="dialog"],[popover]')).slice(0, 8);
+        const viewport = window.visualViewport;
+        return {
+            collectedAt: new Date().toISOString(),
+            route: vdbgMode(),
+            browser: {
+                innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+                devicePixelRatio: window.devicePixelRatio,
+                scrollX: window.scrollX, scrollY: window.scrollY,
+                visualViewport: viewport ? {
+                    width: viewport.width, height: viewport.height, offsetLeft: viewport.offsetLeft,
+                    offsetTop: viewport.offsetTop, scale: viewport.scale
+                } : null,
+                documentReadyState: document.readyState,
+                visibilityState: document.visibilityState,
+                fullscreen: !!document.fullscreenElement,
+            },
+            session: {
+                profileReady: input.profileReady, indexedRefs: input.indexedRefs,
+                indexedPosts: input.indexedPosts, activeIndex: input.activeIndex,
+                gridPending: input.gridPending, navigationBusy: input.navigationBusy,
+                prefetchInFlight: input.prefetchInFlight, cacheEntries: input.cacheEntries,
+                photoTotals: input.photoTotals, listObserverActive: input.listObserverActive,
+                modalObserverActive: input.modalObserverActive, healthCode: input.healthCode,
+            },
+            domCounts: {
+                main: vdbgCount(document, 'main'),
+                primaryColumn: vdbgCount(document, '[data-testid="primaryColumn"]'),
+                listItems: vdbgCount(primary, 'li[role="listitem"]'),
+                cellInnerDiv: vdbgCount(primary, '[data-testid="cellInnerDiv"]'),
+                mediaAnchors: vdbgCount(primary, 'a[href*="/status/"]'),
+                mediaTilesWithBadge: vdbgCount(primary, '.xmn-tile-badge'),
+                swipeViewers: vdbgCount(document, '[data-testid="swipe-to-dismiss"]'),
+                modernViewers: vdbgCount(document, '[data-testid="mediaViewer"]'),
+                dialogs: vdbgCount(document, '[role="dialog"]'),
+                htmlDialogs: vdbgCount(document, 'dialog'),
+                modalTopLayer: vdbgCount(document, 'dialog:modal'),
+                popoverTopLayer: vdbgCount(document, '[popover]:popover-open'),
+                photoElements: vdbgCount(document, '[data-testid="tweetPhoto"]'),
+                images: vdbgCount(document, 'img'), videos: vdbgCount(document, 'video'),
+                xmnLayers: vdbgCount(document, '.xmn-controls-layer'),
+                xmnArrows: vdbgCount(document, '.xmn-nav-button'),
+                xmnStatus: vdbgCount(document, '.xmn-status'),
+                xmnToasts: vdbgCount(document, '.xmn-toast'),
+                handoffs: vdbgCount(document, '.xmn-visual-handoff'),
+                stylesheets: document.styleSheets?.length ?? 0,
+            },
+            ownViewer: vdbgElement(viewer),
+            ownHost: vdbgElement(host),
+            allHostLayers: layers.map((layer, i) => ({
+                index: i, attachedToBody: layer.parentElement === document.body,
+                topLayerAncestor: !!layer.closest('dialog:modal,[popover]:popover-open'),
+                rect: vdbgRect(layer), style: vdbgStyle(layer),
+                childArrows: vdbgCount(layer, '.xmn-nav-button'),
+            })),
+            buttons: buttons.map((button, i) => ({
+                index: i, side: button.classList.contains('xmn-prev') ? 'left' :
+                    button.classList.contains('xmn-next') ? 'right' : 'other',
+                disabled: button.disabled, rect: vdbgRect(button), style: vdbgStyle(button),
+                inlineDisplay: button.style.display, inlineOpacity: button.style.opacity,
+                hitTest: vdbgHit(button), parents: vdbgParents(button, 7),
+            })),
+            dialogs: dialogs.map((dialog, i) => ({
+                index: i, element: vdbgNode(dialog), rect: vdbgRect(dialog),
+                style: vdbgStyle(dialog),
+                containsViewer: !!viewer && dialog.contains(viewer),
+                containsControls: !!host && dialog.contains(host),
+            })),
+            visibleMediaSamples: media.map((element, i) => ({
+                index: i, tag: element.tagName.toLowerCase(),
+                rect: vdbgRect(element), style: vdbgStyle(element),
+                naturalWidth: element.tagName === 'IMG' ? element.naturalWidth : null,
+                naturalHeight: element.tagName === 'IMG' ? element.naturalHeight : null,
+                imageComplete: element.tagName === 'IMG' ? element.complete : null,
+                videoReadyState: element.tagName === 'VIDEO' ? element.readyState : null,
+            })),
+            notes: [
+                'No URLs, post IDs, handles, text, image source or credentials collected.',
+                'Display and hit testing alone cannot prove human-visible pixel rendering.',
+            ],
+        };
+    }
+    XMN.collectVisualDebug = collectVisualDebug;
+})(XMN || (XMN = {}));
 /// <reference path="./core.ts" />
 /**
  * MV3 content-script controller. No page-world monkeypatches or network requests.
@@ -949,7 +1162,7 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.31-dev';
+    const DIAGNOSTIC_VERSION = '2.4.32-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
@@ -1117,6 +1330,11 @@ var XMN;
             this.experimentalThirdPartyApiEnabled = false;
             this.lastHealthCode = '';
             this.lastHealthReportedAt = 0;
+            // Private QA: verbose, privacy-safe visual snapshots in Console only.
+            this.verboseVisualEnabled = true;
+            this.verboseVisualLastAt = 0;
+            this.verboseVisualLastRoute = "";
+            this.verboseVisualSnapshots = 0;
             this.viewer = null;
             // Portaled controls live outside X's React-owned photo carousel. X may
             // unmount or hide a slide's children on photo 2 without closing the modal.
@@ -2253,6 +2471,48 @@ var XMN;
             }
             catch { /* No diagnostics may break the photo viewer. */ }
         }
+        /** Print read-only visual evidence, without usernames, post IDs or URLs. */
+        maybeLogVerboseVisual() {
+            if (!this.verboseVisualEnabled || document.hidden)
+                return;
+            const path = window.location.pathname;
+            const isMedia = !!XMN.mediaProfileFromPath(path);
+            const isStatus = /\/status\//.test(path);
+            if (!isMedia && !isStatus)
+                return;
+            const routeKey = path + window.location.search; // Never log this value.
+            const changed = routeKey !== this.verboseVisualLastRoute;
+            const now = Date.now();
+            if (!changed && now - this.verboseVisualLastAt < 2500)
+                return;
+            if (this.verboseVisualSnapshots >= 160 && !changed)
+                return;
+            this.verboseVisualLastRoute = routeKey;
+            this.verboseVisualLastAt = now;
+            this.verboseVisualSnapshots++;
+            try {
+                const snapshot = XMN.collectVisualDebug({
+                    viewer: this.viewer, host: this.controlsHost,
+                    indexedRefs: this.refs.length,
+                    indexedPosts: new Set(this.refs.map(ref => ref.statusId)).size,
+                    activeIndex: this.originProfile ? this.activeIndex() : null,
+                    profileReady: !!this.originProfile, gridPending: !!this.pendingGrid,
+                    navigationBusy: this.navigationBusy, prefetchInFlight: this.prefetchInFlight,
+                    cacheEntries: this.prefetched.size, photoTotals: this.knownPhotoTotals.size,
+                    listObserverActive: !!this.listObserver, modalObserverActive: !!this.modalObserver,
+                    healthCode: this.viewer ? this.controlsHealthCode() :
+                        isMedia ? (this.refs.length ? "MEDIA_INDEX_READY" : "MEDIA_GRID_NOT_FOUND") :
+                            "VIEWER_NOT_FOUND",
+                });
+                console.info("[XMN " + DIAGNOSTIC_VERSION + "] visual.snapshot #" +
+                    this.verboseVisualSnapshots, JSON.stringify(snapshot));
+            }
+            catch (error) {
+                diagnostic("visual.snapshot_error", {
+                    name: error instanceof Error ? error.name : "unknown"
+                });
+            }
+        }
         tick() {
             // Chromium may still dispatch throttled interval callbacks for a hidden
             // tab. Do not traverse X's media DOM while backgrounded; we reconcile
@@ -2345,6 +2605,7 @@ var XMN;
                 else if (path.includes("/status/"))
                     this.reportHealth("OPEN_MEDIA_TAB_FIRST");
             }
+            this.maybeLogVerboseVisual();
         }
         /** First few anchors and DOM nodes distinguish X's data swap from our badge cleanup. */
         captureGrid() {
@@ -2813,6 +3074,8 @@ var XMN;
                     button.addEventListener('click', (event) => {
                         event.preventDefault();
                         event.stopPropagation();
+                        diagnostic("input.button", { direction: direction === -1 ? "left" : "right",
+                            disabled: button?.disabled === true, viewerConnected: !!this.viewer?.isConnected });
                         void this.navigate(direction);
                     });
                     container.appendChild(button);
@@ -3018,6 +3281,16 @@ var XMN;
             return disabledPhotoNextSeen;
         }
         onKeyDown(event) {
+            if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                diagnostic("input.arrow", {
+                    direction: event.key === "ArrowLeft" ? "left" : "right",
+                    viewerConnected: !!this.viewer?.isConnected,
+                    indexKnown: !!this.originProfile && (this.refs?.length ?? 0) > 0,
+                    navBusy: this.navigationBusy,
+                    modifier: !!(event.shiftKey || event.altKey || event.ctrlKey || event.metaKey),
+                    editing: isEditingTarget(event.target),
+                });
+            }
             if (event.key === 'ArrowLeft' || event.key === 'Escape')
                 this.pendingBoundary = null;
             if (!this.viewer?.isConnected || !this.originProfile ||

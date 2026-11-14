@@ -20,6 +20,7 @@
     "src/media-window.ts",
     "src/session.ts",
     "src/page-archive.ts",
+    "src/visual-diagnostics.ts",
     "src/content.ts"
   ]
 }

@@ -1,5 +1,8 @@
 # X Media Navigator — TypeScript rebuild (private beta)
 
+> **2026-11-15 詳細診断ログ v2.4.32（非公開QA）**：Xのメディアタブや画像を開くだけで、ボタンの実座標・CSS・重なり・DOM階層・ビューアと画像の状態・ナビゲーション状況をConsoleに自動で詳しく出力します。操作機能はv2.4.31から変更せず、URL・投稿ID・Cookie等は記録しません。Chrome Consoleで XMN 2.4.32-dev または visual.snapshot を検索してください。[ログの説明](docs/qa/2026-11-15-v2432-verbose-visual-diagnostics.md)
+
+
 > **2026-11-15 Browser top-layer v2.4.31（非公開QA）**：画像ビューアと投稿インデックスが認識できてもボタンが見えない問題への追加修復。ネイティブのダイアログ／ポップオーバーでは同じ最前面レイヤーに操作ボタンを配置し、診断でボタンの被覆・画面外を区別します。従来UI・先読み・20メディア対応を維持します。実Xでの利用者確認が終わるまで一般公開しません。[QA記録](docs/qa/2026-11-15-v2431-top-layer-controls.md)
 
 
