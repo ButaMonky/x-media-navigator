@@ -38,7 +38,7 @@ namespace XMN {
      if(kind==='video'&& (g.refs.length!==1||
        g.refs[0].mediaIndex!==1))return null;
      if(kind==='photo'){
-       if(g.refs.length>4||g.refs.some((r,j)=>r.mediaIndex!==j+1))
+       if(g.refs.length>MAX_MEDIA_PER_POST||g.refs.some((r,j)=>r.mediaIndex!==j+1))
          return null;
        photoTotals.push([g.statusId,g.refs.length]);
        for(const r of g.refs){

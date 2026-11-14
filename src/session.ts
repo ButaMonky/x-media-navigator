@@ -1,6 +1,7 @@
 /** Untrusted X pages cannot read chrome.storage.session, only extension code can. */
 declare const chrome: {
- runtime?: { sendMessage(request: unknown): Promise<unknown> }
+ runtime?: { sendMessage(request: unknown): Promise<unknown> },
+ storage?: { local?: { set(items: Record<string,unknown>): Promise<void> } }
 };
 namespace XMN {
  export interface PublicSession {

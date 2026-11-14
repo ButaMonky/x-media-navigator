@@ -27,8 +27,8 @@ const group=(id,count=1,origin='x-dom',complete='complete')=>({
 const ids=groups=>Array.from(groups,g=>g.statusId);
 const json=value=>JSON.parse(JSON.stringify(value));
 
-test('explicit media ownership and complete 1-4 photo album validation',()=>{
- for(let n=1;n<=4;n++)assert.equal(X.validateMediaPostGroup(group(100,n)),true);
+test('explicit media ownership and complete 1-20 photo album validation',()=>{
+ for(let n=1;n<=20;n++)assert.equal(X.validateMediaPostGroup(group(100,n)),true);
  const incomplete=group(100,2);incomplete.refs[1]=ref(100,4);
  assert.equal(X.validateMediaPostGroup(incomplete),false);
  incomplete.completeness='partial';
@@ -98,7 +98,7 @@ test('a 6000-post timeline selects a bounded window without splitting albums',()
   assert.equal(w.posts[w.activePost].statusId,String(20000-center));
   assert.ok(w.mediaRefs<=450);
   assert.equal(w.mediaRefs,w.posts.reduce((sum,g)=>sum+g.refs.length,0));
-  assert.ok(w.posts.every(g=>g.refs.length>0&&g.refs.length<=4));
+  assert.ok(w.posts.every(g=>g.refs.length>0&&g.refs.length<=20));
   checks++;
  }
  assert.equal(checks,11);

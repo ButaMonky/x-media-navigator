@@ -93,7 +93,7 @@ namespace XMN {
    for(const item of x.photoTotals){
      if(!Array.isArray(item)||item.length!==2||
         typeof item[0]!=='string'||!/^\d{1,19}$/.test(item[0])||
-        !Number.isInteger(item[1])||item[1]<1||item[1]>4 ||
+        !Number.isInteger(item[1])||item[1]<1||item[1]>MAX_MEDIA_PER_POST ||
         !groups.has(item[0]))return false;
    }
    try{return JSON.stringify(x).length<=MAX_SESSION_CHARACTERS}

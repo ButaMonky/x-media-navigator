@@ -8,7 +8,7 @@ $root=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $branch='task/xmn-b0-b3-20261029'
 $repo='ButaMonky/x-media-navigator'
 $target=Join-Path $env:USERPROFILE 'Downloads\X-Media-Navigator-Current'
-$files=@('manifest.json','content_script.js','background.js','style.css','icon16.png','icon48.png','icon128.png')
+$files=@('manifest.json','content_script.js','background.js','style.css','icon16.png','icon48.png','icon128.png','popup.html','popup.css','popup.js')
 function Assert-Source {
   $actual=(& git -C $root branch --show-current).Trim()
   if($LASTEXITCODE -ne 0 -or $actual -ne $branch){throw "Incorrect branch: $actual"}

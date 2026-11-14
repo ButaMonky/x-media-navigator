@@ -143,16 +143,17 @@ test('media timeline context distinguishes Photos/Videos but ignores tracking pa
 
 test('an incomplete set of thumbnails never proves the last photo', () => {
   for (const group of [[],[1],[1,2],[1,2,3],[1,3,4],[0,1,2,3]]) {
-    assert.equal(XMN.completeFourPhotoSet(new Set(group)), false, JSON.stringify(group));
+    assert.equal(XMN.completeMaxPhotoSet(new Set(group)), false, JSON.stringify(group));
   }
-  assert.equal(XMN.completeFourPhotoSet(new Set([4,2,3,1])), true);
+  assert.equal(XMN.completeMaxPhotoSet(new Set([4,2,3,1])), false);
+  assert.equal(XMN.completeMaxPhotoSet(new Set(Array.from({length:20},(_,i)=>i+1))),true);
 });
 
 test('recognizes only explicit bounded gallery counters', () => {
-  for (const label of ['Image 2 of 4', 'Photo 1 of 2', '画像 4/4', '1 / 1']) {
+  for (const label of ['Image 2 of 4', 'Photo 1 of 2', 'Image 5 of 20', '画像 4/4', '1 / 1']) {
     assert.ok(XMN.parseGalleryCounter(label), label);
   }
-  for (const label of ['20 of 40', '2 of 5', 'Image 2 of 1', '2 likes', '1/2 comments']) {
+  for (const label of ['20 of 40', '2 of 21', 'Image 2 of 1', '2 likes', '1/2 comments']) {
     assert.equal(XMN.parseGalleryCounter(label), null, label);
   }
 });
@@ -169,7 +170,7 @@ test('Japanese photo counters preserve total/current ordering and full-width dig
     assert.equal(count?.current, current, label);
     assert.equal(count?.total, total, label);
   }
-  for (const label of ['2枚中3枚目', '5枚中1枚目', '全3枚中4枚目', '3/5', '画像 2/3 件']) {
+  for (const label of ['2枚中3枚目', '21枚中1枚目', '全3枚中4枚目', '3/21', '画像 2/3 件']) {
     assert.equal(XMN.parseGalleryCounter(label), null, label);
   }
 });

@@ -1,5 +1,8 @@
 # X Media Navigator — TypeScript rebuild (private beta)
 
+> **2026-11-15 修復候補 v2.4.29（非公開QA）**：Xの新しいメディア一覧・画像ビューアを認識するフォールバック、最大20件の画像と4枚目の誤ジャンプ防止、機微情報を記録しない診断ポップアップを追加しました。元のネイティブ移動と画像先読みは維持し、FxEmbedは引き続き既定OFFです。 [修復QA記録](docs/qa/2026-11-15-v2429-modern-ui-20media.md) / [Issue #18](https://github.com/ButaMonky/x-media-navigator/issues/18)。実Xのユーザー受入が完了するまで正式公開とは扱いません。
+
+
 > **2026-10-31 新アイコン v2.4.28（非公開QA）**：承認済みの青いネオンギャラリー＋左右矢印デザインをChrome拡張用16/48/128pxのPNGに変換し、extension/icon*.pngを置き換えました。機能・権限・外部APIの既定OFFはv2.4.27から変更していません。更新先は従来どおり Downloads\X-Media-Navigator-Current の1か所のみです。Chromeの拡張機能管理から再読み込みし、必要ならChrome自体を再起動してください。アイコンの検証結果は [v2.4.28のQA](docs/qa/2026-10-31-v2428-neon-icon.md) を参照。
 
 

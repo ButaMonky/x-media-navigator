@@ -7,13 +7,15 @@
  */
 namespace XMN {
   const VIEWER_SELECTOR = '[data-testid="swipe-to-dismiss"]';
+  const MODERN_VIEWER_SELECTOR = '[data-testid="mediaViewer"]';
   const TILE_SELECTOR = 'li[role="listitem"]';
+  const OBSERVED_MEDIA_SELECTOR = 'li[role="listitem"], [data-testid="cellInnerDiv"], a[href*="/status/"]';
   // Bounded, progressive future-post prefetch. Never saturate the network.
   const PREFETCH_MAX_IMAGES = 5;
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.28-dev';
+  const DIAGNOSTIC_VERSION = '2.4.29-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -68,7 +70,9 @@ namespace XMN {
   }
 
   function usableTileLink(tile: Element, profile: string): { link: HTMLAnchorElement; ref: MediaRef } | null {
-    const links = Array.from(tile.querySelectorAll<HTMLAnchorElement>('a[href]'));
+    const links = typeof tile.matches === 'function' && tile.matches('a[href]')
+      ? [tile as HTMLAnchorElement]
+      : Array.from(tile.querySelectorAll<HTMLAnchorElement>('a[href]'));
     const possibilities = links
       // A quoted post can contain its own media links. They are not the
       // originating profile's media tile, even if the handle matches.
@@ -88,6 +92,22 @@ namespace XMN {
     if (!hasThumbnail) return possibilities.length === 1 ? explicit ?? null : null;
     // In older grids, the image sits outside its link. A single owner is still safe.
     return explicit ?? possibilities[0] ?? null;
+  }
+
+  /** Prefer X's original list items; fall back to modern cells or owned anchors. */
+  function mediaTileElements(root: Element, profile: string | null): HTMLElement[] {
+    const legacy = Array.from(root.querySelectorAll<HTMLElement>(TILE_SELECTOR));
+    if (!profile) return legacy;
+    if (legacy.some(tile => !!usableTileLink(tile, profile))) return legacy;
+    const cells = Array.from(root.querySelectorAll<HTMLElement>('[data-testid="cellInnerDiv"]') ?? []);
+    if (cells.some(tile => !!usableTileLink(tile, profile))) return cells;
+    return Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href*="/status/"]') ?? [])
+      .filter(link => {
+        if (link.closest('[data-testid="quoteTweet"]')) return false;
+        const ref = mediaRefFromHref(link.getAttribute('href') ?? '', profile);
+        return !!ref && (ref.kind !== null ||
+          !!link.querySelector('img[src*="pbs.twimg.com/media"], video, [data-testid="tweetPhoto"]'));
+      });
   }
 
   /** A downloaded, decoded image may be reused as a very short visual handoff. */
@@ -191,6 +211,8 @@ namespace XMN {
     // Native X media links are authoritative; unapproved third-party calls are disabled.
     private experimentalThirdPartyApiEnabled = false;
 
+    private lastHealthCode = '';
+    private lastHealthReportedAt = 0;
     private viewer: HTMLElement | null = null;
     // Portaled controls live outside X's React-owned photo carousel. X may
     // unmount or hide a slide's children on photo 2 without closing the modal.
@@ -236,7 +258,7 @@ namespace XMN {
       void startup.catch(() => {}).finally(() => {
         diagnostic('startup', { restored: this.publicSessionRestored, indexed: this.refs.length,
           nativeOnly: !this.experimentalThirdPartyApiEnabled });
-        this.tick();
+        try { this.tick(); } catch { this.reportHealth('INITIALIZATION_ERROR'); }
       });
       // Observe actual user keyboard input only when the viewer belongs to a media-tab session.
       document.addEventListener('keydown', (event) => this.onKeyDown(event), true);
@@ -427,7 +449,7 @@ namespace XMN {
       for(const item of data.photoTotals??[]){
         if(!Array.isArray(item)||item.length!==2 ||
            typeof item[0]!=='string'||!Number.isInteger(item[1]) ||
-           item[1]<1||item[1]>4) continue;
+           item[1]<1||item[1]>MAX_MEDIA_PER_POST) continue;
         const complete=Array.from({length:item[1]},(_,i)=>
           keys.has(item[0]+':photo:'+(i+1))).every(Boolean);
         if(complete)this.rememberPhotoTotal(item[0],item[1]);
@@ -957,7 +979,7 @@ namespace XMN {
           groupedPhotos.set(ref.statusId, indexes);
         }
         for (const [id, positions] of groupedPhotos) {
-          if (positions.size >= 1 && positions.size <= 4 &&
+          if (positions.size >= 1 && positions.size <= MAX_MEDIA_PER_POST &&
               Array.from({ length: positions.size }, (_, i) => i + 1).every(
                 (i) => positions.has(i) &&
                   this.publicApiKeys.has(`${id}:photo:${i}`))) {
@@ -1161,7 +1183,37 @@ namespace XMN {
         }
         if (area > bestArea && area > 0) { best = viewer; bestArea = area; }
       }
-      return best;
+      if (best) return best;
+      for (const modern of document.querySelectorAll<HTMLElement>(MODERN_VIEWER_SELECTOR) ?? []) {
+        if (!modern.isConnected || modern.closest("[aria-hidden=true], [hidden], [inert]") || !viewerStyleVisible(modern)) continue;
+        const bounds=modern.getBoundingClientRect();
+        if (bounds.width >= 150 && bounds.height >= 120 && modern.querySelector("img,video")) return modern;
+      }
+      // X may replace swipe-to-dismiss with a media node inside a dialog.
+      // Restrict the fallback to an owned status route and a large on-screen media.
+      if (!this.originProfile ||
+          !profileStatusFromPath(window.location.pathname, this.originProfile)) return null;
+      let fallback: HTMLElement | null = null;
+      let fallbackArea = 0;
+      for (const dialog of document.querySelectorAll<HTMLElement>('[role="dialog"]')) {
+        if (!dialog.isConnected || dialog.closest('[aria-hidden="true"], [hidden], [inert]') ||
+            !viewerStyleVisible(dialog)) continue;
+        for (const media of dialog.querySelectorAll<HTMLElement>(
+          '[data-testid="tweetPhoto"] img, img[src*="pbs.twimg.com/media"], img[srcset*="pbs.twimg.com/media"], video')) {
+          if (!media.isConnected || media.closest('[aria-hidden="true"], [hidden], [inert]') ||
+              !viewerStyleVisible(media)) continue;
+          const box = media.getBoundingClientRect();
+          const area = Math.max(0, Math.min(window.innerWidth, box.right) - Math.max(0, box.left)) *
+            Math.max(0, Math.min(window.innerHeight, box.bottom) - Math.max(0, box.top));
+          if (area < 20000 || area <= fallbackArea) continue;
+          const parent = media.parentElement;
+          const parentBox = parent?.getBoundingClientRect();
+          fallback = parent && parentBox && parentBox.width >= 150 && parentBox.height >= 120
+            ? parent : media;
+          fallbackArea = area;
+        }
+      }
+      return fallback;
     }
 
     /** Keep the chosen X slide across idle polls, without querying layouts. */
@@ -1196,7 +1248,9 @@ namespace XMN {
         for (const record of records) {
           for (const node of [...record.addedNodes, ...record.removedNodes]) {
             if (!(node instanceof Element)) continue;
-            if (node.matches(VIEWER_SELECTOR) || node.querySelector(VIEWER_SELECTOR)) {
+            if (node.matches(VIEWER_SELECTOR) || node.querySelector(VIEWER_SELECTOR) ||
+                ((node.matches('[role="dialog"]') || node.querySelector('[role="dialog"]')) &&
+                 !!node.querySelector('img[src*="pbs.twimg.com/media"], video'))) {
               this.activeViewerPath = '';
               this.tick();
               return;
@@ -1205,6 +1259,18 @@ namespace XMN {
         }
       });
       this.modalObserver.observe(document.body, { childList: true, subtree: true });
+    }
+
+    /** Record only an enum-like health code; never persist X URLs or account IDs. */
+    private reportHealth(code: string): void {
+      const now=Date.now();
+      if(this.lastHealthCode===code && now-this.lastHealthReportedAt<60000)return;
+      this.lastHealthCode=code;this.lastHealthReportedAt=now;
+      diagnostic('health', { code });
+      try {
+        if(typeof chrome!=='undefined' && chrome.storage?.local?.set)
+          void chrome.storage.local.set({ xmnHealth:{code,version:DIAGNOSTIC_VERSION,updatedAt:now} }).catch(()=>{});
+      } catch { /* No diagnostics may break the photo viewer. */ }
     }
 
     private tick(): void {
@@ -1283,15 +1349,21 @@ namespace XMN {
         ? this.activeViewerForRoute() : null;
       if (viewer && this.originProfile) {
         this.syncViewer(viewer);
+        this.reportHealth("VIEWER_READY");
       } else {
         this.removeViewerUI();
+        if (this.originProfile && profileStatusFromPath(path,this.originProfile))
+          this.reportHealth("VIEWER_NOT_FOUND");
+        else if (atMedia)
+          this.reportHealth(this.refs?.length ? "MEDIA_INDEX_READY" : "MEDIA_GRID_NOT_FOUND");
+        else if (path.includes("/status/")) this.reportHealth("OPEN_MEDIA_TAB_FIRST");
       }
     }
 
     /** First few anchors and DOM nodes distinguish X's data swap from our badge cleanup. */
     private captureGrid(): { column: Element | null; firstTiles: Element[]; firstKeys: string[]; lastTiles?: Element[]; lastKeys?: string[]; tileCount?: number; allTiles?: Element[]; allKeys?: string[] } {
       const column = mediaColumn();
-      const tiles=column ? Array.from(column.querySelectorAll(TILE_SELECTOR)) : [];
+      const tiles=column ? mediaTileElements(column, this.originProfile) : [];
       // A filtered X timeline may reuse the same first and last tiles, but
       // replace only the MIDDLE. During this temporary transition scan each
       // media key exactly once, then compare the complete ordered snapshot.
@@ -1344,7 +1416,7 @@ namespace XMN {
           if (record.type === 'attributes') {
             // A late-loading thumbnail only requires updating its own URL.
             const tile = record.target instanceof Element
-              ? record.target.closest<HTMLElement>(TILE_SELECTOR) : null;
+              ? (record.target.closest<HTMLElement>(TILE_SELECTOR) ?? record.target.closest<HTMLElement>(OBSERVED_MEDIA_SELECTOR)) : null;
             if (tile) {
               this.pendingSourceTiles.add(tile);
               relevant = true;
@@ -1353,7 +1425,7 @@ namespace XMN {
             // Rescan for actual media additions/removals, but not our badges
             // or unrelated spinner/comment mutations outside media tiles.
             const insideTile = record.target instanceof Element
-              ? record.target.closest(TILE_SELECTOR) : null;
+              ? (record.target.closest(TILE_SELECTOR) ?? record.target.closest(OBSERVED_MEDIA_SELECTOR)) : null;
             const changed = [...record.addedNodes, ...record.removedNodes];
             const mediaChanged = changed.some((node) => node instanceof Element &&
               (node.matches(TILE_SELECTOR) || !!node.querySelector(TILE_SELECTOR) ||
@@ -1435,7 +1507,7 @@ namespace XMN {
           mediaProfileFromPath(window.location.pathname) !== this.originProfile) return;
       const root = mediaColumn();
       if (!root) return;
-      const tiles = Array.from(root.querySelectorAll<HTMLElement>(TILE_SELECTOR));
+      const tiles = mediaTileElements(root, this.originProfile);
       // A virtualized X grid can omit its original head (e.g. status 400)
       // while prepending status 500 above an older surviving tile (300).
       // The first known ref does NOT have to be index zero. Only a strictly
@@ -1793,20 +1865,15 @@ namespace XMN {
           // mount the current slide. Never infer size from mounted children.
           const position = Number(node.getAttribute('aria-posinset'));
           const size = Number(node.getAttribute('aria-setsize'));
-          if (Number.isInteger(size) && size >= 1 && size <= 4 &&
+          if (Number.isInteger(size) && size >= 1 && size <= MAX_MEDIA_PER_POST &&
               position === displayed.mediaIndex && size >= position) {
             this.rememberPhotoTotal(statusId, size);
             return size;
           }
         }
-        if (displayed.mediaIndex === 4) {
-          this.rememberPhotoTotal(statusId, 4);
-          return 4;
-        }
       }
-      // Official X rules cap photos at four; seeing all four distinct photo URLs
-      // is therefore complete evidence. One, two, or three visible thumbnails
-      // are NOT proof that the post contains no additional hidden photos.
+      // Up to 20 media attachments are possible. Fewer thumbnails never prove
+      // completion; prefer the explicitly rendered X gallery counter.
       const indexes = new Set<number>();
       for (const article of root.querySelectorAll('article[data-testid="tweet"]')) {
         for (const link of article.querySelectorAll('a[href*="/photo/"]')) {
@@ -1814,16 +1881,16 @@ namespace XMN {
           if (ref?.statusId === statusId && ref.kind === 'photo' && ref.mediaIndex !== null) indexes.add(ref.mediaIndex);
         }
       }
-      if (completeFourPhotoSet(indexes)) {
-        this.rememberPhotoTotal(statusId, 4);
-        return 4;
+      if (completeMaxPhotoSet(indexes)) {
+        this.rememberPhotoTotal(statusId, MAX_MEDIA_PER_POST);
+        return MAX_MEDIA_PER_POST;
       }
       return null;
     }
 
     /** Cache only counts supported by explicit X evidence or a confirmed edge. */
     private rememberPhotoTotal(statusId: string, total: number | null): void {
-      if (!total || !Number.isInteger(total) || total < 1 || total > 4) return;
+      if (!total || !Number.isInteger(total) || total < 1 || total > MAX_MEDIA_PER_POST) return;
       if (!this.knownPhotoTotals) this.knownPhotoTotals = new Map();
       this.knownPhotoTotals.delete(statusId);
       this.knownPhotoTotals.set(statusId, total);

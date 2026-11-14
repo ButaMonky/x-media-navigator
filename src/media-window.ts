@@ -31,7 +31,7 @@ namespace XMN {
 
  export function validateMediaPostGroup(group:MediaPostGroup,profile?:string):boolean{
   if(!numericStatus(group.statusId)||!Array.isArray(group.refs)||
-     group.refs.length<1||group.refs.length>4 ||
+     group.refs.length<1||group.refs.length>MAX_MEDIA_PER_POST ||
      !['x-dom','fxembed','restored','combined'].includes(group.provenance) ||
      !['complete','partial','unknown'].includes(group.completeness))return false;
   const seen=new Set<string>();
@@ -42,8 +42,8 @@ namespace XMN {
    if(!canonical||canonical.key!==r.key||
       canonical.statusId!==r.statusId||canonical.href!==r.href||
       r.kind!==canonical.kind||r.mediaIndex!==canonical.mediaIndex)return false;
-   if(r.kind==='photo' && (!r.mediaIndex||r.mediaIndex>4))return false;
-   if(r.kind==='video' && r.mediaIndex!==1)return false;
+   if(r.kind==='photo' && (!r.mediaIndex||r.mediaIndex>MAX_MEDIA_PER_POST))return false;
+   if(r.kind==='video' && (!r.mediaIndex||r.mediaIndex>MAX_MEDIA_PER_POST))return false;
    seen.add(r.key);
   }
   if(group.completeness==='complete'){

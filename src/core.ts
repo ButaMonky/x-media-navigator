@@ -15,6 +15,7 @@ namespace XMN {
     href: string;
   }
 
+  export const MAX_MEDIA_PER_POST = 20;
   const HANDLE_RE = /^[a-zA-Z0-9_]{1,15}$/;
   const MEDIA_ROUTE_RE = /^\/([^/?#]+)\/media\/?$/;
   const POST_ROUTE_RE = /^\/([^/?#]+)\/status\/(\d+)(?:\/(photo|video)\/(\d+))?\/?$/;
@@ -40,9 +41,10 @@ namespace XMN {
     return `${profile}|${encodeURIComponent(mode)}`;
   }
 
-  /** Only a complete 4-photo set proves album completion without a gallery counter. */
-  export function completeFourPhotoSet(indexes: ReadonlySet<number>): boolean {
-    return indexes.size === 4 && [1, 2, 3, 4].every((index) => indexes.has(index));
+  /** Only seeing ALL supported positions proves completion without a counter. */
+  export function completeMaxPhotoSet(indexes: ReadonlySet<number>): boolean {
+    return indexes.size === MAX_MEDIA_PER_POST &&
+      Array.from({length:MAX_MEDIA_PER_POST},(_,i)=>i+1).every((n)=>indexes.has(n));
   }
 
   /** Parse only explicit media counters; Japanese "N枚中M枚目" lists total first. */
@@ -54,7 +56,7 @@ namespace XMN {
     const current = Number(japanese ? japanese[2] : standard![1]);
     const total = Number(japanese ? japanese[1] : standard![2]);
     return Number.isInteger(current) && Number.isInteger(total) && current >= 1 &&
-      total >= current && total <= 4 ? { current, total } : null;
+      total >= current && total <= MAX_MEDIA_PER_POST ? { current, total } : null;
   }
 
   export function profileStatusFromPath(pathname: string, profile: string): boolean {

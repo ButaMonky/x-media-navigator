@@ -855,3 +855,52 @@ setTimeout(()=>{
     rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
   }
 });
+
+test('modern X media cells and dialog photo work without legacy listitem or swipe selector', {
+  skip: process.env.XMN_RUN_CHROMIUM !== '1' ? 'Requires Chromium' :
+    !existsSync(browser) ? 'Chromium not installed' : false,
+}, async () => {
+  const modernFixture = [
+    '<!doctype html><html lang="ja"><head><meta charset="utf-8">',
+    '<link rel="stylesheet" href="/extension/style.css"></head><body>',
+    '<main><div data-testid="primaryColumn"><div id="grid">',
+    '<div data-testid="cellInnerDiv"><a href="/alice/status/50/photo/1"><img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="></a></div>',
+    '<div data-testid="cellInnerDiv"><a href="/alice/status/40/photo/1"><img src="data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="></a></div>',
+    '</div></div></main>',
+    '<script>',
+    'document.querySelector("#grid").addEventListener("click",event=>{',
+    'const link=event.target.closest("a[href]");if(!link)return;',
+    'event.preventDefault();history.pushState({}, "", link.getAttribute("href"));',
+    'const dialog=document.createElement("div");dialog.setAttribute("role","dialog");',
+    'dialog.innerHTML="<div data-testid=\\"tweetPhoto\\" style=\\"width:60vw;height:75vh\\">"+',
+    '"<img src=\\"data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=\\" style=\\"width:100%;height:100%\\"></div>";',
+    'document.body.appendChild(dialog);});',
+    '</script><script src="/extension/content_script.js"></script><script>',
+    'setTimeout(()=>{',
+    'const badges=document.querySelectorAll("#grid .xmn-tile-badge").length;',
+    'document.querySelector("#grid a[href]").click();',
+    'setTimeout(()=>{',
+    'const controls=document.querySelectorAll(".xmn-controls-layer .xmn-nav-button").length;',
+    'const status=document.querySelector(".xmn-status")?.textContent||"";',
+    'document.body.setAttribute("data-xmn-results",',
+    'badges===2&&controls===2&&status.includes("1 / 2")?"PASS":"FAIL-"+badges+"-"+controls+"-"+status);',
+    '},900);},900);',
+    '</script></body></html>'
+  ].join('');
+  const server=createServer((req,res)=>{
+    if(req.url==='/extension/content_script.js'){
+      res.writeHead(200,{'content-type':'application/javascript'});res.end(contentScript);
+    }else if(req.url==='/extension/style.css'){
+      res.writeHead(200,{'content-type':'text/css'});res.end(extensionCss);
+    }else{res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(modernFixture);}
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const dir=mkdtempSync(join(tmpdir(),'xmn-modern-dom-'));
+  try{
+    const report=await runChromiumUntilResult('http://127.0.0.1:'+server.address().port+'/alice/media',dir);
+    assert.equal(report,'PASS','modern X UI recognition: '+report);
+  }finally{
+    await new Promise(resolve=>server.close(resolve));
+    rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});
+  }
+});

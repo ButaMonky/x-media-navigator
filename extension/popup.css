@@ -1,0 +1,14 @@
+:root{color-scheme:dark;font:13px/1.5 system-ui,sans-serif;background:#0d1525;color:#f4f8ff}
+body{margin:0;width:305px}
+header{display:flex;gap:10px;align-items:center;padding:14px 16px;border-bottom:1px solid #273f62}
+header strong{display:block;font-size:15px}
+header small{display:block;color:#a9cce5}
+main{padding:14px 16px 16px}
+#status{font-weight:700;font-size:14px;margin:0 0 6px}
+.muted{color:#bdd1e1;margin:0 0 8px}
+.code{color:#84cfff;font:11px/1.5 ui-monospace,monospace;word-break:break-word;margin:0 0 14px}
+button{appearance:none;border:1px solid #4a9fd0;background:#163657;color:#fff;border-radius:7px;padding:8px 12px;cursor:pointer}
+button:focus-visible{outline:2px solid #8ddfff;outline-offset:2px}
+section{border-top:1px solid #273f62;margin-top:16px;padding-top:12px;color:#bdd1e1}
+section strong{color:#f4f8ff}
+section p{margin:7px 0;font-size:12px}

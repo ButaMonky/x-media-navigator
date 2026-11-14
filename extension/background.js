@@ -5,6 +5,7 @@
  */
 var XMN;
 (function (XMN) {
+    XMN.MAX_MEDIA_PER_POST = 20;
     const HANDLE_RE = /^[a-zA-Z0-9_]{1,15}$/;
     const MEDIA_ROUTE_RE = /^\/([^/?#]+)\/media\/?$/;
     const POST_ROUTE_RE = /^\/([^/?#]+)\/status\/(\d+)(?:\/(photo|video)\/(\d+))?\/?$/;
@@ -31,11 +32,12 @@ var XMN;
         return `${profile}|${encodeURIComponent(mode)}`;
     }
     XMN.mediaTimelineKey = mediaTimelineKey;
-    /** Only a complete 4-photo set proves album completion without a gallery counter. */
-    function completeFourPhotoSet(indexes) {
-        return indexes.size === 4 && [1, 2, 3, 4].every((index) => indexes.has(index));
+    /** Only seeing ALL supported positions proves completion without a counter. */
+    function completeMaxPhotoSet(indexes) {
+        return indexes.size === XMN.MAX_MEDIA_PER_POST &&
+            Array.from({ length: XMN.MAX_MEDIA_PER_POST }, (_, i) => i + 1).every((n) => indexes.has(n));
     }
-    XMN.completeFourPhotoSet = completeFourPhotoSet;
+    XMN.completeMaxPhotoSet = completeMaxPhotoSet;
     /** Parse only explicit media counters; Japanese "N枚中M枚目" lists total first. */
     function parseGalleryCounter(label) {
         const text = label.trim().normalize('NFKC');
@@ -46,7 +48,7 @@ var XMN;
         const current = Number(japanese ? japanese[2] : standard[1]);
         const total = Number(japanese ? japanese[1] : standard[2]);
         return Number.isInteger(current) && Number.isInteger(total) && current >= 1 &&
-            total >= current && total <= 4 ? { current, total } : null;
+            total >= current && total <= XMN.MAX_MEDIA_PER_POST ? { current, total } : null;
     }
     XMN.parseGalleryCounter = parseGalleryCounter;
     function profileStatusFromPath(pathname, profile) {
@@ -575,7 +577,7 @@ var XMN;
         for (const item of x.photoTotals) {
             if (!Array.isArray(item) || item.length !== 2 ||
                 typeof item[0] !== 'string' || !/^\d{1,19}$/.test(item[0]) ||
-                !Number.isInteger(item[1]) || item[1] < 1 || item[1] > 4 ||
+                !Number.isInteger(item[1]) || item[1] < 1 || item[1] > XMN.MAX_MEDIA_PER_POST ||
                 !groups.has(item[0]))
                 return false;
         }

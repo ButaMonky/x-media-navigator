@@ -509,7 +509,7 @@ test('changing the media filter holds old tiles until X replaces the visible gri
   state.search='';state.pathname='/alice/media';
 });
 
-test('photo count requires an explicit matching counter or all four photos', () => {
+test('photo count requires an explicit counter or all 20 photos', () => {
   state.pathname='/alice/status/100/photo/1';
   const controller=Object.create(proto);
   controller.originProfile='alice';controller.refs=[];
@@ -530,7 +530,10 @@ test('photo count requires an explicit matching counter or all four photos', () 
   viewer.querySelectorAll=()=>[];
   article.querySelectorAll=()=>['/alice/status/100/photo/1','/alice/status/100/photo/2',
     '/alice/status/100/photo/3','/alice/status/100/photo/4'].map(h=>new FakeElement('a',{href:h}));
-  assert.equal(proto.photoCount.call(controller,viewer,'100'),4);
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),null,'four thumbnails no longer prove the last photo');
+  article.querySelectorAll=()=>Array.from({length:20},(_,i)=>
+    new FakeElement('a',{href:'/alice/status/100/photo/'+(i+1)}));
+  assert.equal(proto.photoCount.call(controller,viewer,'100'),20);
   state.pathname='/alice/media';
 });
 
@@ -1755,7 +1758,7 @@ test('ARIA setsize and explicit disabled native next allow one right press', () 
   state.pathname = '/alice/status/42/photo/2';
   assert.equal(proto.photoCount.call(controller, viewer, '42'), 3);
   state.pathname = '/alice/status/42/photo/4';
-  assert.equal(proto.photoCount.call(controller, viewer, '42'), 4, 'fourth photo is always last');
+  assert.equal(proto.photoCount.call(controller, viewer, '42'), null, 'fourth photo is not proof of completion');
 
   const button = new FakeElement('button', { 'aria-label': '次の画像', 'aria-disabled': 'true' });
   viewer.querySelectorAll = () => [button];
@@ -1825,7 +1828,7 @@ test('a confirmed album total is reused on later visits without double-pressing'
   assert.equal(proto.photoCount.call(controller,viewer,'43'),null,'not inherited by another post');
   state.pathname='/alice/status/42/photo/1';
   assert.equal(proto.photoCount.call(controller,viewer,'42'),2,'evidence survives reopening');
-  proto.rememberPhotoTotal.call(controller,'42',5);
+  proto.rememberPhotoTotal.call(controller,'42',21);
   assert.equal(controller.knownPhotoTotals.get('42'),2,'invalid count cannot replace an exact count');
   state.pathname='/alice/media';
 });
