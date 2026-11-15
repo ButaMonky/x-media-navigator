@@ -32,7 +32,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.33-dev';
+  const DIAGNOSTIC_VERSION = '2.4.34-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -128,6 +128,17 @@ namespace XMN {
         return !!ref && (ref.kind !== null ||
           !!link.querySelector('img[src*="pbs.twimg.com/media"], video, [data-testid="tweetPhoto"]'));
       });
+  }
+
+  interface RectLike { left: number; top: number; width: number; height: number }
+
+  /** object-fit: contain, as explicit coordinates (centered in the box). */
+  function fitContainRect(box: RectLike, naturalWidth: number, naturalHeight: number): RectLike {
+    if (!(naturalWidth > 0) || !(naturalHeight > 0)) return { left: box.left, top: box.top, width: box.width, height: box.height };
+    const scale = Math.min(box.width / naturalWidth, box.height / naturalHeight);
+    const width = naturalWidth * scale;
+    const height = naturalHeight * scale;
+    return { left: box.left + (box.width - width) / 2, top: box.top + (box.height - height) / 2, width, height };
   }
 
   /** A downloaded, decoded image may be reused as a very short visual handoff. */
@@ -1992,6 +2003,15 @@ namespace XMN {
           displayed.statusId === statusId && displayed.mediaIndex <= known) return known;
       const root = viewer.closest('[role="dialog"]') ?? viewer.parentElement;
       if (!root) return null;
+      // x-web: the media pager's slide count (or its absence) is explicit.
+      if (displayed?.kind === 'photo' && displayed.statusId === statusId &&
+          displayed.mediaIndex !== null) {
+        const pager = this.pagerPhotoTotal?.(viewer, displayed.mediaIndex) ?? null;
+        if (pager) {
+          this.rememberPhotoTotal(statusId, pager);
+          return pager;
+        }
+      }
       // X can render a gallery counter. Confirm it belongs to the displayed photo,
       // rather than matching a number in an unrelated reply or recommended post.
       if (displayed?.kind === 'photo' && displayed.statusId === statusId) {
@@ -2713,6 +2733,76 @@ namespace XMN {
       }
     }
 
+    /**
+     * The element X centers the displayed photo in: the nearest ancestor of
+     * the photo that is larger than the photo along its free axis. Returned
+     * as its content box (padding excluded). Null when geometry is unclear.
+     */
+    private handoffStageBounds(): RectLike | null {
+      const image = this.displayedPhoto?.() ?? null;
+      if (!image || typeof image.getBoundingClientRect !== 'function') return null;
+      const photo = image.getBoundingClientRect();
+      if (photo.width < 50 || photo.height < 50) return null;
+      const dialog = typeof image.closest === 'function' ? image.closest('[role="dialog"]') : null;
+      let element: Element | null = image.parentElement;
+      for (let depth = 0; element && depth < 12; depth++, element = element.parentElement) {
+        if (element === dialog || element === document.body) break;
+        const r = element.getBoundingClientRect();
+        if (r.width < photo.width - 1 || r.height < photo.height - 1) continue;
+        if (r.width < photo.width + 24 && r.height < photo.height + 24) continue;
+        let padLeft = 0, padRight = 0, padTop = 0, padBottom = 0;
+        try {
+          const style = window.getComputedStyle(element);
+          padLeft = Number.parseFloat(style.paddingLeft) || 0;
+          padRight = Number.parseFloat(style.paddingRight) || 0;
+          padTop = Number.parseFloat(style.paddingTop) || 0;
+          padBottom = Number.parseFloat(style.paddingBottom) || 0;
+        } catch { /* geometry without padding is still usable */ }
+        const box = {
+          left: r.left + padLeft, top: r.top + padTop,
+          width: r.width - padLeft - padRight, height: r.height - padTop - padBottom,
+        };
+        const vw = window.innerWidth, vh = window.innerHeight;
+        if (box.width < 100 || box.height < 100 || box.left < -5 || box.top < -5 ||
+            (typeof vw === 'number' && box.left + box.width > vw + 5) ||
+            (typeof vh === 'number' && box.top + box.height > vh + 5)) return null;
+        return box;
+      }
+      return null;
+    }
+
+    /**
+     * x-web media viewer pager (2026-11): with 2+ media X renders
+     * [role=group] > [role=list] > [role=listitem] (one item per attachment,
+     * inactive items aria-hidden+inert). A single attachment has no pager.
+     * Returns the attachment total only when the displayed photo is the
+     * active slide at the route's position.
+     */
+    private pagerPhotoTotal(viewer: HTMLElement, mediaIndex: number): number | null {
+      if (typeof viewer.closest !== 'function') return null;
+      const root = viewer.closest('[role="dialog"]');
+      if (!root || typeof root.contains !== 'function') return null;
+      // Suspense/loading frames can show one preview without the pager.
+      if (root.querySelector('[role="status"][aria-label], [aria-busy="true"], [role="progressbar"]')) return null;
+      const image = this.displayedPhoto?.() ?? null;
+      if (!image || !root.contains(image) || !this.currentPhotoReady?.()) return null;
+      let slide: Element | null = image.closest('[role="listitem"]');
+      if (slide && !root.contains(slide)) slide = null;
+      const list = slide?.parentElement ?? null;
+      const group = list?.parentElement ?? null;
+      if (slide && list?.getAttribute('role') === 'list' && group?.getAttribute('role') === 'group') {
+        const items = Array.from(list.children).filter((child) => child.getAttribute('role') === 'listitem');
+        const position = items.indexOf(slide) + 1;
+        if (items.length >= 1 && items.length <= MAX_MEDIA_PER_POST && position === mediaIndex)
+          return items.length;
+        return null;
+      }
+      if (slide) return null; // An unknown list shape is not evidence.
+      const enclosingGroup = image.closest('[role="group"]');
+      if (enclosingGroup && root.contains(enclosingGroup)) return null;
+      return mediaIndex === 1 ? 1 : null;
+    }
+
     /** Promote a low-res canvas to the existing decoded prefetch if ready. */
     private promoteVisualHandoff(): boolean {
       const handoff = this.handoff;
@@ -2768,29 +2858,43 @@ namespace XMN {
         const viewportWidth = window.innerWidth;
         const maxRight = typeof viewportWidth === 'number' && viewportWidth >= 900
           ? viewportWidth - Math.min(250, viewportWidth * 0.2) : viewportWidth;
+        // The CURRENT photo's own box has the previous photo's aspect ratio.
+        // Prefer the photo stage (the area X centers photos in) and fit the
+        // NEXT photo's aspect inside it, so the handoff matches X's layout.
+        const stage = this.handoffStageBounds?.() ?? null;
         const candidates = [
+          stage,
           this.viewer?.getBoundingClientRect?.(),
           this.viewer?.querySelector<HTMLImageElement>('img[src]')?.getBoundingClientRect?.(),
         ];
         const bounds = candidates.find((b) => b &&
           b.width > 100 && b.height > 100 &&
           Number.isFinite(b.left) && Number.isFinite(b.top) &&
-          (typeof maxRight !== 'number' || b.right <= maxRight + 5));
+          (b === stage || typeof maxRight !== 'number' || b.left + b.width <= maxRight + 5));
         if (!bounds) {
           diagnostic('preview.skipped', { reason: 'unsafe_photo_geometry' });
           return false;
         }
-        host.style.setProperty('inset', 'auto');
-        host.style.setProperty('left', `${bounds.left}px`);
-        host.style.setProperty('top', `${bounds.top}px`);
-        host.style.setProperty('width', `${bounds.width}px`);
-        host.style.setProperty('height', `${bounds.height}px`);
         const visual = highReady ? record!.image
           : this.captureLowQualityThumbnail(target, link);
         if (!visual) {
           diagnostic('preview.skipped', { reason: 'thumbnail_not_decoded' });
           return false;
         }
+        const naturalWidth = highReady ? record!.image.naturalWidth
+          : (visual as HTMLCanvasElement).width;
+        const naturalHeight = highReady ? record!.image.naturalHeight
+          : (visual as HTMLCanvasElement).height;
+        const fitted = fitContainRect(bounds, naturalWidth, naturalHeight);
+        host.style.setProperty('inset', 'auto');
+        host.style.setProperty('left', `${fitted.left}px`);
+        host.style.setProperty('top', `${fitted.top}px`);
+        host.style.setProperty('width', `${fitted.width}px`);
+        host.style.setProperty('height', `${fitted.height}px`);
+        diagnostic('preview.geometry', {
+          source: bounds === stage ? 'stage' : 'viewer',
+          fittedWidth: Math.round(fitted.width), fittedHeight: Math.round(fitted.height),
+        });
         if (highReady) visual.classList.add('xmn-handoff-image');
         host.appendChild(visual);
         document.body.appendChild(host);
