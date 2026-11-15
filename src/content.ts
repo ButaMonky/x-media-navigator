@@ -32,7 +32,7 @@ namespace XMN {
   const PREFETCH_MAX_CONCURRENT = 2;
   const PREFETCH_MAX_RECORDS = 6;
   const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-  const DIAGNOSTIC_VERSION = '2.4.35-dev';
+  const DIAGNOSTIC_VERSION = '2.4.36-dev';
   // Only numeric counts, booleans, and fixed operation labels are reported.
   // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
   function diagnostic(event: string, details: Record<string, string | number | boolean> = {}): void {
@@ -1443,7 +1443,7 @@ namespace XMN {
       } else {
         this.removeViewerUI();
         if (this.originProfile && profileStatusFromPath(path,this.originProfile))
-          this.reportHealth("VIEWER_NOT_FOUND");
+          { this.reportHealth("VIEWER_NOT_FOUND"); this.checkXViewerError?.(path); }
         else if (atMedia)
           this.reportHealth(this.refs?.length ? "MEDIA_INDEX_READY" : "MEDIA_GRID_NOT_FOUND");
         else if (path.includes("/status/")) this.reportHealth("OPEN_MEDIA_TAB_FIRST");
@@ -3217,7 +3217,7 @@ namespace XMN {
       return null;
     }
 
-    private toast(message: string): void {
+    private toast(message: string, durationMs = 2800): void {
       let element = document.querySelector<HTMLElement>('.xmn-toast');
       if (!element) {
         element = document.createElement('div');
@@ -3228,7 +3228,45 @@ namespace XMN {
       element.textContent = message;
       window.setTimeout(() => {
         if (element?.textContent === message) element.remove();
-      }, 2800);
+      }, durationMs);
+    }
+
+    /**
+     * x-web shows "Something went wrong. Try reloading." + Retry inside the
+     * media dialog when its own tweetMediaViewerQuery fails, typically with
+     * HTTP 429 after many moves. XMN never calls X APIs; it only explains.
+     * Uses the page's Resource Timing (no request hooking, no URL logging).
+     */
+    private xViewerErrorNoticePath = '';
+    private checkXViewerError(path: string): void {
+      if (!isXWebClient() || this.xViewerErrorNoticePath === path ||
+          typeof document.querySelectorAll !== 'function') return;
+      let errorDialog: HTMLElement | null = null;
+      for (const dialog of document.querySelectorAll<HTMLElement>('[role="dialog"]')) {
+        if (!dialog.isConnected || !viewerStyleVisible(dialog)) continue;
+        const box = dialog.getBoundingClientRect?.();
+        if (!box || box.width < 200 || box.height < 200) continue;
+        if (dialog.querySelector('img[src*="pbs.twimg.com/media"], video')) continue;
+        if (!dialog.querySelector('button')) continue;
+        if (!/問題が発生しました|Something went wrong/i.test(dialog.textContent ?? '')) continue;
+        errorDialog = dialog;
+        break;
+      }
+      if (!errorDialog) return;
+      this.xViewerErrorNoticePath = path;
+      let rateLimited = false;
+      try {
+        const now = performance.now();
+        rateLimited = performance.getEntriesByType('resource').some((entry) => {
+          const timing = entry as PerformanceResourceTiming & { responseStatus?: number };
+          return timing.responseStatus === 429 && now - timing.responseEnd < 60000 &&
+            /\/graphql\/[^/?]+\/tweetMediaViewerQuery/.test(timing.name);
+        });
+      } catch { /* Resource Timing is optional evidence only. */ }
+      diagnostic('x.viewer_error', { rateLimited });
+      this.toast(rateLimited
+        ? 'Xの読み込み制限中です（短時間のアクセス過多）。数分待ってからXの「やりなおす」を押してください'
+        : 'Xが投稿を読み込めませんでした。少し待ってからXの「やりなおす」を押してください', 8000);
     }
 
     private async waitForViewerToClose(viewer: HTMLElement): Promise<boolean> {

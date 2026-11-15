@@ -1178,7 +1178,7 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.35-dev';
+    const DIAGNOSTIC_VERSION = '2.4.36-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
@@ -1403,6 +1403,13 @@ var XMN;
             this.pendingSourceTiles = new Set();
             this.navigationBusy = false;
             this.navGeneration = 0;
+            /**
+             * x-web shows "Something went wrong. Try reloading." + Retry inside the
+             * media dialog when its own tweetMediaViewerQuery fails, typically with
+             * HTTP 429 after many moves. XMN never calls X APIs; it only explains.
+             * Uses the page's Resource Timing (no request hooking, no URL logging).
+             */
+            this.xViewerErrorNoticePath = '';
             // Only an isolated extension-side test can explicitly opt into legacy
             // provider behavior. Normal production construction supplies no options.
             this.experimentalThirdPartyApiEnabled =
@@ -2645,8 +2652,10 @@ var XMN;
             }
             else {
                 this.removeViewerUI();
-                if (this.originProfile && XMN.profileStatusFromPath(path, this.originProfile))
+                if (this.originProfile && XMN.profileStatusFromPath(path, this.originProfile)) {
                     this.reportHealth("VIEWER_NOT_FOUND");
+                    this.checkXViewerError?.(path);
+                }
                 else if (atMedia)
                     this.reportHealth(this.refs?.length ? "MEDIA_INDEX_READY" : "MEDIA_GRID_NOT_FOUND");
                 else if (path.includes("/status/"))
@@ -4549,7 +4558,7 @@ var XMN;
             }
             return null;
         }
-        toast(message) {
+        toast(message, durationMs = 2800) {
             let element = document.querySelector('.xmn-toast');
             if (!element) {
                 element = document.createElement('div');
@@ -4561,7 +4570,45 @@ var XMN;
             window.setTimeout(() => {
                 if (element?.textContent === message)
                     element.remove();
-            }, 2800);
+            }, durationMs);
+        }
+        checkXViewerError(path) {
+            if (!isXWebClient() || this.xViewerErrorNoticePath === path ||
+                typeof document.querySelectorAll !== 'function')
+                return;
+            let errorDialog = null;
+            for (const dialog of document.querySelectorAll('[role="dialog"]')) {
+                if (!dialog.isConnected || !viewerStyleVisible(dialog))
+                    continue;
+                const box = dialog.getBoundingClientRect?.();
+                if (!box || box.width < 200 || box.height < 200)
+                    continue;
+                if (dialog.querySelector('img[src*="pbs.twimg.com/media"], video'))
+                    continue;
+                if (!dialog.querySelector('button'))
+                    continue;
+                if (!/問題が発生しました|Something went wrong/i.test(dialog.textContent ?? ''))
+                    continue;
+                errorDialog = dialog;
+                break;
+            }
+            if (!errorDialog)
+                return;
+            this.xViewerErrorNoticePath = path;
+            let rateLimited = false;
+            try {
+                const now = performance.now();
+                rateLimited = performance.getEntriesByType('resource').some((entry) => {
+                    const timing = entry;
+                    return timing.responseStatus === 429 && now - timing.responseEnd < 60000 &&
+                        /\/graphql\/[^/?]+\/tweetMediaViewerQuery/.test(timing.name);
+                });
+            }
+            catch { /* Resource Timing is optional evidence only. */ }
+            diagnostic('x.viewer_error', { rateLimited });
+            this.toast(rateLimited
+                ? 'Xの読み込み制限中です（短時間のアクセス過多）。数分待ってからXの「やりなおす」を押してください'
+                : 'Xが投稿を読み込めませんでした。少し待ってからXの「やりなおす」を押してください', 8000);
         }
         async waitForViewerToClose(viewer) {
             // Keep the same 1.5s timeout but avoid a 125ms blank gap between
