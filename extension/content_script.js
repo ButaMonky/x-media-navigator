@@ -4102,6 +4102,11 @@ var XMN;
             const enclosingGroup = image.closest('[role="group"]');
             if (enclosingGroup && root.contains(enclosingGroup))
                 return null;
+            // "No pager means one attachment" is only true for the x-web client
+            // (<html data-app-version>). Legacy X viewers mount photos without it.
+            const xweb = document.documentElement?.hasAttribute?.('data-app-version') === true;
+            if (!xweb || root.querySelector('[data-testid="swipe-to-dismiss"], [data-testid="tweetPhoto"]'))
+                return null;
             return mediaIndex === 1 ? 1 : null;
         }
         /** Promote a low-res canvas to the existing decoded prefetch if ready. */

@@ -2800,6 +2800,10 @@ namespace XMN {
       if (slide) return null; // An unknown list shape is not evidence.
       const enclosingGroup = image.closest('[role="group"]');
       if (enclosingGroup && root.contains(enclosingGroup)) return null;
+      // "No pager means one attachment" is only true for the x-web client
+      // (<html data-app-version>). Legacy X viewers mount photos without it.
+      const xweb = document.documentElement?.hasAttribute?.('data-app-version') === true;
+      if (!xweb || root.querySelector('[data-testid="swipe-to-dismiss"], [data-testid="tweetPhoto"]')) return null;
       return mediaIndex === 1 ? 1 : null;
     }
 
