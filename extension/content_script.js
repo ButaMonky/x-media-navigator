@@ -1155,14 +1155,30 @@ var XMN;
 (function (XMN) {
     const VIEWER_SELECTOR = '[data-testid="swipe-to-dismiss"]';
     const MODERN_VIEWER_SELECTOR = '[data-testid="mediaViewer"]';
+    // 2026-11 x-web grid: <ul><li data-index><div role="list" class="grid">
+    //   <div role="listitem"><div role="link" data-href="/u/status/ID">
+    //     <a href="/u/status/ID/photo/1"><img ...></a>
+    // The legacy grid used li[role=listitem]. Both item shapes are accepted.
     const TILE_SELECTOR = 'li[role="listitem"]';
-    const OBSERVED_MEDIA_SELECTOR = 'li[role="listitem"], [data-testid="cellInnerDiv"], a[href*="/status/"]';
+    const MODERN_TILE_SELECTOR = 'div[role="listitem"]';
+    const OBSERVED_MEDIA_SELECTOR = 'li[role="listitem"], div[role="listitem"], [data-testid="cellInnerDiv"], a[href*="/status/"]';
+    /** Nearest legacy or x-web media grid item. */
+    function closestTile(node) {
+        if (!node || typeof node.closest !== 'function')
+            return null;
+        return node.closest(TILE_SELECTOR) ?? node.closest(MODERN_TILE_SELECTOR) ?? null;
+    }
+    function hasTileNode(node) {
+        return (typeof node.matches === 'function' &&
+            (node.matches(TILE_SELECTOR) || node.matches(MODERN_TILE_SELECTOR))) ||
+            !!node.querySelector?.(TILE_SELECTOR) || !!node.querySelector?.(MODERN_TILE_SELECTOR);
+    }
     // Bounded, progressive future-post prefetch. Never saturate the network.
     const PREFETCH_MAX_IMAGES = 5;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.32-dev';
+    const DIAGNOSTIC_VERSION = '2.4.33-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
@@ -1251,6 +1267,10 @@ var XMN;
             return legacy;
         if (legacy.some(tile => !!usableTileLink(tile, profile)))
             return legacy;
+        // 2026-11 x-web: div[role=listitem] items inside div[role=list] grids.
+        const modern = Array.from(root.querySelectorAll(MODERN_TILE_SELECTOR) ?? []);
+        if (modern.some(tile => !!usableTileLink(tile, profile)))
+            return modern;
         const cells = Array.from(root.querySelectorAll('[data-testid="cellInnerDiv"]') ?? []);
         if (cells.some(tile => !!usableTileLink(tile, profile)))
             return cells;
@@ -1356,6 +1376,8 @@ var XMN;
             this.listObserver = null;
             this.observedColumn = null;
             this.lastPath = '';
+            /** Throttles grid rescans while x-web has not rendered any media tile yet. */
+            this.emptyGridScanAt = 0;
             this.scanTimer = null;
             this.routeTickTimer = null;
             this.observedRouteKey = '';
@@ -2553,8 +2575,15 @@ var XMN;
                 }
                 // The observer handles subsequent DOM changes. Avoid O(N) scanning of a
                 // long media timeline every 450ms when nothing has changed.
-                if (!this.pendingGrid && (scanRequired || observerAdded))
+                // x-web streams/hydrates the grid after document_idle. While nothing
+                // is indexed yet, keep retrying cheaply instead of waiting for a
+                // mutation shape we may not recognise.
+                const emptyRetry = !(this.refs?.length) &&
+                    Date.now() - (this.emptyGridScanAt ?? 0) >= 1500;
+                if (!this.pendingGrid && (scanRequired || observerAdded || emptyRetry)) {
+                    this.emptyGridScanAt = Date.now();
                     this.scanTiles();
+                }
             }
             else if (!this.originProfile || !XMN.profileStatusFromPath(path, this.originProfile)) {
                 if (this.originProfile !== null) {
@@ -2674,8 +2703,12 @@ var XMN;
                         const insideTile = record.target instanceof Element
                             ? (record.target.closest(TILE_SELECTOR) ?? record.target.closest(OBSERVED_MEDIA_SELECTOR)) : null;
                         const changed = [...record.addedNodes, ...record.removedNodes];
+                        // x-web inserts whole virtualized rows (li[data-index]) whose
+                        // items are div[role=listitem]; also accept any added status link.
                         const mediaChanged = changed.some((node) => node instanceof Element &&
                             (node.matches(TILE_SELECTOR) || !!node.querySelector(TILE_SELECTOR) ||
+                                hasTileNode(node) ||
+                                node.matches('a[href*="/status/"]') || !!node.querySelector('a[href*="/status/"]') ||
                                 (!!insideTile && (node.matches('a[href], img, video') ||
                                     !!node.querySelector('a[href], img, video')))));
                         if (mediaChanged) {
@@ -3595,7 +3628,7 @@ var XMN;
             if (connection?.saveData || /^(slow-2g|2g|3g)$/.test(connection?.effectiveType ?? '') ||
                 (memory !== undefined && memory <= 4))
                 return;
-            const tile = event.target.closest(TILE_SELECTOR);
+            const tile = event.target.closest(TILE_SELECTOR) ?? closestTile(event.target);
             const clickedLink = event.target.closest('a[href]');
             if (!tile || !clickedLink)
                 return;
@@ -3943,7 +3976,7 @@ var XMN;
             if (!image) {
                 // Some older X tiles place one thumbnail outside their native anchor.
                 // Never guess among several candidate media images.
-                const images = link.closest(TILE_SELECTOR)?.querySelectorAll('img[src], img[srcset]');
+                const images = (link.closest(TILE_SELECTOR) ?? closestTile(link))?.querySelectorAll('img[src], img[srcset]');
                 if (images?.length === 1)
                     image = images[0];
             }
@@ -4291,7 +4324,7 @@ var XMN;
             const cached = this.liveLinks?.get(ref.key);
             if (cached?.isConnected) {
                 const tile = typeof cached.closest === 'function'
-                    ? cached.closest(TILE_SELECTOR) : null;
+                    ? (cached.closest(TILE_SELECTOR) ?? closestTile(cached)) : null;
                 if (tile && (typeof column.contains !== 'function' || column.contains(tile))) {
                     const owner = usableTileLink(tile, this.originProfile);
                     if (owner?.link === cached && owner.ref.key === ref.key) {
@@ -4302,7 +4335,7 @@ var XMN;
                 }
             }
             this.liveLinks?.delete(ref.key);
-            for (const tile of column.querySelectorAll(TILE_SELECTOR)) {
+            for (const tile of mediaTileElements(column, this.originProfile)) {
                 const found = usableTileLink(tile, this.originProfile);
                 if (found?.ref.key === ref.key && found.link.isConnected) {
                     this.rememberLiveLink?.(ref, found.link, true);

@@ -1,5 +1,7 @@
 # X Media Navigator — TypeScript rebuild (private beta)
 
+> **2026-11-15 新Xクライアント対応 v2.4.33（非公開QA）**：Xの新Webクライアント（x-web）でメディア一覧が `div[role=listitem]` になり、さらに読み込み後に描画されるため一覧を一切認識できなかった（`MEDIA_GRID_NOT_FOUND`）問題を修正。新しい一覧形式の認識、遅延描画への再スキャン、投稿間移動用のリンク検索を対応。新ビューア上での動作は実機確認待ち。[QA記録](docs/qa/2026-11-15-v2433-xweb-grid.md)
+
 > **2026-11-15 詳細診断ログ v2.4.32（非公開QA）**：Xのメディアタブや画像を開くだけで、ボタンの実座標・CSS・重なり・DOM階層・ビューアと画像の状態・ナビゲーション状況をConsoleに自動で詳しく出力します。操作機能はv2.4.31から変更せず、URL・投稿ID・Cookie等は記録しません。Chrome Consoleで XMN 2.4.32-dev または visual.snapshot を検索してください。[ログの説明](docs/qa/2026-11-15-v2432-verbose-visual-diagnostics.md)
 
 
