@@ -1178,7 +1178,7 @@ var XMN;
     const PREFETCH_MAX_CONCURRENT = 2;
     const PREFETCH_MAX_RECORDS = 6;
     const PREFETCH_MAX_DECODED_BYTES = 80 * 1024 * 1024;
-    const DIAGNOSTIC_VERSION = '2.4.34-dev';
+    const DIAGNOSTIC_VERSION = '2.4.35-dev';
     // Only numeric counts, booleans, and fixed operation labels are reported.
     // Never record X URLs, handles, post IDs, cookies, tokens or API cursors.
     function diagnostic(event, details = {}) {
@@ -1282,6 +1282,15 @@ var XMN;
             return !!ref && (ref.kind !== null ||
                 !!link.querySelector('img[src*="pbs.twimg.com/media"], video, [data-testid="tweetPhoto"]'));
         });
+    }
+    /** The 2026-11 X web client marks its root with data-app-version. */
+    function isXWebClient() {
+        try {
+            return document.documentElement?.hasAttribute?.('data-app-version') === true;
+        }
+        catch {
+            return false;
+        }
     }
     /** object-fit: contain, as explicit coordinates (centered in the box). */
     function fitContainRect(box, naturalWidth, naturalHeight) {
@@ -3022,12 +3031,70 @@ var XMN;
                 this.controlsGeometryKey = '';
                 this.controlsLayoutPath = '';
             }
-            if (this.controlsViewer !== viewer ||
+            // x-web: pin to X's photo stage (stable, never translated) and follow
+            // it every poll, so a different photo width or the replies drawer
+            // opening/closing cannot leave the arrows at an old position.
+            const stage = this.controlsStageRect?.(viewer) ?? null;
+            if (stage) {
+                this.controlsViewer = viewer;
+                const geometry = [stage.left, stage.top, stage.width, stage.height].map(Math.round).join(',');
+                if (geometry !== this.controlsGeometryKey) {
+                    host.style.left = stage.left + 'px';
+                    host.style.top = stage.top + 'px';
+                    host.style.width = stage.width + 'px';
+                    host.style.height = stage.height + 'px';
+                    this.controlsGeometryKey = geometry;
+                }
+                host.style.display = '';
+                this.controlsLayoutPath = window.location.pathname;
+            }
+            else if (this.controlsViewer !== viewer ||
                 this.controlsLayoutPath !== window.location.pathname) {
                 this.controlsViewer = viewer;
                 this.positionControls(viewer);
             }
             return host;
+        }
+        /**
+         * x-web photo stage for the post arrows: the media pager root
+         * ([role=group], not its translated list) or, for one attachment, the
+         * nearest ancestor that is larger than the photo. x-web only.
+         */
+        controlsStageRect(viewer) {
+            if (document.documentElement?.hasAttribute?.('data-app-version') !== true)
+                return null;
+            if (typeof viewer.closest !== 'function' || typeof viewer.getBoundingClientRect !== 'function')
+                return null;
+            const dialog = viewer.closest('[role="dialog"]');
+            if (!dialog || typeof dialog.contains !== 'function')
+                return null;
+            let stage = viewer.closest('[role="group"]');
+            if (stage && (!dialog.contains(stage) || stage.classList?.contains('xmn-controls-layer')))
+                stage = null;
+            if (!stage) {
+                const photo = viewer.getBoundingClientRect();
+                let element = viewer.parentElement;
+                for (let depth = 0; element && depth < 10; depth++, element = element.parentElement) {
+                    if (element === dialog)
+                        break;
+                    const r = element.getBoundingClientRect();
+                    if (r.width < photo.width - 1 || r.height < photo.height - 1)
+                        continue;
+                    if (r.width >= photo.width + 24 || r.height >= photo.height + 24) {
+                        stage = element;
+                        break;
+                    }
+                }
+            }
+            if (!stage)
+                return null;
+            const r = stage.getBoundingClientRect();
+            const vw = window.innerWidth || r.right, vh = window.innerHeight || r.bottom;
+            const left = Math.max(0, r.left), top = Math.max(0, r.top);
+            const width = Math.min(r.right, vw) - left, height = Math.min(r.bottom, vh) - top;
+            if (!(width >= 150 && height >= 120) || ![left, top, width, height].every(Number.isFinite))
+                return null;
+            return { left, top, width, height };
         }
         removeViewerUI(preserveControls = false) {
             this.viewerStateSnapshot = null;
@@ -3552,10 +3619,26 @@ var XMN;
             // Start immediately after X mounts the viewer; a 350ms debounce used
             // to miss the entire next-post transition on fast arrow navigation.
             // The timeline/path key above already deduplicates repeated DOM updates.
-            this.preloadTimer = window.setTimeout(() => {
+            // x-web: finish the DISPLAYED photo first, then warm the next posts,
+            // so lookahead transfers never compete with the image being viewed.
+            const xweb = isXWebClient();
+            const startedAt = Date.now();
+            let waited = false;
+            const run = () => {
                 this.preloadTimer = null;
+                if (xweb && this.viewer?.isConnected && !document.hidden &&
+                    !this.currentPhotoReady?.() && Date.now() - startedAt < 6000) {
+                    waited = true;
+                    this.preloadTimer = window.setTimeout(run, 100);
+                    return;
+                }
+                if (waited)
+                    diagnostic('prefetch.after_current', {
+                        waitedMs: Date.now() - startedAt, currentReady: !!this.currentPhotoReady?.(),
+                    });
                 this.preloadAdjacentImages();
-            }, 0);
+            };
+            this.preloadTimer = window.setTimeout(run, 0);
         }
         /** Stop obsolete background transfers; reuse decoded photos on return. */
         onVisibilityChange() {
@@ -3655,6 +3738,9 @@ var XMN;
                 return;
             const index = this.indexes.get(found.ref.key);
             if (index === undefined || this.refs[index]?.key !== found.ref.key)
+                return;
+            // x-web: the clicked photo loads first; lookahead starts once it is shown.
+            if (isXWebClient())
                 return;
             this.preloadAdjacentImages({ index, current: found.ref });
             if (this.preopenExpireTimer !== null)
